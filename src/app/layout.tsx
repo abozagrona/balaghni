@@ -1,28 +1,6 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Sans_Arabic, IBM_Plex_Mono, Cairo } from "next/font/google";
 import { LiveVisualEditor } from "@/components/editor/live-visual-editor";
 import "./globals.css";
-
-const ibmArabic = IBM_Plex_Sans_Arabic({
-  subsets: ["arabic", "latin"],
-  weight: ["300", "400", "500", "600", "700"],
-  variable: "--font-ibm-arabic",
-  display: "swap",
-});
-
-const cairo = Cairo({
-  subsets: ["arabic", "latin"],
-  weight: ["400", "500", "700", "900"],
-  variable: "--font-cairo",
-  display: "swap",
-});
-
-const ibmMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-plex-mono",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: {
@@ -52,7 +30,7 @@ export default function RootLayout({
     <html
       lang="ar"
       dir="rtl"
-      className={`${ibmArabic.variable} ${cairo.variable} ${ibmMono.variable} h-full antialiased`}
+      className="h-full antialiased"
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col font-sans selection:bg-primary selection:text-white">
