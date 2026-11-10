@@ -1,0 +1,238 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "thmanyahSans";
+  src: url("/fonts/thmanyahsans-light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "thmanyahSans";
+  src: url("/fonts/thmanyahsans-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "thmanyahSans";
+  src: url("/fonts/thmanyahsans-medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "thmanyahSans";
+  src: url("/fonts/thmanyahsans-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "thmanyahSans";
+  src: url("/fonts/thmanyahsans-black.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    /* الوضع النهاري (تباين ناصع مع لمسة حمراء خفيفة جداً) */
+    --background: #F9FAFC;
+    --page-gradient-top: #FFFFFF;
+    --page-gradient-mid: #F9FAFC;
+    --page-gradient-bottom: #FFF1F2;
+    --foreground: #0B0D13;
+
+    --surface: #FFFFFF;
+    --surface-elevated: #FFFFFF;
+    --card: #FFFFFF;
+    --card-foreground: #0B0D13;
+
+    /* هوية بَلِّغْنِي الحمراء الصريحة */
+    --primary: #E51926;
+    --primary-bright: #EE1D23;
+    --primary-strong: #B9111C;
+    --primary-accent: #FF4D58;
+    --primary-foreground: #FFFFFF;
+
+    /* الألوان المساعدة والفرعية */
+    --secondary: #FFF1F2;
+    --secondary-foreground: #B9111C;
+    --muted: #F3F4F8;
+    --muted-foreground: #5A6072;
+    --placeholder: #949BB0;
+
+    --accent: #FFE4E6;
+    --accent-foreground: #B9111C;
+    --destructive: #E51926;
+
+    /* الحدود وحلقات التركيز */
+    --border: rgba(11, 13, 19, 0.09);
+    --input: rgba(11, 13, 19, 0.14);
+    --ring: rgba(229, 25, 38, 0.32);
+
+    --shell-max: 1360px;
+  }
+
+  .dark {
+    /* الوضع الليلي الحديث والعميق (#0B0D13 & #141721) */
+    --background: #0B0D13;
+    --page-gradient-top: #0B0D13;
+    --page-gradient-mid: #0F121B;
+    --page-gradient-bottom: #141721;
+    --foreground: #FFFFFF;
+
+    --surface: #141721;
+    --surface-elevated: #1C202E;
+    --card: #141721;
+    --card-foreground: #FFFFFF;
+
+    /* الأحمر الصريح مع توهج أعلى للخلفيات الداكنة */
+    --primary: #EE1D23;
+    --primary-bright: #FF2A30;
+    --primary-strong: #E51926;
+    --primary-accent: #FF5C64;
+    --primary-foreground: #FFFFFF;
+
+    --secondary: rgba(229, 25, 38, 0.14);
+    --secondary-foreground: #FF6B72;
+    --muted: #1A1E2B;
+    --muted-foreground: #9BA3B8;
+    --placeholder: #636B82;
+
+    --accent: rgba(238, 29, 35, 0.18);
+    --accent-foreground: #FFFFFF;
+    --destructive: #FF3B42;
+
+    --border: rgba(255, 255, 255, 0.09);
+    --input: rgba(255, 255, 255, 0.14);
+    --ring: rgba(238, 29, 35, 0.45);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    direction: rtl;
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-color: var(--background);
+    background-image: linear-gradient(
+      180deg,
+      var(--page-gradient-top) 0%,
+      var(--page-gradient-mid) 52%,
+      var(--page-gradient-bottom) 100%
+    );
+    color: var(--foreground);
+    font-family: "thmanyahSans", var(--font-ibm-arabic), var(--font-cairo), sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    overflow-x: hidden;
+  }
+}
+
+@layer components {
+  .shell {
+    width: min(var(--shell-max), calc(100% - 2rem));
+    margin-inline: auto;
+  }
+
+  /* تنسيق العنوان الرئيسي المثبت حسب التصميم المعتمد من المستخدم */
+  .home-hero-headline {
+    flex-direction: column;
+    gap: 0.25rem;
+    width: 100%;
+    max-width: 100%;
+    display: flex;
+    font-family: "thmanyahSans", var(--font-ibm-arabic), sans-serif;
+    margin-top: 1.25rem;
+  }
+
+  .home-hero-headline__question {
+    letter-spacing: -0.025em;
+    color: var(--foreground);
+    font-size: clamp(2rem, 6vw, 2.375rem); /* 38px */
+    font-weight: 900;
+    line-height: 1.22;
+  }
+
+  .home-hero-headline__question--secondary {
+    color: #2B3445;
+    white-space: pre-line;
+  }
+
+  .dark .home-hero-headline__question--secondary {
+    color: #CBD5E1;
+  }
+
+  .home-hero-headline__prefix {
+    color: var(--muted-foreground);
+    font-size: 1.25rem;
+    font-weight: 500;
+    line-height: 1.3;
+    margin-top: 1.25rem;
+    padding-right: 5.5rem;
+  }
+
+  .home-hero-headline__answer {
+    color: var(--primary);
+    font-size: clamp(2.1rem, 6.5vw, 2.75rem); /* 44px */
+    font-weight: 900;
+    line-height: 1.15;
+    margin-top: -0.35rem;
+    padding-right: 4.5rem;
+  }
+
+  /* غلاف صفحة مسح الـ QR السريعة */
+  .scan-shell {
+    min-height: 100dvh;
+    background: linear-gradient(
+      180deg,
+      var(--page-gradient-top) 0%,
+      var(--page-gradient-mid) 60%,
+      var(--page-gradient-bottom) 100%
+    );
+  }
+
+  /* تقليص الترويسة تلقائياً أثناء الإرسال أو بعد النجاح */
+  .scan-shell--compact-hero .scan-hero-section {
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+
+  /* نافذة التأكيد والرقابة المنبثقة <dialog> */
+  .confirm-dialog {
+    margin: auto;
+    width: min(92vw, 25rem);
+    border-radius: 1.75rem;
+    border: 1px solid var(--border);
+    background-color: var(--card);
+    color: var(--card-foreground);
+    padding: 0;
+    box-shadow: 0 28px 70px rgba(11, 13, 19, 0.35);
+  }
+
+  .confirm-dialog::backdrop {
+    background: rgba(11, 13, 19, 0.65);
+    backdrop-filter: blur(6px);
+  }
+
+  .confirm-dialog__card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1.5rem;
+    text-align: center;
+  }
+}
