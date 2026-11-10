@@ -5,12 +5,12 @@
   "description": "بَلِّغْنِي | BALAGHNI — منصة ملصقات QR الذكية للتواصل الآمن مع أصحاب المركبات في ليبيا",
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev -H 127.0.0.1 -p 3000",
-    "build": "node ./node_modules/next/dist/bin/next build",
+    "build": "node ./scripts/build.js",
     "start": "node ./node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3000",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
-    "@next/swc-wasm-nodejs": "15.1.7",
+    "@next/swc-wasm-nodejs": "16.4.5",
     "@radix-ui/react-slot": "^1.1.2",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.49.1",
@@ -18,9 +18,9 @@
     "clsx": "^2.1.1",
     "framer-motion": "^14.9.1",
     "lucide-react": "^0.475.0",
-    "next": "15.1.7",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "next": "16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tailwind-merge": "^3.0.1"
   },
   "devDependencies": {
