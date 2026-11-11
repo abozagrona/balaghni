@@ -131,16 +131,22 @@ export async function POST(req: NextRequest) {
           permissions.push("import_batches");
         if (obj.manage_admins) permissions.push("manage_admins");
         if (obj.danger_zone) permissions.push("danger_zone");
+        if (obj.can_live_edit) permissions.push("can_live_edit");
       }
 
-      if (adminProfile.role === "SUPER_ADMIN" && permissions.length === 0) {
-        permissions = [
-          "manage_reports",
-          "manage_tags",
-          "import_batches",
-          "manage_admins",
-          "danger_zone",
-        ];
+      if (adminProfile.role === "SUPER_ADMIN") {
+        if (permissions.length === 0) {
+          permissions = [
+            "manage_reports",
+            "manage_tags",
+            "import_batches",
+            "manage_admins",
+            "danger_zone",
+            "can_live_edit",
+          ];
+        } else if (!permissions.includes("can_live_edit")) {
+          permissions.push("can_live_edit");
+        }
       }
 
       const formattedProfile = {

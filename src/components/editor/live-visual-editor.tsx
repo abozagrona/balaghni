@@ -118,13 +118,72 @@ function rgbToHex(rgb: string): string {
   );
 }
 
+const ADMIN_SESSION_STORAGE_KEY = "balaghni_enterprise_admin_session";
+
+interface AdminSessionPayload {
+  id?: string;
+  fullName?: string;
+  username?: string;
+  phone?: string;
+  role?: string;
+  permissions?: string[];
+  sessionToken?: string;
+}
+
+function getStoredAdminSession(): AdminSessionPayload | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw =
+      window.sessionStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ||
+      window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return parsed as AdminSessionPayload;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function checkLiveEditAccess(): boolean {
+  const session = getStoredAdminSession();
+  if (!session) return false;
+  if (session.role === "SUPER_ADMIN") return true;
+  if (Array.isArray(session.permissions) && session.permissions.includes("can_live_edit")) {
+    return true;
+  }
+  return false;
+}
+
 export function LiveVisualEditor() {
+  const [isAuthorized, setIsAuthorized] = React.useState(false);
   const [isEditing, setIsEditing] = React.useState(false);
   const [selectedEl, setSelectedEl] = React.useState<HTMLElement | null>(null);
   const [selectedKey, setSelectedKey] = React.useState<string>("");
   const [overrides, setOverrides] = React.useState<OverridesMap>({});
   const [saving, setSaving] = React.useState(false);
   const [savedNotice, setSavedNotice] = React.useState(false);
+
+  // التحقق الفوري من الصلاحيات الإدارية وتحديث حالة الظهور (عزل تام للزوار والزبائن)
+  React.useEffect(() => {
+    const evaluateAccess = () => {
+      const allowed = checkLiveEditAccess();
+      setIsAuthorized(allowed);
+      if (!allowed) {
+        setIsEditing(false);
+      }
+    };
+
+    evaluateAccess();
+    window.addEventListener("storage", evaluateAccess);
+    window.addEventListener("focus", evaluateAccess);
+    return () => {
+      window.removeEventListener("storage", evaluateAccess);
+      window.removeEventListener("focus", evaluateAccess);
+    };
+  }, []);
 
   // Computed / active states for the currently selected element
   const [textValue, setTextValue] = React.useState("");
@@ -142,10 +201,20 @@ export function LiveVisualEditor() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextOverrides));
     } catch {}
+    const session = getStoredAdminSession();
+    const token = session?.sessionToken || session?.id || "";
     fetch("/api/visual-overrides", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ elements: nextOverrides }),
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(session?.id ? { "x-admin-id": session.id } : {}),
+      },
+      body: JSON.stringify({
+        elements: nextOverrides,
+        sessionToken: token,
+        adminId: session?.id,
+      }),
     }).catch(() => {});
   }, []);
 
@@ -323,28 +392,66 @@ export function LiveVisualEditor() {
     setSaving(true);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
-      await fetch("/api/visual-overrides", {
+      const session = getStoredAdminSession();
+      const token = session?.sessionToken || session?.id || "";
+      const res = await fetch("/api/visual-overrides", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ elements: overrides }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(session?.id ? { "x-admin-id": session.id } : {}),
+        },
+        body: JSON.stringify({
+          elements: overrides,
+          sessionToken: token,
+          adminId: session?.id,
+        }),
       });
-      setSavedNotice(true);
-      setTimeout(() => setSavedNotice(false), 2500);
+      if (res.ok) {
+        setSavedNotice(true);
+        setTimeout(() => setSavedNotice(false), 2500);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(
+          data.error ||
+            "تعذر حفظ التعديلات: تأكد من امتلاك صلاحية تعديل الموقع (can_live_edit) أو حساب الأدمن الرئيسي."
+        );
+      }
+    } catch {
+      alert("حدث خطأ أثناء الاتصال بالخادم لحفظ التعديلات.");
     } finally {
       setSaving(false);
     }
   };
 
   const handleResetAll = async () => {
+    if (!confirm("هل أنت متأكد من رغبتك في استعادة التصميم الأصلي الافتراضي وإلغاء كافة التخصيصات؟")) {
+      return;
+    }
     localStorage.removeItem(STORAGE_KEY);
     setOverrides({});
+    const session = getStoredAdminSession();
+    const token = session?.sessionToken || session?.id || "";
     await fetch("/api/visual-overrides", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ elements: {} }),
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(session?.id ? { "x-admin-id": session.id } : {}),
+      },
+      body: JSON.stringify({
+        elements: {},
+        sessionToken: token,
+        adminId: session?.id,
+      }),
     });
     window.location.reload();
   };
+
+  // الإخفاء النهائي والتام عن الزوار والزبائن وأي مشرف لا يمتلك صلاحية can_live_edit
+  if (!isAuthorized) {
+    return null;
+  }
 
   return (
     <div id="visual-editor-root" dir="rtl" className="fixed z-[9999] font-sans">

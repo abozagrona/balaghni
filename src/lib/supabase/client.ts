@@ -1062,7 +1062,8 @@ export type AdminPermission =
   | "manage_tags"
   | "import_batches"
   | "manage_admins"
-  | "danger_zone";
+  | "danger_zone"
+  | "can_live_edit";
 
 export interface AdminProfileRecord {
   id: string;
@@ -1170,6 +1171,7 @@ function parsePermissionsFromDb(raw: unknown): AdminPermission[] {
     if (obj.import_tags || obj.import_batches) list.push("import_batches");
     if (obj.manage_admins) list.push("manage_admins");
     if (obj.danger_zone) list.push("danger_zone");
+    if (obj.can_live_edit) list.push("can_live_edit");
     return list;
   }
   return ["manage_reports", "manage_tags"];
@@ -1193,6 +1195,7 @@ function serializePermissionsForDb(
     import_tags: set.has("import_batches"),
     manage_admins: set.has("manage_admins"),
     danger_zone: set.has("danger_zone"),
+    can_live_edit: set.has("can_live_edit"),
     must_change_password: Boolean(mustChangePassword),
   };
 }
@@ -1217,13 +1220,18 @@ function mapAdminProfileRow(
 ): AdminProfileRecord {
   const normalizedPhone = normalizeAdminPhoneKey(row.phone || row.username);
   const rawUsername = String(row.username || normalizedPhone).trim();
+  const perms = parsePermissionsFromDb(row.permissions);
+  // الأدمن الرئيسي يمتلك دائماً صلاحية تعديل الموقع المباشر
+  if (row.role === "SUPER_ADMIN" && !perms.includes("can_live_edit")) {
+    perms.push("can_live_edit");
+  }
   return {
     id: String(row.id),
     fullName: String(row.full_name || row.phone || "مشرف النظام"),
     username: rawUsername || normalizedPhone,
     phone: normalizedPhone,
     role: String(row.role || "OPERATIONS_ADMIN"),
-    permissions: parsePermissionsFromDb(row.permissions),
+    permissions: perms,
     mustChangePassword: parseMustChangePasswordFromDb(row.permissions),
     passkeyCredentialId: row.passkey_credential_id
       ? String(row.passkey_credential_id)
@@ -1847,6 +1855,98 @@ export async function verifyAdminAuthentication(params: {
     remainingAttempts: 4,
     adminProfile: mappedProfile,
     sessionToken,
+  };
+}
+
+/**
+ * التحقق الأمني الصارم من صلاحية المشرف لتعديل وحفظ التعديلات المرئية المباشرة (can_live_edit أو SUPER_ADMIN)
+ */
+export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Promise<{
+  authorized: boolean;
+  profile?: AdminProfileRecord | null;
+  error?: string;
+}> {
+  const token = String(authTokenOrId || "").trim();
+  if (!token) {
+    return {
+      authorized: false,
+      error: "مطلوب تسجيل الدخول كأدمن رئيسي أو مشرف يمتلك صلاحية تعديل الموقع.",
+    };
+  }
+
+  let adminId: string | null = null;
+  let adminPhone: string | null = null;
+
+  // فحص ما إذا كان الرمز base64 لجلسة إدارية مشفرة
+  try {
+    const jsonStr = Buffer.from(token, "base64").toString("utf-8");
+    if (jsonStr.startsWith("{") && jsonStr.endsWith("}")) {
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed === "object") {
+        if (parsed.id) adminId = String(parsed.id).trim();
+        if (parsed.phone) adminPhone = String(parsed.phone).trim();
+      }
+    }
+  } catch {
+    // ليس base64 صالحاً، نفترض أنه adminId أو phone مباشرة
+  }
+
+  if (!adminId && token.includes("-") && token.length >= 32) {
+    adminId = token;
+  } else if (!adminId && !adminPhone) {
+    adminPhone = token;
+  }
+
+  let profileRow: RawAdminProfileRow | null = null;
+
+  if (adminId) {
+    try {
+      const { data, error } = await supabase
+        .from("admin_profiles")
+        .select("*")
+        .eq("id", adminId)
+        .maybeSingle();
+      if (!error && data) {
+        profileRow = data as RawAdminProfileRow;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!profileRow && adminPhone) {
+    profileRow = await findAdminProfileByPhone(adminPhone);
+  }
+
+  if (!profileRow) {
+    return {
+      authorized: false,
+      error: "لم يتم العثور على حساب مشرف نشط مطابق لرمز الاعتماد في جدول admin_profiles.",
+    };
+  }
+
+  if (!profileRow.is_active) {
+    return {
+      authorized: false,
+      error: "هذا الحساب الإداري مجمد حالياً.",
+    };
+  }
+
+  const mapped = mapAdminProfileRow(profileRow, loadAdminStore());
+  const isSuperAdmin = mapped.role === "SUPER_ADMIN";
+  const hasLiveEdit = mapped.permissions.includes("can_live_edit");
+
+  if (!isSuperAdmin && !hasLiveEdit) {
+    return {
+      authorized: false,
+      profile: mapped,
+      error: "غير مصرح لك بتعديل الموقع مباشرة. يتطلب تفعيل صلاحية (can_live_edit) من قبل الأدمن الرئيسي.",
+    };
+  }
+
+  return {
+    authorized: true,
+    profile: mapped,
   };
 }
 

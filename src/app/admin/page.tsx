@@ -45,7 +45,8 @@ type AdminPermission =
   | "manage_tags"
   | "import_batches"
   | "manage_admins"
-  | "danger_zone";
+  | "danger_zone"
+  | "can_live_edit";
 
 interface AdminProfileSession {
   id: string;
@@ -105,6 +106,7 @@ const PERMISSION_LABELS: Record<AdminPermission, string> = {
   import_batches: "استيراد الدفعات",
   manage_admins: "إدارة المشرفين",
   danger_zone: "العمليات الخطرة",
+  can_live_edit: "السماح بتعديل الموقع المباشر (can_live_edit)",
 };
 
 const ALL_PERMISSIONS: AdminPermission[] = [
@@ -113,6 +115,7 @@ const ALL_PERMISSIONS: AdminPermission[] = [
   "import_batches",
   "manage_admins",
   "danger_zone",
+  "can_live_edit",
 ];
 
 const ADMIN_SESSION_STORAGE_KEY = "balaghni_enterprise_admin_session";
@@ -283,7 +286,9 @@ export default function ExecutiveAdminDashboardPage() {
 
   React.useEffect(() => {
     try {
-      const raw = window.sessionStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+      const raw =
+        window.sessionStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ||
+        window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as AdminProfileSession;
         if (parsed && parsed.id && parsed.username) {
@@ -340,6 +345,10 @@ export default function ExecutiveAdminDashboardPage() {
     setAdminSession(sessionObj);
     try {
       window.sessionStorage.setItem(
+        ADMIN_SESSION_STORAGE_KEY,
+        JSON.stringify(sessionObj)
+      );
+      window.localStorage.setItem(
         ADMIN_SESSION_STORAGE_KEY,
         JSON.stringify(sessionObj)
       );
@@ -657,6 +666,7 @@ export default function ExecutiveAdminDashboardPage() {
   const handleAdminLogout = () => {
     try {
       window.sessionStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
       document.cookie =
         "balaghni_admin_session=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;";
     } catch {
@@ -2230,15 +2240,7 @@ export default function ExecutiveAdminDashboardPage() {
                   الصلاحيات الممنوحة:
                 </span>
                 <div className="grid grid-cols-2 gap-2">
-                  {(
-                    [
-                      "manage_reports",
-                      "manage_tags",
-                      "import_batches",
-                      "manage_admins",
-                      "danger_zone",
-                    ] as const
-                  ).map((perm) => {
+                  {ALL_PERMISSIONS.map((perm) => {
                     const checked = newMemberPerms.includes(perm);
                     return (
                       <button
