@@ -36,3 +36,5 @@ seed_supabase.sql
 batch_output/
 src/data/local-tags-store.json
 src/data/local-admin-store.json
+src/data/local-otp-store.json
+

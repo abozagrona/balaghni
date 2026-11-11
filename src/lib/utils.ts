@@ -53,6 +53,30 @@ export function formatFullLibyaE164(localDigits: string): string | null {
 }
 
 /**
+ * تنسيق الرقم الليبي تلقائياً (091, 092, 093, 094, 095) إلى الصيغة الدولية الموحدة لخدمات OTP:
+ * 2189XXXXXXXX (12 رقماً دون أي إشارات أو مسافات)
+ */
+export function formatLibyaPhoneForOtp(rawPhone: string): string | null {
+  const normalized = normalizeLibyaPhoneDigits(rawPhone);
+  if (!/^9[1-5]\d{7}$/.test(normalized)) {
+    return null;
+  }
+  return `218${normalized}`;
+}
+
+/**
+ * تنسيق أنيق لعرض الرقم الليبي للمستخدم:
+ * مثال: "218912345678" -> "+218 91 234 5678"
+ */
+export function formatLibyaPhoneDisplay(phoneOrDigits: string): string {
+  const digits = normalizeLibyaPhoneDigits(phoneOrDigits);
+  if (digits.length === 9) {
+    return `+218 ${digits.slice(0, 2)} ${digits.slice(2, 5)} ${digits.slice(5)}`;
+  }
+  return phoneOrDigits;
+}
+
+/**
  * تحويل ArrayBuffer (مثل credential.rawId في WebAuthn) إلى Base64URL string
  */
 export function arrayBufferToBase64Url(buffer: ArrayBuffer): string {

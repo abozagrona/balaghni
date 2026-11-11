@@ -18,11 +18,13 @@ import {
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
+import { SmartOtpModal } from "@/components/auth/smart-otp-modal";
 import {
   arrayBufferToBase64Url,
   base64UrlToUint8Array,
   formatFullLibyaE164,
   normalizeLibyaPhoneDigits,
+  formatLibyaPhoneDisplay,
 } from "@/lib/utils";
 
 export default function OwnerLoginPage() {
@@ -34,8 +36,11 @@ export default function OwnerLoginPage() {
   const [pinLoading, setPinLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // حالة النافذة المنبثقة لاسترداد الحساب عبر كود بطاقة الأمان الرقمي
+  // حالة النافذة المنبثقة لاسترداد الحساب عبر رمز التحقق الذكي OTP أو كود بطاقة الأمان
   const [resetModalOpen, setResetModalOpen] = React.useState(false);
+  const [resetMethod, setResetMethod] = React.useState<"otp" | "recovery_key">("otp");
+  const [resetOtpModalOpen, setResetOtpModalOpen] = React.useState(false);
+  const [otpVerifiedPhone, setOtpVerifiedPhone] = React.useState<string | null>(null);
   const [resetPhone, setResetPhone] = React.useState("");
   const [recoveryKeyInput, setRecoveryKeyInput] = React.useState("");
   const [newPin, setNewPin] = React.useState("");
@@ -238,16 +243,58 @@ export default function OwnerLoginPage() {
       return;
     }
 
-    const cleanedKey = recoveryKeyInput.trim().toUpperCase();
-    if (!/^BK-[A-Z0-9]{4}-[A-Z0-9]{4}(-[A-Z0-9]{4})?$/.test(cleanedKey)) {
-      setResetError(
-        "صيغة كود بطاقة الأمان غير صحيحة (مثال: BK-8492-X7M1)."
-      );
+    if (newPin.length !== 6) {
+      setResetError("يرجى اختيار رمز مرور جديد مكون من 6 أرقام.");
       return;
     }
 
-    if (newPin.length !== 6) {
-      setResetError("يرجى اختيار رمز مرور جديد مكون من 6 أرقام.");
+    // 1. المسار الذكي: الاسترداد بعد التحقق برمز OTP
+    if (resetMethod === "otp") {
+      if (!otpVerifiedPhone) {
+        setResetError("يرجى تأكيد ملكية رقم الهاتف عبر رمز التحقق (واتساب / SMS) أولاً.");
+        return;
+      }
+
+      setResetLoading(true);
+      try {
+        const res = await fetch("/api/auth/reset-pin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerPhone: fullPhone,
+            newPin,
+            otpVerified: true,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          setResetError(data.error || "تعذر إعادة تعيين رمز الدخول.");
+          setResetLoading(false);
+          return;
+        }
+
+        setResetLoading(false);
+        setResetSuccess(true);
+        setPhoneDigits(resetPhone);
+        setPin(newPin);
+
+        setTimeout(() => {
+          setResetModalOpen(false);
+          setResetSuccess(false);
+          setOtpVerifiedPhone(null);
+        }, 1500);
+      } catch {
+        setResetError("تعذر الاتصال بقاعدة البيانات.");
+        setResetLoading(false);
+      }
+      return;
+    }
+
+    // 2. المسار الكلاسيكي: الاسترداد بكود بطاقة الأمان (Recovery Key)
+    const cleanedKey = recoveryKeyInput.trim().toUpperCase();
+    if (!/^BK-[A-Z0-9]{4}-[A-Z0-9]{4}(-[A-Z0-9]{4})?$/.test(cleanedKey)) {
+      setResetError("صيغة كود بطاقة الأمان غير صحيحة (مثال: BK-8492-X7M1).");
       return;
     }
 
@@ -525,19 +572,46 @@ export default function OwnerLoginPage() {
               إعادة تعيين رمز الدخول
             </h2>
             <p className="mt-1 text-xs leading-relaxed text-white/65">
-              أدخل رقم هاتفك الليبي وكود بطاقة الأمان الرقمي (
-              <span dir="ltr" className="font-mono text-white/90">
-                BK-XXXX-XXXX
-              </span>
-              ) لمطابقة التجزئة المشفرة وتعيين رمز جديد:
+              اختر طريقة الاسترداد المفضلة لإعادة تعيين رمز الدخول لسيارتك:
             </p>
+
+            {/* أزرار التبديل بين الاسترداد بالـ OTP أو كود بطاقة الأمان */}
+            <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-white/5 p-1 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => {
+                  setResetMethod("otp");
+                  setResetError(null);
+                }}
+                className={`rounded-xl py-2 transition ${
+                  resetMethod === "otp"
+                    ? "bg-primary text-white shadow"
+                    : "text-white/60 hover:text-white"
+                }`}
+              >
+                رمز التحقق (واتساب / SMS)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setResetMethod("recovery_key");
+                  setResetError(null);
+                }}
+                className={`rounded-xl py-2 transition ${
+                  resetMethod === "recovery_key"
+                    ? "bg-primary text-white shadow"
+                    : "text-white/60 hover:text-white"
+                }`}
+              >
+                كود بطاقة الأمان
+              </button>
+            </div>
 
             {resetSuccess ? (
               <div className="mt-5 rounded-2xl border border-emerald-500/30 bg-emerald-500/15 p-5 text-center">
                 <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-400" />
                 <p className="mt-2 text-sm font-bold text-white">
-                  تمت مطابقة كود الطوارئ وتحديث رمز المرور في قاعدة البيانات
-                  بنجاح!
+                  تمت مطابقة البيانات وتحديث رمز المرور في قاعدة البيانات بنجاح!
                 </p>
               </div>
             ) : (
@@ -557,50 +631,94 @@ export default function OwnerLoginPage() {
                       type="tel"
                       inputMode="numeric"
                       value={resetPhone}
-                      onChange={(e) =>
-                        setResetPhone(normalizeLibyaPhoneDigits(e.target.value))
-                      }
+                      onChange={(e) => {
+                        setResetPhone(normalizeLibyaPhoneDigits(e.target.value));
+                        setOtpVerifiedPhone(null);
+                      }}
                       placeholder="91 234 5678"
                       className="h-full w-full bg-transparent px-3 font-mono text-sm font-bold text-white focus:outline-none"
                     />
                   </div>
                 </div>
 
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold text-white/85">
-                    كود بطاقة الأمان الرقمي (Recovery Key)
-                  </label>
-                  <input
-                    type="text"
-                    dir="ltr"
-                    required
-                    value={recoveryKeyInput}
-                    onChange={(e) =>
-                      setRecoveryKeyInput(e.target.value.toUpperCase())
-                    }
-                    placeholder="BK-8492-X7M1"
-                    className="h-11 w-full rounded-xl border border-white/15 bg-[#0B0D13] px-3 text-center font-mono text-sm font-black tracking-wider text-white focus:border-primary focus:outline-none"
-                  />
-                </div>
+                {/* خيار 1: التحقق عبر رمز OTP الذكي */}
+                {resetMethod === "otp" && (
+                  <div>
+                    {!otpVerifiedPhone ? (
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          if (!resetPhone || resetPhone.length < 9) {
+                            setResetError("يرجى إدخال رقم الهاتف المكون من 9 أرقام أولاً.");
+                            return;
+                          }
+                          setResetError(null);
+                          setResetOtpModalOpen(true);
+                        }}
+                        className="w-full h-11 rounded-xl bg-gradient-to-r from-[#25D366]/30 via-primary/30 to-primary text-xs font-bold text-white shadow hover:scale-[1.01]"
+                      >
+                        <ShieldCheck className="h-4 w-4" />
+                        <span>إرسال رمز التحقق (واتساب أولاً أو SMS)</span>
+                      </Button>
+                    ) : (
+                      <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs font-bold text-emerald-300">
+                        <span className="flex items-center gap-1.5">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                          <span>تم تأكيد ملكية الرقم: {formatLibyaPhoneDisplay(otpVerifiedPhone)}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setOtpVerifiedPhone(null)}
+                          className="text-[11px] underline text-white/60 hover:text-white"
+                        >
+                          تغيير
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold text-white/85">
-                    رمز المرور الجديد (6 أرقام)
-                  </label>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    dir="ltr"
-                    maxLength={6}
-                    required
-                    value={newPin}
-                    onChange={(e) =>
-                      setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))
-                    }
-                    placeholder="••••••"
-                    className="h-11 w-full rounded-xl border border-white/15 bg-[#0B0D13] px-3 text-center font-mono text-lg font-black tracking-[0.35em] text-white focus:border-primary focus:outline-none"
-                  />
-                </div>
+                {/* خيار 2: التحقق بكود بطاقة الأمان */}
+                {resetMethod === "recovery_key" && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-bold text-white/85">
+                      كود بطاقة الأمان الرقمي (Recovery Key)
+                    </label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      required
+                      value={recoveryKeyInput}
+                      onChange={(e) =>
+                        setRecoveryKeyInput(e.target.value.toUpperCase())
+                      }
+                      placeholder="BK-8492-X7M1"
+                      className="h-11 w-full rounded-xl border border-white/15 bg-[#0B0D13] px-3 text-center font-mono text-sm font-black tracking-wider text-white focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                )}
+
+                {/* حقل رمز المرور الجديد */}
+                {(resetMethod === "recovery_key" || Boolean(otpVerifiedPhone)) && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-bold text-white/85">
+                      رمز المرور الجديد (PIN من 6 أرقام)
+                    </label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      dir="ltr"
+                      maxLength={6}
+                      required
+                      value={newPin}
+                      onChange={(e) =>
+                        setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))
+                      }
+                      placeholder="••••••"
+                      className="h-11 w-full rounded-xl border border-white/15 bg-[#0B0D13] px-3 text-center font-mono text-lg font-black tracking-[0.35em] text-white focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                )}
 
                 {resetError && (
                   <p className="rounded-xl border border-[#E51926] bg-[#E51926]/20 p-2.5 text-xs font-bold text-[#FF6B72]">
@@ -608,26 +726,43 @@ export default function OwnerLoginPage() {
                   </p>
                 )}
 
-                <Button
-                  type="submit"
-                  size="lg"
-                  disabled={resetLoading}
-                  className="w-full rounded-xl"
-                >
-                  {resetLoading ? (
-                    <>
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                      <span>جاري المطابقة والتحديث...</span>
-                    </>
-                  ) : (
-                    <span>تحديث رمز الدخول الآن</span>
-                  )}
-                </Button>
+                {(resetMethod === "recovery_key" || Boolean(otpVerifiedPhone)) && (
+                  <Button
+                    type="submit"
+                    size="lg"
+                    disabled={resetLoading || newPin.length !== 6}
+                    className="w-full rounded-xl"
+                  >
+                    {resetLoading ? (
+                      <>
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                        <span>جاري حفظ وتحديث رمز المرور...</span>
+                      </>
+                    ) : (
+                      <span>حفظ رمز الدخول الجديد</span>
+                    )}
+                  </Button>
+                )}
               </form>
             )}
           </div>
         </div>
       )}
+
+      {/* نافذة التحقق الذكي عبر واتساب ورسائل SMS */}
+      <SmartOtpModal
+        isOpen={resetOtpModalOpen}
+        phone={resetPhone}
+        onClose={() => setResetOtpModalOpen(false)}
+        onVerified={(verified) => {
+          setOtpVerifiedPhone(verified);
+          setResetOtpModalOpen(false);
+          setResetError(null);
+        }}
+        title="تأكيد رقم الهاتف لاسترداد الحساب"
+        subtitle="سنرسل رمز التحقق أولاً إلى واتساب، مع التحويل لرسالة SMS فوراً إن تعذر ذلك"
+      />
     </div>
   );
 }
+

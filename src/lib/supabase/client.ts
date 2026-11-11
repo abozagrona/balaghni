@@ -570,6 +570,74 @@ export async function resetOwnerPinByRecoveryKey(params: {
 }
 
 /**
+ * إعادة تعيين رمز الدخول (PIN) لمالك السيارة بعد التحقق الناجح عبر رمز OTP (واتساب / SMS)
+ */
+export async function resetOwnerPinByOtp(params: {
+  ownerPhone: string;
+  newPin: string;
+}): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
+  const normalizedPhone = params.ownerPhone.trim();
+  const newPinHash = hashSha256(params.newPin.trim());
+
+  let candidateRows: StoredTagRow[] = [];
+  try {
+    const { data, error } = await supabase
+      .from("tags")
+      .select("*")
+      .eq("owner_phone", normalizedPhone);
+
+    if (!error && Array.isArray(data) && data.length > 0) {
+      candidateRows = data as StoredTagRow[];
+    }
+  } catch {
+    // ignore
+  }
+
+  const localMap = loadSyncedStore();
+  for (const row of Object.values(localMap)) {
+    if (
+      row.owner_phone === normalizedPhone &&
+      !candidateRows.some((r) => r.tag_code === row.tag_code)
+    ) {
+      candidateRows.push(row);
+    } else if (row.owner_phone === normalizedPhone) {
+      candidateRows = candidateRows.map((r) =>
+        r.tag_code === row.tag_code ? { ...r, ...row } : r
+      );
+    }
+  }
+
+  if (candidateRows.length === 0) {
+    return {
+      ok: false,
+      error: "لم يتم العثور على أي سيارة أو ملصق مسجل بهذا الرقم في النظام.",
+    };
+  }
+
+  const targetRow = candidateRows[0];
+
+  try {
+    await supabase
+      .from("tags")
+      .update({ owner_pin_hash: newPinHash })
+      .eq("tag_code", targetRow.tag_code);
+  } catch {
+    // ignore
+  }
+
+  const updatedRow: StoredTagRow = {
+    ...targetRow,
+    owner_pin_hash: newPinHash,
+  };
+  saveToSyncedStore(updatedRow);
+
+  return {
+    ok: true,
+    record: mapRowToRecord(updatedRow),
+  };
+}
+
+/**
  * جلب passkey_credential_id المسجل لرقم الهاتف من جدول tags
  */
 export async function getPasskeyCredentialByPhone(ownerPhone: string): Promise<{
