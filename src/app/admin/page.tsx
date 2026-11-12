@@ -1078,24 +1078,60 @@ export default function ExecutiveAdminDashboardPage() {
       } else {
         const lines = content
           .split(/\r?\n/)
-          .map((l) => l.trim())
+          .map((l) => l.trim().replace(/^\uFEFF/, ""))
           .filter(Boolean);
-        for (const line of lines) {
-          if (line.toLowerCase().startsWith("qr_url")) continue;
-          const cols = line
-            .split(",")
-            .map((c) => c.replace(/^"|"$/g, "").trim());
-          if (cols.length >= 3) {
-            parsedItems.push({
-              tagCode: formatBalaghniTagCode(cols[1]),
-              scratchPin: cols[2],
-            });
-          } else if (cols.length === 2) {
-            parsedItems.push({
-              tagCode: formatBalaghniTagCode(cols[0]),
-              scratchPin: cols[1].length < 32 ? cols[1] : undefined,
-              activationPinHash: cols[1].length === 64 ? cols[1] : undefined,
-            });
+
+        if (lines.length > 0) {
+          const firstLine = lines[0].toLowerCase();
+          const isHeader =
+            firstLine.includes("code") ||
+            firstLine.includes("qr_url") ||
+            firstLine.includes("كود") ||
+            firstLine.includes("tag");
+
+          const dataLines = isHeader ? lines.slice(1) : lines;
+
+          for (const line of dataLines) {
+            const cols = line
+              .split(",")
+              .map((c) => c.replace(/^"|"$/g, "").trim());
+            if (cols.length === 0 || !cols.some(Boolean)) continue;
+
+            let tagCode = "";
+            let scratchPin: string | undefined = undefined;
+            let batchName: string | undefined = undefined;
+            let status: string | undefined = undefined;
+
+            // الحالة الأولى: code, qr_url, batch_name, status
+            if (cols[0] && cols[0].toUpperCase().startsWith("LY-")) {
+              tagCode = cols[0];
+              if (cols[2] && !cols[2].toUpperCase().startsWith("LOCKED") && !cols[2].toUpperCase().startsWith("ACTIVE")) {
+                batchName = cols[2];
+              }
+              if (cols[3]) {
+                status = cols[3].toUpperCase();
+              }
+              if (cols[4] && /^\d{4,8}$/.test(cols[4])) {
+                scratchPin = cols[4];
+              }
+            }
+            // الحالة الثانية: qr_url, tag_code, scratch_pin
+            else if (cols[1] && cols[1].toUpperCase().startsWith("LY-")) {
+              tagCode = cols[1];
+              if (cols[2]) scratchPin = cols[2];
+            }
+            // الحالة العامة: البحث عن أي عمود يحتوي كود LY-XXXX-XXXX
+            else {
+              const matched = cols.find((c) => /^LY-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(c));
+              if (matched) tagCode = matched;
+            }
+
+            if (tagCode) {
+              parsedItems.push({
+                tagCode: formatBalaghniTagCode(tagCode),
+                scratchPin,
+              });
+            }
           }
         }
       }
@@ -2264,7 +2300,7 @@ export default function ExecutiveAdminDashboardPage() {
                     : "اضغط لاختيار ملف الدفعة (CSV أو JSON)"}
                 </span>
                 <span className="mt-1 text-xs text-white/55">
-                  يدعم صيغة: qr_url,tag_code,scratch_pin
+                  يدعم صيغة: code, qr_url, batch_name, status (أو qr_url, tag_code, scratch_pin)
                 </span>
                 <input
                   type="file"

@@ -2800,6 +2800,8 @@ export async function adminImportPrintedTags(params: {
     tagCode: string;
     scratchPin?: string;
     activationPinHash?: string;
+    batchName?: string;
+    status?: string;
   }>;
 }): Promise<{ ok: boolean; importedCount: number; error?: string }> {
   let importedCount = 0;
@@ -2810,18 +2812,18 @@ export async function adminImportPrintedTags(params: {
       .toUpperCase();
     if (!code || !code.startsWith("LY-")) continue;
 
+    const pin =
+      rawItem.scratchPin || String(crypto.randomInt(100000, 1000000));
     const pinHash = rawItem.activationPinHash
       ? rawItem.activationPinHash.trim().toLowerCase()
-      : rawItem.scratchPin
-      ? hashSha256(rawItem.scratchPin.trim())
-      : "";
+      : hashSha256(pin.trim());
 
     if (!pinHash || pinHash.length !== 64) continue;
 
     const newRow: StoredTagRow = {
       tag_code: code,
       activation_pin_hash: pinHash,
-      status: "LOCKED",
+      status: (rawItem.status === "ACTIVE" ? "ACTIVE" : "LOCKED") as TagStatus,
       tier: "premium",
       alert_channel: "BOTH",
       has_emergency_contacts: false,
