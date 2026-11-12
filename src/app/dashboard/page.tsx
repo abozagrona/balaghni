@@ -30,6 +30,7 @@ import { SiteHeader } from "@/components/layout/site-header";
 import { SiteFooter } from "@/components/layout/site-footer";
 import { Button } from "@/components/ui/button";
 import { cn, formatBalaghniTagCode } from "@/lib/utils";
+import { clearOwnerSession } from "@/lib/auth-session";
 
 interface TagRecordData {
   tagCode: string;
@@ -156,16 +157,8 @@ function DashboardContent() {
   const [savingMaintenance, setSavingMaintenance] = React.useState(false);
 
   const handleLogout = React.useCallback(() => {
-    try {
-      localStorage.removeItem("balaghni_user");
-      localStorage.removeItem("balaghni_owner_active_tag");
-      sessionStorage.clear();
-      document.cookie =
-        "balaghni_session=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;";
-    } catch {
-      // ignore storage errors
-    }
-    window.location.href = "/login";
+    clearOwnerSession();
+    window.location.href = "/";
   }, []);
 
   // جلب بيانات الملصق، الوثائق، البلاغات، والصيانة الحقيقية من Supabase فقط

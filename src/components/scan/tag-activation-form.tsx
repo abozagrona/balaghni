@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
 import { SmartOtpModal } from "@/components/auth/smart-otp-modal";
 import { formatFullLibyaE164 } from "@/lib/utils";
+import { saveOwnerSession } from "@/lib/auth-session";
 
 const LIBYA_CITIES = [
   "طرابلس",
@@ -114,20 +115,13 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
       }
 
       // حفظ بيانات التفعيل الأولي والانتقال الفوري إلى صفحة تأمين الحساب المستقلة (/activate/security)
-      try {
-        window.localStorage.setItem(
-          "balaghni_owner_active_tag",
-          JSON.stringify({
-            tagCode,
-            vehicleInfo: vehicleInfo.trim(),
-            city,
-            ownerPhone: phoneToUse,
-            activatedAt: new Date().toISOString(),
-          })
-        );
-      } catch {
-        // ignore storage errors
-      }
+      saveOwnerSession({
+        tagCode,
+        vehicleInfo: vehicleInfo.trim(),
+        city,
+        ownerPhone: phoneToUse,
+        activatedAt: new Date().toISOString(),
+      });
 
       router.push(`/activate/security?tag=${encodeURIComponent(tagCode)}`);
     } catch {

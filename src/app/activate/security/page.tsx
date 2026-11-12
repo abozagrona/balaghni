@@ -20,6 +20,7 @@ import {
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
 import { arrayBufferToBase64Url, formatBalaghniTagCode } from "@/lib/utils";
+import { saveOwnerSession } from "@/lib/auth-session";
 
 function generateRecoveryKeyShort(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -272,28 +273,14 @@ function SecuritySetupContent() {
         return;
       }
 
-      // حفظ جلسة المالك المحلية للانتقال السلس للوحة التحكم
-      try {
-        const savedRaw = window.localStorage.getItem(
-          "balaghni_owner_active_tag"
-        );
-        const existing = savedRaw ? JSON.parse(savedRaw) : {};
-        window.localStorage.setItem(
-          "balaghni_owner_active_tag",
-          JSON.stringify({
-            ...existing,
-            tagCode,
-            vehicleInfo: data.tag?.vehicleInfo || vehicleInfo,
-            city: data.tag?.city || city,
-            ownerPhone: data.tag?.ownerPhone || ownerPhone,
-            recoveryKey,
-            hasSecuritySetup: true,
-            passkeyEnabled: Boolean(passkeyCredentialId),
-          })
-        );
-      } catch {
-        // ignore storage errors
-      }
+      // حفظ جلسة المالك المحلية ومزامنتها للانتقال السلس للوحة التحكم
+      saveOwnerSession({
+        tagCode,
+        vehicleInfo: data.tag?.vehicleInfo || vehicleInfo,
+        city: data.tag?.city || city,
+        ownerPhone: data.tag?.ownerPhone || ownerPhone,
+        activatedAt: new Date().toISOString(),
+      });
 
       router.push(`/dashboard?tag=${encodeURIComponent(tagCode)}`);
     } catch {

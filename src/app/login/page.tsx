@@ -23,6 +23,7 @@ import {
   formatFullLibyaE164,
   normalizeLibyaPhoneDigits,
 } from "@/lib/utils";
+import { saveOwnerSession } from "@/lib/auth-session";
 
 export default function OwnerLoginPage() {
   const router = useRouter();
@@ -106,22 +107,15 @@ export default function OwnerLoginPage() {
       }
 
       // حفظ بيانات الجلسة النشطة وتحويل الزبون إلى لوحة التحكم فوراً
-      try {
-        window.localStorage.setItem(
-          "balaghni_owner_active_tag",
-          JSON.stringify({
-            tagCode: data.tag.tagCode,
-            vehicleInfo:
-              data.tag.vehicleInfo ||
-              `${data.tag.vehicleBrand || ""} ${data.tag.vehicleModel || ""}`.trim(),
-            city: data.tag.city || "طرابلس",
-            ownerPhone: verifiedPhone,
-            activatedAt: data.tag.activatedAt,
-          })
-        );
-      } catch {
-        // ignore storage errors
-      }
+      saveOwnerSession({
+        tagCode: data.tag.tagCode,
+        vehicleInfo:
+          data.tag.vehicleInfo ||
+          `${data.tag.vehicleBrand || ""} ${data.tag.vehicleModel || ""}`.trim(),
+        city: data.tag.city || "طرابلس",
+        ownerPhone: verifiedPhone,
+        activatedAt: data.tag.activatedAt,
+      });
 
       setOtpModalOpen(false);
       router.push(`/dashboard?tag=${encodeURIComponent(data.tag.tagCode)}`);
@@ -220,22 +214,15 @@ export default function OwnerLoginPage() {
         return;
       }
 
-      try {
-        window.localStorage.setItem(
-          "balaghni_owner_active_tag",
-          JSON.stringify({
-            tagCode: data.tag.tagCode,
-            vehicleInfo:
-              data.tag.vehicleInfo ||
-              `${data.tag.vehicleBrand || ""} ${data.tag.vehicleModel || ""}`.trim(),
-            city: data.tag.city || "طرابلس",
-            ownerPhone: data.tag.ownerPhone || "",
-            activatedAt: data.tag.activatedAt,
-          })
-        );
-      } catch {
-        // ignore storage errors
-      }
+      saveOwnerSession({
+        tagCode: data.tag.tagCode,
+        vehicleInfo:
+          data.tag.vehicleInfo ||
+          `${data.tag.vehicleBrand || ""} ${data.tag.vehicleModel || ""}`.trim(),
+        city: data.tag.city || "طرابلس",
+        ownerPhone: data.tag.ownerPhone || "",
+        activatedAt: data.tag.activatedAt,
+      });
 
       router.push(`/dashboard?tag=${encodeURIComponent(data.tag.tagCode)}`);
     } catch {
