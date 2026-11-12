@@ -5,22 +5,23 @@ import { formatLibyaPhoneForOtp } from "@/lib/utils";
 // ============================================================================
 // الإعدادات وبيانات الاعتماد (Credentials & Endpoints)
 // ============================================================================
-export const GREEN_API_URL =
-  process.env.GREEN_API_URL || "https://7107.api.greenapi.com";
+export const GREEN_API_URL = (
+  process.env.GREEN_API_URL?.trim() || "https://7107.api.greenapi.com"
+).replace(/\/+$/, "");
 export const GREEN_API_INSTANCE =
-  process.env.GREEN_API_INSTANCE_ID ||
-  process.env.GREEN_API_INSTANCE ||
+  process.env.GREEN_API_INSTANCE_ID?.trim() ||
+  process.env.GREEN_API_INSTANCE?.trim() ||
   "";
 export const GREEN_API_TOKEN =
-  process.env.GREEN_API_TOKEN ||
-  process.env.GREEN_API_API_TOKEN ||
-  process.env.GREEN_API_KEY ||
+  process.env.GREEN_API_TOKEN?.trim() ||
+  process.env.GREEN_API_API_TOKEN?.trim() ||
+  process.env.GREEN_API_KEY?.trim() ||
   "";
 export const RESALA_API_KEY =
-  process.env.RESALA_API_KEY ||
+  process.env.RESALA_API_KEY?.trim() ||
   "";
 export const RESALA_ENDPOINT =
-  process.env.RESALA_ENDPOINT || "https://dev.resala.ly/api/v1/pins";
+  process.env.RESALA_ENDPOINT?.trim() || "https://dev.resala.ly/api/v1/pins";
 
 export const OTP_VALIDITY_MS = 5 * 60 * 1000; // صلاحية 5 دقائق
 export const OTP_MAX_ATTEMPTS = 5;
@@ -231,6 +232,17 @@ export async function sendOtpViaWhatsapp(
 export async function sendOtpViaResala(
   phone: string
 ): Promise<{ ok: boolean; pin?: string; id?: string; error?: string }> {
+  if (!RESALA_API_KEY) {
+    console.warn(
+      "[sendOtpViaResala] المتغير RESALA_API_KEY مفقود أو فارغ في إعدادات البيئة (Vercel)."
+    );
+    return {
+      ok: false,
+      error:
+        "[sendOtpViaResala] تعذر إرسال SMS: مفتاح منصة رسالة (RESALA_API_KEY) غير مضاف في إعدادات Vercel.",
+    };
+  }
+
   try {
     const url = `${RESALA_ENDPOINT}?service_name=Balaghni&len=6`;
     const controller = new AbortController();
@@ -257,17 +269,33 @@ export async function sendOtpViaResala(
       };
     }
 
+    const rawMsg = String(data?.message || data?.error || "").trim();
+    if (
+      res.status === 401 ||
+      res.status === 403 ||
+      rawMsg.toLowerCase().includes("jwt")
+    ) {
+      console.warn(
+        `[sendOtpViaResala] Resala API rejected RESALA_API_KEY (${res.status}): ${rawMsg}`
+      );
+      return {
+        ok: false,
+        error: `[sendOtpViaResala / Resala API] تعذر إرسال SMS: مفتاح منصة رسالة (RESALA_API_KEY) في Vercel غير صالح أو ناقص (${rawMsg || res.status}).`,
+      };
+    }
+
     return {
       ok: false,
-      error:
-        data?.message ||
-        data?.error ||
-        `فشل الإرسال عبر منصة رسالة (رمز الحالة ${res.status})`,
+      error: `[sendOtpViaResala] ${
+        rawMsg || `فشل الإرسال عبر منصة رسالة (رمز الحالة ${res.status})`
+      }`,
     };
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: `[sendOtpViaResala] ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     };
   }
 }

@@ -97,8 +97,14 @@ export async function POST(req: NextRequest) {
       const result = await requestSmartOtp(rawPhone, preferredChannel);
 
       if (!result.ok) {
+        const errMsg = result.error || "تعذر إرسال رمز التحقق.";
         return NextResponse.json(
-          { ok: false, error: result.error || "تعذر إرسال رمز التحقق." },
+          {
+            ok: false,
+            error: errMsg.startsWith("[")
+              ? errMsg
+              : `[requestSmartOtp] ${errMsg}`,
+          },
           { status: 400 }
         );
       }
