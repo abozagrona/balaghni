@@ -5,16 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Fingerprint,
-  KeyRound,
-  LockKeyhole,
   ShieldCheck,
   MessageCircle,
   ArrowRight,
   LoaderCircle,
-  CheckCircle2,
   AlertCircle,
-  X,
   QrCode,
+  Send,
+  Sparkles,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
@@ -24,29 +22,19 @@ import {
   base64UrlToUint8Array,
   formatFullLibyaE164,
   normalizeLibyaPhoneDigits,
-  formatLibyaPhoneDisplay,
 } from "@/lib/utils";
 
 export default function OwnerLoginPage() {
   const router = useRouter();
 
   const [phoneDigits, setPhoneDigits] = React.useState("");
-  const [pin, setPin] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
   const [passkeyLoading, setPasskeyLoading] = React.useState(false);
-  const [pinLoading, setPinLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // حالة النافذة المنبثقة لاسترداد الحساب عبر رمز التحقق الذكي OTP أو كود بطاقة الأمان
-  const [resetModalOpen, setResetModalOpen] = React.useState(false);
-  const [resetMethod, setResetMethod] = React.useState<"otp" | "recovery_key">("otp");
-  const [resetOtpModalOpen, setResetOtpModalOpen] = React.useState(false);
-  const [otpVerifiedPhone, setOtpVerifiedPhone] = React.useState<string | null>(null);
-  const [resetPhone, setResetPhone] = React.useState("");
-  const [recoveryKeyInput, setRecoveryKeyInput] = React.useState("");
-  const [newPin, setNewPin] = React.useState("");
-  const [resetLoading, setResetLoading] = React.useState(false);
-  const [resetError, setResetError] = React.useState<string | null>(null);
-  const [resetSuccess, setResetSuccess] = React.useState(false);
+  // حالة نافذة التحقق الذكية (Smart OTP Modal)
+  const [otpModalOpen, setOtpModalOpen] = React.useState(false);
+  const [phoneForOtp, setPhoneForOtp] = React.useState("");
 
   // التحويل التلقائي من 127.0.0.1 إلى localhost (إلزامي لعمل WebAuthn وحساس البصمة)
   React.useEffect(() => {
@@ -55,14 +43,101 @@ export default function OwnerLoginPage() {
     }
   }, []);
 
-  // تفعيل الدخول الفوري بالبصمة الحيوية دون اشتراط إدخال رقم الهاتف (Zero-Typing Customer Passkey)
+  // 1. إرسال رمز الدخول السريع (Passwordless OTP Login)
+  const handleSendOtpLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (loading || passkeyLoading) return;
+    setError(null);
+
+    const fullPhone = formatFullLibyaE164(phoneDigits);
+    if (!fullPhone) {
+      setError("يرجى إدخال رقم هاتف ليبي صحيح (+218) يبدأ بـ 091, 092, 093, 094, 095.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // التحقق المسبق من وجود حساب مسجل بهذا الرقم في النظام
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerPhone: fullPhone,
+          checkOnly: true,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.exists) {
+        setError(
+          data.error ||
+            "رقم الهاتف هذا غير مرتبط بأي ملصق في النظام. هل قمت بتفعيل ملصقك الجديد؟"
+        );
+        setLoading(false);
+        return;
+      }
+
+      setLoading(false);
+      setPhoneForOtp(fullPhone);
+      setOtpModalOpen(true);
+    } catch {
+      setError("حدث خطأ أثناء الاتصال بالخادم، يرجى المحاولة لاحقاً.");
+      setLoading(false);
+    }
+  };
+
+  // 2. إتمام الدخول فور التحقق من رمز الـ OTP
+  const handleOtpVerified = async (verifiedPhone: string) => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerPhone: verifiedPhone,
+          otpVerified: true,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.tag) {
+        setError(data.error || "تعذر إتمام الدخول، يرجى المحاولة لاحقاً.");
+        setOtpModalOpen(false);
+        return;
+      }
+
+      // حفظ بيانات الجلسة النشطة وتحويل الزبون إلى لوحة التحكم فوراً
+      try {
+        window.localStorage.setItem(
+          "balaghni_owner_active_tag",
+          JSON.stringify({
+            tagCode: data.tag.tagCode,
+            vehicleInfo:
+              data.tag.vehicleInfo ||
+              `${data.tag.vehicleBrand || ""} ${data.tag.vehicleModel || ""}`.trim(),
+            city: data.tag.city || "طرابلس",
+            ownerPhone: verifiedPhone,
+            activatedAt: data.tag.activatedAt,
+          })
+        );
+      } catch {
+        // ignore storage errors
+      }
+
+      setOtpModalOpen(false);
+      router.push(`/dashboard?tag=${encodeURIComponent(data.tag.tagCode)}`);
+    } catch {
+      setError("حدث خطأ أثناء الاتصال بقاعدة البيانات.");
+      setOtpModalOpen(false);
+    }
+  };
+
+  // 3. الدخول الفوري بالبصمة الحيوية دون اشتراط رقم الهاتف (Zero-Typing Customer Passkey)
   const handlePasskeyLogin = async () => {
-    if (passkeyLoading || pinLoading) return;
+    if (passkeyLoading || loading) return;
     setError(null);
 
     setPasskeyLoading(true);
     try {
-      // 1. استعلام معرّفات البصمة المسجلة في جدول tags (بدون إرسال رقم هاتف)
       const lookupRes = await fetch("/api/auth/passkey");
       const lookupData = await lookupRes.json().catch(() => ({}));
 
@@ -75,7 +150,6 @@ export default function OwnerLoginPage() {
           ? [lookupData.passkeyCredentialId]
           : [];
 
-      // 2. التحقق من دعم المتصفح واستدعاء navigator.credentials.get
       if (
         typeof window === "undefined" ||
         !window.PublicKeyCredential ||
@@ -128,7 +202,6 @@ export default function OwnerLoginPage() {
 
       const verifiedCredId = arrayBufferToBase64Url(assertion.rawId);
 
-      // 3. التعرف التلقائي على حساب الزبون وملصق سيارته عبر معرف البصمة فقط
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -141,13 +214,12 @@ export default function OwnerLoginPage() {
       if (!res.ok || !data.ok || !data.tag) {
         setError(
           data.error ||
-            "لم يتم العثور على سيارة مرتبطة بهذه البصمة، يرجى الدخول برمز الـ PIN."
+            "لم يتم العثور على سيارة مرتبطة بهذه البصمة، يرجى الدخول برقم هاتفك."
         );
         setPasskeyLoading(false);
         return;
       }
 
-      // حفظ بيانات الجلسة النشطة وتحويل الزبون إلى لوحة التحكم فوراً
       try {
         window.localStorage.setItem(
           "balaghni_owner_active_tag",
@@ -155,7 +227,7 @@ export default function OwnerLoginPage() {
             tagCode: data.tag.tagCode,
             vehicleInfo:
               data.tag.vehicleInfo ||
-              `${data.tag.vehicleBrand} ${data.tag.vehicleModel}`.trim(),
+              `${data.tag.vehicleBrand || ""} ${data.tag.vehicleModel || ""}`.trim(),
             city: data.tag.city || "طرابلس",
             ownerPhone: data.tag.ownerPhone || "",
             activatedAt: data.tag.activatedAt,
@@ -169,169 +241,6 @@ export default function OwnerLoginPage() {
     } catch {
       setError("حدث خطأ غير متوقع أثناء المصادقة بالبصمة الحيوية.");
       setPasskeyLoading(false);
-    }
-  };
-
-  const handlePinLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (pinLoading || passkeyLoading) return;
-    setError(null);
-
-    const fullPhone = formatFullLibyaE164(phoneDigits);
-    if (!fullPhone) {
-      setError("يرجى إدخال رقم الهاتف الليبي (+218) المسجل.");
-      return;
-    }
-    if (pin.length !== 6) {
-      setError("يرجى إدخال رمز المرور المكون من 6 أرقام.");
-      return;
-    }
-
-    setPinLoading(true);
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ownerPhone: fullPhone,
-          pin,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok || !data.tag) {
-        setError(
-          data.error || "رقم الهاتف غير مسجل أو رمز المرور غير صحيح"
-        );
-        setPinLoading(false);
-        return;
-      }
-
-      // فتح الجلسة وتحويل المالك للوحة التحكم
-      try {
-        window.localStorage.setItem(
-          "balaghni_owner_active_tag",
-          JSON.stringify({
-            tagCode: data.tag.tagCode,
-            vehicleInfo:
-              data.tag.vehicleInfo ||
-              `${data.tag.vehicleBrand} ${data.tag.vehicleModel}`.trim(),
-            city: data.tag.city || "طرابلس",
-            ownerPhone: fullPhone,
-            activatedAt: data.tag.activatedAt,
-          })
-        );
-      } catch {
-        // ignore storage errors
-      }
-
-      router.push(`/dashboard?tag=${encodeURIComponent(data.tag.tagCode)}`);
-    } catch {
-      setError("حدث خطأ أثناء الاتصال بقاعدة البيانات.");
-      setPinLoading(false);
-    }
-  };
-
-  const handleResetPinSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (resetLoading) return;
-    setResetError(null);
-
-    const fullPhone = formatFullLibyaE164(resetPhone);
-    if (!fullPhone) {
-      setResetError("يرجى إدخال رقم الهاتف الليبي المسجل بشكل صحيح.");
-      return;
-    }
-
-    if (newPin.length !== 6) {
-      setResetError("يرجى اختيار رمز مرور جديد مكون من 6 أرقام.");
-      return;
-    }
-
-    // 1. المسار الذكي: الاسترداد بعد التحقق برمز OTP
-    if (resetMethod === "otp") {
-      if (!otpVerifiedPhone) {
-        setResetError("يرجى تأكيد ملكية رقم الهاتف عبر رمز التحقق (واتساب / SMS) أولاً.");
-        return;
-      }
-
-      setResetLoading(true);
-      try {
-        const res = await fetch("/api/auth/reset-pin", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ownerPhone: fullPhone,
-            newPin,
-            otpVerified: true,
-          }),
-        });
-
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          setResetError(data.error || "تعذر إعادة تعيين رمز الدخول.");
-          setResetLoading(false);
-          return;
-        }
-
-        setResetLoading(false);
-        setResetSuccess(true);
-        setPhoneDigits(resetPhone);
-        setPin(newPin);
-
-        setTimeout(() => {
-          setResetModalOpen(false);
-          setResetSuccess(false);
-          setOtpVerifiedPhone(null);
-        }, 1500);
-      } catch {
-        setResetError("تعذر الاتصال بقاعدة البيانات.");
-        setResetLoading(false);
-      }
-      return;
-    }
-
-    // 2. المسار الكلاسيكي: الاسترداد بكود بطاقة الأمان (Recovery Key)
-    const cleanedKey = recoveryKeyInput.trim().toUpperCase();
-    if (!/^BK-[A-Z0-9]{4}-[A-Z0-9]{4}(-[A-Z0-9]{4})?$/.test(cleanedKey)) {
-      setResetError("صيغة كود بطاقة الأمان غير صحيحة (مثال: BK-8492-X7M1).");
-      return;
-    }
-
-    setResetLoading(true);
-    try {
-      const res = await fetch("/api/auth/reset-pin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ownerPhone: fullPhone,
-          recoveryKey: cleanedKey,
-          newPin,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setResetError(
-          data.error ||
-            "رقم الهاتف أو كود بطاقة الأمان غير مطابق للسجلات المشفرة."
-        );
-        setResetLoading(false);
-        return;
-      }
-
-      setResetLoading(false);
-      setResetSuccess(true);
-      setPhoneDigits(resetPhone);
-      setPin(newPin);
-
-      setTimeout(() => {
-        setResetModalOpen(false);
-        setResetSuccess(false);
-      }, 1500);
-    } catch {
-      setResetError("تعذر الاتصال بقاعدة البيانات.");
-      setResetLoading(false);
     }
   };
 
@@ -367,27 +276,26 @@ export default function OwnerLoginPage() {
         </div>
       </header>
 
-      {/* بطاقة تسجيل الدخول الرئيسية */}
+      {/* بطاقة تسجيل الدخول السريع */}
       <main className="relative z-10 mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-10">
         <div className="rounded-[32px] border border-white/12 bg-[#141721]/95 p-6 shadow-[0_28px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl sm:p-8">
           <div className="text-center">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/35 bg-primary/15 px-3.5 py-1 text-xs font-bold text-primary">
               <ShieldCheck className="h-4 w-4" />
-              بوابة أصحاب المركبات • تحقق مباشر من قاعدة البيانات
+              دخول سريع وآمن بدون كلمات مرور • OTP
             </span>
             <h1 className="mt-3 text-2xl font-black tracking-tight text-white sm:text-3xl">
               تسجيل دخول المالك
             </h1>
             <p className="mt-1.5 text-xs leading-relaxed text-white/65 sm:text-sm">
-              ادخل برقم هاتفك المسجل ورمز المرور للوصول إلى لوحة تحكم سيارتك
-              وخدمة «نبّهني»
+              أدخل رقم هاتفك المسجل لتلقي رمز التحقق السريع عبر واتساب أو رسالة SMS
             </p>
           </div>
 
           <div className="mt-6 space-y-5">
-            {/* نموذج تسجيل الدخول برقم الهاتف ورمز المرور */}
-            <form onSubmit={handlePinLogin} className="space-y-4">
-              {/* أ) الحقل الأول: «رقم الهاتف الليبي المسجل» (مع مفتاح +218 والنص التلميحي 91 234 5678) */}
+            {/* نموذج تسجيل الدخول برقم الهاتف ورمز OTP السريع */}
+            <form onSubmit={handleSendOtpLogin} className="space-y-4">
+              {/* حقل إدخال رقم الهاتف الليبي المسجل */}
               <div>
                 <label
                   htmlFor="login-phone"
@@ -407,7 +315,7 @@ export default function OwnerLoginPage() {
                     id="login-phone"
                     type="tel"
                     inputMode="numeric"
-                    disabled={pinLoading || passkeyLoading}
+                    disabled={loading || passkeyLoading}
                     value={phoneDigits}
                     onChange={(e) => {
                       setPhoneDigits(normalizeLibyaPhoneDigits(e.target.value));
@@ -417,47 +325,9 @@ export default function OwnerLoginPage() {
                     className="h-full w-full bg-transparent px-3.5 font-mono text-base font-bold tracking-wider text-white placeholder:text-white/30 focus:outline-none"
                   />
                 </div>
-              </div>
-
-              {/* ب) الحقل الثاني (تحت رقم الهاتف مباشرة بدون أي أزرار فاصلة بينهما): «رمز المرور (PIN من 6 أرقام)» مع رابط «نسيت رمز الدخول؟» */}
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <label
-                    htmlFor="login-pin"
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-white/85 sm:text-sm"
-                  >
-                    <KeyRound className="h-4 w-4 text-primary" />
-                    <span>رمز المرور (PIN من 6 أرقام)</span>
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResetPhone(phoneDigits);
-                      setResetError(null);
-                      setResetModalOpen(true);
-                    }}
-                    className="text-xs font-bold text-primary underline-offset-4 hover:underline"
-                  >
-                    نسيت رمز الدخول؟
-                  </button>
-                </div>
-
-                <input
-                  id="login-pin"
-                  type="password"
-                  inputMode="numeric"
-                  dir="ltr"
-                  maxLength={6}
-                  disabled={pinLoading || passkeyLoading}
-                  value={pin}
-                  onChange={(e) => {
-                    setPin(e.target.value.replace(/\D/g, "").slice(0, 6));
-                    if (error) setError(null);
-                  }}
-                  placeholder="••••••"
-                  className="h-12 w-full rounded-2xl border border-white/15 bg-[#0B0D13] px-4 text-center font-mono text-xl font-black tracking-[0.4em] text-white placeholder:tracking-normal placeholder:text-white/25 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/35"
-                />
+                <p className="mt-1.5 text-[11px] text-white/50">
+                  مثال: 0912345678 أو 912345678 (المدار، ليبيانا، هاتف ليبيا)
+                </p>
               </div>
 
               {/* رسائل الخطأ */}
@@ -468,41 +338,41 @@ export default function OwnerLoginPage() {
                 </div>
               )}
 
-              {/* ج) الزر الرئيسي (باللون الأحمر البارز): «تسجيل الدخول» (للتحقق من رقم الهاتف + رمز الـ PIN) */}
+              {/* الزر الرئيسي: إرسال رمز الدخول السريع */}
               <Button
                 type="submit"
                 size="xl"
-                disabled={pinLoading || passkeyLoading}
+                disabled={loading || passkeyLoading || !phoneDigits}
                 className="w-full rounded-2xl font-black shadow-primary-glow"
               >
-                {pinLoading ? (
+                {loading ? (
                   <>
                     <LoaderCircle className="h-5 w-5 animate-spin" />
-                    <span>جاري التحقق من بيانات الدخول...</span>
+                    <span>جاري التحقق من الرقم...</span>
                   </>
                 ) : (
                   <>
-                    <LockKeyhole className="h-5 w-5" />
-                    <span>تسجيل الدخول</span>
+                    <Send className="h-5 w-5" />
+                    <span>إرسال رمز الدخول السريع</span>
                   </>
                 )}
               </Button>
             </form>
 
-            {/* د) فاصل نصي أنيق في المنتصف مكتوب عليه: «تسجيل دخول سريع» */}
+            {/* فاصل نصي: أو الدخول ببصمة الجهاز */}
             <div className="relative flex items-center py-1">
               <div className="flex-grow border-t border-white/10" />
               <span className="mx-3 shrink-0 text-[11px] font-bold text-white/45">
-                تسجيل دخول سريع
+                أو الدخول ببصمة الجهاز
               </span>
               <div className="flex-grow border-t border-white/10" />
             </div>
 
-            {/* هـ) زر البصمة الحيوية (تحت الفاصل مباشرة): «دخول ببصمة الوجه / الإصبع (Passkey)» مزود بأيقونة البصمة */}
+            {/* زر البصمة الحيوية (Passkey) */}
             <button
               type="button"
               onClick={handlePasskeyLogin}
-              disabled={passkeyLoading || pinLoading}
+              disabled={passkeyLoading || loading}
               className="flex h-12 w-full items-center justify-center gap-2.5 rounded-2xl border border-primary/40 bg-gradient-to-r from-primary/10 via-primary/20 to-primary/10 px-4 text-xs font-black text-white shadow-lg transition hover:border-primary hover:bg-primary/25 disabled:opacity-50"
             >
               {passkeyLoading ? (
@@ -518,7 +388,7 @@ export default function OwnerLoginPage() {
               )}
             </button>
 
-            {/* و) في الأسفل تماماً: رابط «هل اشتريت ملصقاً جديداً؟ تفعيل وربط ملصق جديد» */}
+            {/* رابط تفعيل وربط ملصق جديد */}
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 text-center text-xs text-white/70">
               <span>هل اشتريت ملصقاً جديداً؟ </span>
               <Link
@@ -532,7 +402,7 @@ export default function OwnerLoginPage() {
           </div>
         </div>
 
-        {/* 5. أسفل الصفحة: رابط تواصل مع الدعم الفني عبر واتساب */}
+        {/* أسفل الصفحة: رابط تواصل مع الدعم الفني عبر واتساب */}
         <div className="mt-6 text-center">
           <a
             href={supportWhatsappUrl}
@@ -546,223 +416,15 @@ export default function OwnerLoginPage() {
         </div>
       </main>
 
-      {/* 4. النافذة المنبثقة: نسيت رمز الدخول؟ (استرجاع الحساب عبر مطابقة الـ Hash في قاعدة البيانات) */}
-      {resetModalOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
-        >
-          <div className="relative w-full max-w-md rounded-3xl border border-white/15 bg-[#141721] p-6 text-white shadow-2xl sm:p-7">
-            <button
-              type="button"
-              onClick={() => setResetModalOpen(false)}
-              aria-label="إغلاق"
-              className="absolute top-5 left-5 flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white"
-            >
-              <X className="h-4 w-4" />
-            </button>
-
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-3 py-1 text-[11px] font-bold text-primary">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              استرداد مشفر عبر قاعدة البيانات
-            </span>
-
-            <h2 className="mt-2.5 text-xl font-black text-white">
-              إعادة تعيين رمز الدخول
-            </h2>
-            <p className="mt-1 text-xs leading-relaxed text-white/65">
-              اختر طريقة الاسترداد المفضلة لإعادة تعيين رمز الدخول لسيارتك:
-            </p>
-
-            {/* أزرار التبديل بين الاسترداد بالـ OTP أو كود بطاقة الأمان */}
-            <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-white/5 p-1 text-xs font-bold">
-              <button
-                type="button"
-                onClick={() => {
-                  setResetMethod("otp");
-                  setResetError(null);
-                }}
-                className={`rounded-xl py-2 transition ${
-                  resetMethod === "otp"
-                    ? "bg-primary text-white shadow"
-                    : "text-white/60 hover:text-white"
-                }`}
-              >
-                رمز التحقق (واتساب / SMS)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setResetMethod("recovery_key");
-                  setResetError(null);
-                }}
-                className={`rounded-xl py-2 transition ${
-                  resetMethod === "recovery_key"
-                    ? "bg-primary text-white shadow"
-                    : "text-white/60 hover:text-white"
-                }`}
-              >
-                كود بطاقة الأمان
-              </button>
-            </div>
-
-            {resetSuccess ? (
-              <div className="mt-5 rounded-2xl border border-emerald-500/30 bg-emerald-500/15 p-5 text-center">
-                <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-400" />
-                <p className="mt-2 text-sm font-bold text-white">
-                  تمت مطابقة البيانات وتحديث رمز المرور في قاعدة البيانات بنجاح!
-                </p>
-              </div>
-            ) : (
-              <form onSubmit={handleResetPinSubmit} className="mt-5 space-y-4">
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold text-white/85">
-                    رقم الهاتف الليبي (+218)
-                  </label>
-                  <div
-                    dir="ltr"
-                    className="flex h-11 w-full items-center overflow-hidden rounded-xl border border-white/15 bg-[#0B0D13]"
-                  >
-                    <span className="border-r border-white/10 bg-white/5 px-3 font-mono text-xs font-bold text-white/80">
-                      +218
-                    </span>
-                    <input
-                      type="tel"
-                      inputMode="numeric"
-                      value={resetPhone}
-                      onChange={(e) => {
-                        setResetPhone(normalizeLibyaPhoneDigits(e.target.value));
-                        setOtpVerifiedPhone(null);
-                      }}
-                      placeholder="91 234 5678"
-                      className="h-full w-full bg-transparent px-3 font-mono text-sm font-bold text-white focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* خيار 1: التحقق عبر رمز OTP الذكي */}
-                {resetMethod === "otp" && (
-                  <div>
-                    {!otpVerifiedPhone ? (
-                      <Button
-                        type="button"
-                        onClick={() => {
-                          if (!resetPhone || resetPhone.length < 9) {
-                            setResetError("يرجى إدخال رقم الهاتف المكون من 9 أرقام أولاً.");
-                            return;
-                          }
-                          setResetError(null);
-                          setResetOtpModalOpen(true);
-                        }}
-                        className="w-full h-11 rounded-xl bg-gradient-to-r from-[#25D366]/30 via-primary/30 to-primary text-xs font-bold text-white shadow hover:scale-[1.01]"
-                      >
-                        <ShieldCheck className="h-4 w-4" />
-                        <span>إرسال رمز التحقق (واتساب أولاً أو SMS)</span>
-                      </Button>
-                    ) : (
-                      <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs font-bold text-emerald-300">
-                        <span className="flex items-center gap-1.5">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                          <span>تم تأكيد ملكية الرقم: {formatLibyaPhoneDisplay(otpVerifiedPhone)}</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setOtpVerifiedPhone(null)}
-                          className="text-[11px] underline text-white/60 hover:text-white"
-                        >
-                          تغيير
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* خيار 2: التحقق بكود بطاقة الأمان */}
-                {resetMethod === "recovery_key" && (
-                  <div>
-                    <label className="mb-1.5 block text-xs font-bold text-white/85">
-                      كود بطاقة الأمان الرقمي (Recovery Key)
-                    </label>
-                    <input
-                      type="text"
-                      dir="ltr"
-                      required
-                      value={recoveryKeyInput}
-                      onChange={(e) =>
-                        setRecoveryKeyInput(e.target.value.toUpperCase())
-                      }
-                      placeholder="BK-8492-X7M1"
-                      className="h-11 w-full rounded-xl border border-white/15 bg-[#0B0D13] px-3 text-center font-mono text-sm font-black tracking-wider text-white focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                )}
-
-                {/* حقل رمز المرور الجديد */}
-                {(resetMethod === "recovery_key" || Boolean(otpVerifiedPhone)) && (
-                  <div>
-                    <label className="mb-1.5 block text-xs font-bold text-white/85">
-                      رمز المرور الجديد (PIN من 6 أرقام)
-                    </label>
-                    <input
-                      type="password"
-                      inputMode="numeric"
-                      dir="ltr"
-                      maxLength={6}
-                      required
-                      value={newPin}
-                      onChange={(e) =>
-                        setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))
-                      }
-                      placeholder="••••••"
-                      className="h-11 w-full rounded-xl border border-white/15 bg-[#0B0D13] px-3 text-center font-mono text-lg font-black tracking-[0.35em] text-white focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                )}
-
-                {resetError && (
-                  <p className="rounded-xl border border-[#E51926] bg-[#E51926]/20 p-2.5 text-xs font-bold text-[#FF6B72]">
-                    {resetError}
-                  </p>
-                )}
-
-                {(resetMethod === "recovery_key" || Boolean(otpVerifiedPhone)) && (
-                  <Button
-                    type="submit"
-                    size="lg"
-                    disabled={resetLoading || newPin.length !== 6}
-                    className="w-full rounded-xl"
-                  >
-                    {resetLoading ? (
-                      <>
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                        <span>جاري حفظ وتحديث رمز المرور...</span>
-                      </>
-                    ) : (
-                      <span>حفظ رمز الدخول الجديد</span>
-                    )}
-                  </Button>
-                )}
-              </form>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* نافذة التحقق الذكي عبر واتساب ورسائل SMS */}
       <SmartOtpModal
-        isOpen={resetOtpModalOpen}
-        phone={resetPhone}
-        onClose={() => setResetOtpModalOpen(false)}
-        onVerified={(verified) => {
-          setOtpVerifiedPhone(verified);
-          setResetOtpModalOpen(false);
-          setResetError(null);
-        }}
-        title="تأكيد رقم الهاتف لاسترداد الحساب"
+        isOpen={otpModalOpen}
+        phone={phoneForOtp}
+        onClose={() => setOtpModalOpen(false)}
+        onVerified={handleOtpVerified}
+        title="تأكيد الدخول السريع"
         subtitle="سنرسل رمز التحقق أولاً إلى واتساب، مع التحويل لرسالة SMS فوراً إن تعذر ذلك"
       />
     </div>
   );
 }
-

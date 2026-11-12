@@ -476,13 +476,34 @@ export async function saveOwnerSecuritySetup(params: {
   };
 }
 
+export async function checkOwnerPhoneExists(rawPhone: string): Promise<boolean> {
+  const normalizedPhone = String(rawPhone || "").trim();
+  if (!normalizedPhone) return false;
+  const localMap = loadSyncedStore();
+  for (const row of Object.values(localMap)) {
+    if (row.owner_phone === normalizedPhone) return true;
+  }
+  try {
+    const { data, error } = await supabase
+      .from("tags")
+      .select("tag_code")
+      .eq("owner_phone", normalizedPhone)
+      .limit(1);
+    if (!error && Array.isArray(data) && data.length > 0) return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 /**
- * التحقق الحقيقي لتسجيل دخول المالك عبر رقم الهاتف الليبي ورمز المرور (PIN من 6 أرقام)
+ * التحقق الحقيقي لتسجيل دخول المالك عبر رقم الهاتف الليبي ورمز المرور (PIN) أو رمز التحقق (OTP) أو البصمة
  */
 export async function verifyOwnerLogin(params: {
   ownerPhone?: string;
   pin?: string;
   passkeyCredentialId?: string;
+  otpVerified?: boolean;
 }): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
   // أ) التحقق الفوري عبر البصمة الحيوية (Zero-Typing Customer Passkey) دون اشتراط رقم الهاتف
   if (params.passkeyCredentialId) {
@@ -565,7 +586,15 @@ export async function verifyOwnerLogin(params: {
   if (candidateRows.length === 0) {
     return {
       ok: false,
-      error: "رقم الهاتف غير مسجل أو رمز المرور غير صحيح",
+      error: "رقم الهاتف غير مسجل في النظام. يرجى تفعيل ملصقك أولاً.",
+    };
+  }
+
+  // في حال كان التحقق عبر OTP مؤكداً (Passwordless OTP Login)
+  if (params.otpVerified) {
+    return {
+      ok: true,
+      record: mapRowToRecord(candidateRows[0]),
     };
   }
 

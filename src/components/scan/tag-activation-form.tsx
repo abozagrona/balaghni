@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
+import { SmartOtpModal } from "@/components/auth/smart-otp-modal";
 import { formatFullLibyaE164 } from "@/lib/utils";
 
 const LIBYA_CITIES = [
@@ -42,15 +43,51 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
   const [city, setCity] = React.useState("طرابلس");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [otpModalOpen, setOtpModalOpen] = React.useState(false);
 
   const formattedOwnerPhone =
     formatFullLibyaE164(ownerPhone) || `+218${ownerPhone.replace(/\D/g, "")}`;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // 1. عند الضغط على "تأكيد وتفعيل": فحص الحقول وفتح نافذة الـ OTP أولاً دون الحفظ المباشر
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
     setError(null);
+
+    const cleanPin = pin.trim();
+    if (!/^\d{4,8}$/.test(cleanPin)) {
+      setError(
+        "يرجى إدخال رمز الخدش السري المكون من 6 أرقام الموجود تحت طبقة الخدش بالبطاقة."
+      );
+      return;
+    }
+
+    const fullPhone = formatFullLibyaE164(ownerPhone);
+    if (!fullPhone) {
+      setError(
+        "يرجى إدخال رقم هاتف ليبي صحيح (+218) يبدأ بـ (091, 092, 093, 094, 095)."
+      );
+      return;
+    }
+
+    if (!vehicleInfo.trim() || vehicleInfo.trim().length < 2) {
+      setError(
+        "يرجى إدخال نوع وموديل ولون السيارة (مثال: كيا سيراتو - أبيض)."
+      );
+      return;
+    }
+
+    // إيقاف الحفظ المباشر وفتح نافذة التحقق الذكية (SmartOtpModal)
+    setOtpModalOpen(true);
+  };
+
+  // 2. بعد تأكيد رمز الـ OTP بنجاح: يتم اعتماد الحفظ والتفعيل في قاعدة البيانات
+  const handleOtpVerified = async (verifiedPhone: string) => {
+    setOtpModalOpen(false);
     setLoading(true);
+    setError(null);
+
+    const phoneToUse = verifiedPhone || formattedOwnerPhone;
 
     try {
       const res = await fetch(
@@ -60,7 +97,7 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             pin: pin.trim(),
-            ownerPhone,
+            ownerPhone: phoneToUse,
             vehicleInfo: vehicleInfo.trim(),
             city,
           }),
@@ -84,7 +121,7 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
             tagCode,
             vehicleInfo: vehicleInfo.trim(),
             city,
-            ownerPhone: formattedOwnerPhone,
+            ownerPhone: phoneToUse,
             activatedAt: new Date().toISOString(),
           })
         );
@@ -245,6 +282,17 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
           )}
         </Button>
       </form>
+
+      {/* نافذة التحقق الذكية برمز الـ OTP عبر واتساب ورسائل SMS */}
+      <SmartOtpModal
+        isOpen={otpModalOpen}
+        phone={ownerPhone}
+        onClose={() => setOtpModalOpen(false)}
+        onVerified={handleOtpVerified}
+        title="التحقق من رقم الهاتف لتفعيل الملصق"
+        subtitle="لتأكيد ملكية رقمك وربطه بملصق المركبة، سنرسل رمز التحقق أولاً إلى واتساب مع التحويل الفوري لرسالة SMS إن تعذر ذلك"
+      />
     </div>
   );
 }
+

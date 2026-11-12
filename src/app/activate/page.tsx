@@ -102,10 +102,22 @@ export default function ActivateNewTagPage() {
   }, []);
 
   React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const sp = new URLSearchParams(window.location.search);
+      const tagParam = sp.get("tag") || sp.get("code");
+      if (tagParam) {
+        const extracted = extractTagCodeFromScan(tagParam);
+        if (extracted) {
+          router.replace(`/s/${encodeURIComponent(extracted)}?intent=activate`);
+          return;
+        }
+      }
+    }
+
     return () => {
       stopCamera();
     };
-  }, [stopCamera]);
+  }, [router, stopCamera]);
 
   const handleDetectedQr = React.useCallback(
     (rawValue: string) => {
