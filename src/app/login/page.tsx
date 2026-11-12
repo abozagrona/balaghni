@@ -13,6 +13,7 @@ import {
   QrCode,
   Send,
   Sparkles,
+  Clock,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
@@ -32,10 +33,21 @@ export default function OwnerLoginPage() {
   const [loading, setLoading] = React.useState(false);
   const [passkeyLoading, setPasskeyLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [sessionExpiredNotice, setSessionExpiredNotice] = React.useState(false);
 
   // حالة نافذة التحقق الذكية (Smart OTP Modal)
   const [otpModalOpen, setOtpModalOpen] = React.useState(false);
   const [phoneForOtp, setPhoneForOtp] = React.useState("");
+
+  // فحص ما إذا كان التوجيه لصفحة الدخول بسبب انتهاء صلاحية الجلسة تلقائياً
+  React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("expired") === "1" || params.get("reason") === "timeout") {
+        setSessionExpiredNotice(true);
+      }
+    }
+  }, []);
 
   // التحويل التلقائي من 127.0.0.1 إلى localhost (إلزامي لعمل WebAuthn وحساس البصمة)
   React.useEffect(() => {
@@ -280,6 +292,16 @@ export default function OwnerLoginPage() {
           </div>
 
           <div className="mt-6 space-y-5">
+            {/* تنبيه انتهاء الجلسة التلقائي للأمان */}
+            {sessionExpiredNotice && (
+              <div className="flex items-start gap-2.5 rounded-2xl border-2 border-amber-500/40 bg-amber-500/15 p-3.5 text-xs font-bold text-amber-200">
+                <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                <span className="leading-relaxed">
+                  انتهت صلاحية جلستك تلقائياً لأمان حسابك، يرجى تسجيل الدخول مجدداً.
+                </span>
+              </div>
+            )}
+
             {/* نموذج تسجيل الدخول برقم الهاتف ورمز OTP السريع */}
             <form onSubmit={handleSendOtpLogin} className="space-y-4">
               {/* حقل إدخال رقم الهاتف الليبي المسجل */}
@@ -307,6 +329,7 @@ export default function OwnerLoginPage() {
                     onChange={(e) => {
                       setPhoneDigits(normalizeLibyaPhoneDigits(e.target.value));
                       if (error) setError(null);
+                      if (sessionExpiredNotice) setSessionExpiredNotice(false);
                     }}
                     placeholder="91 234 5678"
                     className="h-full w-full bg-transparent px-3.5 font-mono text-base font-bold tracking-wider text-white placeholder:text-white/30 focus:outline-none"

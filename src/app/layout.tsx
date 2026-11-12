@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { LiveVisualEditor } from "@/components/editor/live-visual-editor";
+import { SessionWatcher } from "@/components/auth/session-watcher";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -34,6 +35,7 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col font-sans selection:bg-primary selection:text-white">
+        <SessionWatcher />
         {children}
         <LiveVisualEditor />
       </body>
