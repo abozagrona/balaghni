@@ -279,20 +279,28 @@ export default function ExecutiveAdminDashboardPage() {
     }
   }, []);
 
-  // ترويسات الصلاحية الإدارية المحمية
+  const adminSessionRef = React.useRef<AdminProfileSession | null>(adminSession);
+  adminSessionRef.current = adminSession;
+
+  const isInitialLoadRef = React.useRef(true);
+
+  // ترويسات الصلاحية الإدارية المحمية (مفصولة عن الحالة لمنع إعادة توليد الدوال وحلقات التحديث)
   const getAdminHeaders = React.useCallback(() => {
+    const s = adminSessionRef.current;
     return {
       "Content-Type": "application/json",
-      ...(adminSession?.sessionToken
-        ? { Authorization: `Bearer ${adminSession.sessionToken}` }
-        : {}),
-      ...(adminSession?.id ? { "x-admin-id": adminSession.id } : {}),
+      ...(s?.sessionToken ? { Authorization: `Bearer ${s.sessionToken}` } : {}),
+      ...(s?.id ? { "x-admin-id": s.id } : {}),
     };
-  }, [adminSession]);
+  }, []);
 
   const fetchAdminData = React.useCallback(
-    async (idQuery?: string) => {
-      setLoadingData(true);
+    async (idQuery?: string, isBackground = false) => {
+      // مؤشر التحميل يعمل لمرة واحدة فقط عند فتح الصفحة لأول مرة (Initial Mount)
+      // أي تحديث تالي يتم بسلاسة وصمت في الخلفية دون وميض أو إخفاء صفوف الجدول
+      if (isInitialLoadRef.current && !isBackground) {
+        setLoadingData(true);
+      }
       try {
         const qs = idQuery
           ? `?identifier=${encodeURIComponent(idQuery.trim())}`
@@ -325,6 +333,7 @@ export default function ExecutiveAdminDashboardPage() {
           }
         }
       } finally {
+        isInitialLoadRef.current = false;
         setLoadingData(false);
       }
     },
@@ -344,8 +353,21 @@ export default function ExecutiveAdminDashboardPage() {
     }
   }, []);
 
-  // استعادة جلسة المدير مع التحقق من انتهاء الصلاحية فور فتح الصفحة
+  // استعادة جلسة المدير مع التحقق من انتهاء الصلاحية فور فتح الصفحة (Mount لمرة واحدة فقط)
   React.useEffect(() => {
+    // 1. تنظيف أي تخزين مؤقت قديم للملصقات من المتصفح (localStorage / sessionStorage)
+    try {
+      window.localStorage.removeItem("balaghni_cached_tags");
+      window.sessionStorage.removeItem("balaghni_cached_tags");
+      window.localStorage.removeItem("balaghni_tags_cache");
+      window.sessionStorage.removeItem("balaghni_tags_cache");
+      window.localStorage.removeItem("tags");
+      window.sessionStorage.removeItem("tags");
+    } catch {
+      // ignore
+    }
+
+    // 2. فحص جلسة المدير المحفوظة
     try {
       const raw =
         window.sessionStorage.getItem(ADMIN_SESSION_STORAGE_KEY) ||
@@ -373,17 +395,20 @@ export default function ExecutiveAdminDashboardPage() {
       // ignore
     }
     void fetchAdminData();
-  }, [fetchAdminData, handleAdminLogout]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // مراقب جلسة المدير التلقائي (Admin Session Watcher):
   // 15 دقيقة خمول من عدم النشاط أو ساعتان كحد أقصى منذ تسجيل الدخول
   React.useEffect(() => {
-    if (!adminSession) return;
+    if (!isAuthenticated) return;
 
     const checkSessionExpiry = () => {
+      const current = adminSessionRef.current;
+      if (!current) return;
       const now = Date.now();
-      const createdAt = adminSession.sessionCreatedAt || now;
-      const lastActive = adminSession.lastActivityAt || createdAt;
+      const createdAt = current.sessionCreatedAt || now;
+      const lastActive = current.lastActivityAt || createdAt;
 
       const idleElapsed = now - lastActive;
       const totalElapsed = now - createdAt;
@@ -404,9 +429,11 @@ export default function ExecutiveAdminDashboardPage() {
     // تحديث وقت النشاط عند تفاعل المشرف (مع Throttle كل 15 ثانية لتجنب كثرة التحديث)
     let lastRecordTime = Date.now();
     const handleUserActivity = () => {
+      const current = adminSessionRef.current;
+      if (!current) return;
       const now = Date.now();
-      const createdAt = adminSession.sessionCreatedAt || now;
-      const lastActive = adminSession.lastActivityAt || createdAt;
+      const createdAt = current.sessionCreatedAt || now;
+      const lastActive = current.lastActivityAt || createdAt;
 
       if (
         now - lastActive >= ADMIN_IDLE_TIMEOUT_MS ||
@@ -469,13 +496,13 @@ export default function ExecutiveAdminDashboardPage() {
       });
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [adminSession, handleAdminLogout]);
+  }, [isAuthenticated, handleAdminLogout]);
 
   // فحص حالة القفل الزمني (Rate Limit) عند تغيير اسم المستخدم المدخل
   React.useEffect(() => {
     if (!identifierInput.trim() || isAuthenticated) return;
     const timer = window.setTimeout(() => {
-      void fetchAdminData(identifierInput);
+      void fetchAdminData(identifierInput, true);
     }, 350);
     return () => window.clearTimeout(timer);
   }, [identifierInput, isAuthenticated, fetchAdminData]);
@@ -2109,7 +2136,9 @@ export default function ExecutiveAdminDashboardPage() {
                     ) : filteredTags.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-10 text-center text-white/60">
-                          لا توجد ملصقات مطابقة للبحث.
+                          {tags.length === 0
+                            ? "لا توجد ملصقات مسجلة حالياً"
+                            : "لا توجد ملصقات مطابقة للبحث."}
                         </td>
                       </tr>
                     ) : (

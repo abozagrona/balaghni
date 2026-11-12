@@ -93,6 +93,14 @@ function normalizeStatus(raw?: string | null): TagStatus {
   return "LOCKED";
 }
 
+export const LEGACY_TEST_CODES = new Set([
+  "LY-JMG8-5Q7T",
+  "LY-2TB5-C89Y",
+  "LY-FUQ6-SD32",
+  "LY-N9RX-3P8B",
+  "LY-Q987-GECA",
+]);
+
 export const INITIAL_SEED_TAGS: Record<string, StoredTagRow> = {};
 
 function loadSyncedStore(): Record<string, StoredTagRow> {
@@ -100,7 +108,9 @@ function loadSyncedStore(): Record<string, StoredTagRow> {
 
   // 1. شحن الملصقات المعتمدة أولاً (تضمن تواجدها دائماً على Vercel وجميع البيئات السحابية)
   for (const [k, v] of Object.entries(INITIAL_SEED_TAGS)) {
-    map[k.toUpperCase()] = { ...v };
+    if (!LEGACY_TEST_CODES.has(k.toUpperCase())) {
+      map[k.toUpperCase()] = { ...v };
+    }
   }
 
   // 2. دمج أي تحديثات لاحقة من ملف التخزين المحلي إن وُجد
@@ -110,10 +120,12 @@ function loadSyncedStore(): Record<string, StoredTagRow> {
         fs.readFileSync(LOCAL_STORE_PATH, "utf8")
       ) as Record<string, StoredTagRow>;
       for (const [k, v] of Object.entries(saved)) {
-        map[k.toUpperCase()] = {
-          ...(map[k.toUpperCase()] || {}),
-          ...v,
-        };
+        if (!LEGACY_TEST_CODES.has(k.toUpperCase())) {
+          map[k.toUpperCase()] = {
+            ...(map[k.toUpperCase()] || {}),
+            ...v,
+          };
+        }
       }
     }
   } catch {
@@ -174,6 +186,10 @@ export async function getVehicleTagByCode(
   const normalizedCode = rawCode.toUpperCase().startsWith("LY-")
     ? rawCode.toUpperCase()
     : `LY-${rawCode.toUpperCase().replace(/^[A-Z]+-/, "")}`;
+
+  if (LEGACY_TEST_CODES.has(normalizedCode)) {
+    return null;
+  }
 
   try {
     const { data, error } = await supabase
@@ -2429,7 +2445,7 @@ export async function getExecutiveAdminOverview(): Promise<{
     if (!error && Array.isArray(data)) {
       for (const row of data as StoredTagRow[]) {
         const code = String(row.tag_code || "").toUpperCase();
-        if (code) {
+        if (code && !LEGACY_TEST_CODES.has(code)) {
           localMap[code] = {
             ...(localMap[code] || {}),
             ...row,
@@ -2442,7 +2458,9 @@ export async function getExecutiveAdminOverview(): Promise<{
     // ignore
   }
 
-  const tags = Object.values(localMap).map(mapRowToRecord);
+  const tags = Object.values(localMap)
+    .filter((r) => !LEGACY_TEST_CODES.has(r.tag_code.toUpperCase()))
+    .map(mapRowToRecord);
   const adminStore = loadAdminStore();
   const dashStore = loadDashboardStore();
 
