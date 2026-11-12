@@ -366,17 +366,17 @@ export function SmartOtpModal({
                 </div>
               )}
 
-              {/* الشرط 3: بعد مرور 15 ثانية من المؤقت (إذا كانت القناة واتساب):
-                  إظهار الرابط الخفيف "الواتساب غير متوفر معك حالياً؟ أرسل الرمز كرسالة SMS" */}
+              {/* الشرط 4: بعد مرور 15 ثانية من المؤقت (إذا كانت القناة واتساب):
+                  تفعيل زر الإرسال عبر SMS في حال كان واتساب المستخدم غير متوفر في جهازه الحالي */}
               {channel === "WHATSAPP" && isAfter15Seconds && !isCountdownFinished && (
-                <div className="pt-1 animate-in fade-in duration-300">
+                <div className="pt-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
                   <button
                     type="button"
                     onClick={() => handleSendOtp("sms")}
                     disabled={sending}
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-primary underline underline-offset-4 transition hover:text-primary-bright"
+                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/15 px-3 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-primary/25 hover:border-primary/60 active:scale-[0.99] disabled:opacity-50"
                   >
-                    <MessageSquare className="h-3.5 w-3.5" />
+                    <MessageSquare className="h-4 w-4 text-primary" />
                     <span>الواتساب غير متوفر معك حالياً؟ أرسل الرمز كرسالة SMS</span>
                   </button>
                 </div>

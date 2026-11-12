@@ -5,13 +5,17 @@ import { formatLibyaPhoneForOtp } from "@/lib/utils";
 // ============================================================================
 // الإعدادات وبيانات الاعتماد (Credentials & Endpoints)
 // ============================================================================
+export const GREEN_API_URL =
+  process.env.GREEN_API_URL || "https://7107.api.greenapi.com";
 export const GREEN_API_INSTANCE =
-  process.env.GREEN_API_INSTANCE || "710722798667";
+  process.env.GREEN_API_INSTANCE_ID ||
+  process.env.GREEN_API_INSTANCE ||
+  "710722798667";
 export const GREEN_API_TOKEN =
   process.env.GREEN_API_TOKEN ||
   process.env.GREEN_API_API_TOKEN ||
   process.env.GREEN_API_KEY ||
-  "";
+  "267e254f43ca4baf98e2e36363b30b99305c9329c62c4943b2";
 export const RESALA_API_KEY =
   process.env.RESALA_API_KEY ||
   "rsl_fdce9ec04c23e3df473685c9acfcfd12a3cc750458c516f8";
@@ -138,7 +142,11 @@ export async function checkWhatsapp(
   }
 
   try {
-    const url = `https://api.green-api.com/waInstance${GREEN_API_INSTANCE}/checkWhatsapp/${GREEN_API_TOKEN}`;
+    const baseUrl = (GREEN_API_URL || "https://7107.api.greenapi.com").replace(
+      /\/$/,
+      ""
+    );
+    const url = `${baseUrl}/waInstance${GREEN_API_INSTANCE}/checkWhatsapp/${GREEN_API_TOKEN}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4500); // مهلة 4.5 ثوانٍ لضمان عدم التعليق
 
@@ -183,11 +191,15 @@ export async function sendOtpViaWhatsapp(
   }
 
   try {
-    const url = `https://api.green-api.com/waInstance${GREEN_API_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
+    const baseUrl = (GREEN_API_URL || "https://7107.api.greenapi.com").replace(
+      /\/$/,
+      ""
+    );
+    const url = `${baseUrl}/waInstance${GREEN_API_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
 
-    const message = `رمز التحقق الخاص بك في منصة «بَلِّغْنِي» هو: ${otpCode}\n\nصالح لمدة 5 دقائق. لا تشارك هذا الرمز مع أي شخص حفاظاً على أمان مركبتك.`;
+    const message = `رمز التحقق الخاص بك في بَلِّغْنِي هو: ${otpCode}. صالح لمدة 5 دقائق.`;
 
     const res = await fetch(url, {
       method: "POST",
@@ -211,6 +223,7 @@ export async function sendOtpViaWhatsapp(
     };
   }
 }
+
 
 // ============================================================================
 // 3. إرسال رمز التحقق كرسالة نصية SMS عبر منصة رسالة (Resala API)
