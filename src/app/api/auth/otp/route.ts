@@ -5,6 +5,11 @@ import {
   getOtpSession,
 } from "@/lib/otp-service";
 import { formatLibyaPhoneForOtp } from "@/lib/utils";
+import {
+  checkOtpRateLimit,
+  recordOtpAttempt,
+  getClientIp,
+} from "@/lib/rate-limiter";
 
 /**
  * مسار التحقق الذكي عبر واتساب ورسائل SMS (Smart Multi-level Fallback OTP API)
@@ -22,8 +27,33 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. إرسال رمز التحقق (طلب أولي، أو تبديل، أو إعادة إرسال)
+    const clientIp = getClientIp(req);
+    const formattedPhone = formatLibyaPhoneForOtp(rawPhone) || rawPhone;
+
+    // 1. إرسال رمز التحقق (طلب أولي، أو تبديل، أو إعادة إرسال) مع حماية Rate Limiting (3 طلبات كل 10 دقائق)
     if (action === "send" || action === "resend") {
+      const rateLimitCheck = checkOtpRateLimit(formattedPhone, clientIp);
+      if (!rateLimitCheck.allowed) {
+        const minutesLeft =
+          Math.ceil(rateLimitCheck.resetMs / (60 * 1000)) || 1;
+        return NextResponse.json(
+          {
+            ok: false,
+            error: `تم تجاوز الحد المسموح به لطلبات رمز التحقق (3 محاولات كل 10 دقائق). يرجى الانتظار ${minutesLeft} دقيقة والمحاولة لاحقاً لحماية رصيد الرسائل.`,
+            rateLimited: true,
+            remainingMinutes: minutesLeft,
+          },
+          {
+            status: 429,
+            headers: {
+              "Retry-After": String(
+                Math.ceil(rateLimitCheck.resetMs / 1000)
+              ),
+            },
+          }
+        );
+      }
+
       const preferredChannel = (
         body.channel === "sms"
           ? "sms"
@@ -40,6 +70,9 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
+
+      // تسجيل محاولة الإرسال الناجحة في سجل Rate Limiting
+      recordOtpAttempt(formattedPhone, clientIp);
 
       return NextResponse.json({
         ok: true,

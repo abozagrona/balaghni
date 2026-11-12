@@ -2148,6 +2148,121 @@ export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Pro
 }
 
 /**
+ * التحقق الأمني الصارم من صلاحية المشرف لتنفيذ العمليات الإدارية الحساسة من جهة الخادم
+ */
+export async function verifyAdminActionPermission(
+  authTokenOrId?: string,
+  action?: string
+): Promise<{
+  authorized: boolean;
+  profile?: AdminProfileRecord | null;
+  error?: string;
+}> {
+  const token = String(authTokenOrId || "").trim();
+  if (!token) {
+    return {
+      authorized: false,
+      error: "مطلوب تسجيل الدخول كمسؤول مصرح له لتنفيذ هذا الإجراء الإداري.",
+    };
+  }
+
+  let adminId: string | null = null;
+  let adminPhone: string | null = null;
+
+  // فحص ما إذا كان الرمز base64 لجلسة إدارية مشفرة
+  try {
+    const jsonStr = Buffer.from(token, "base64").toString("utf-8");
+    if (jsonStr.startsWith("{") && jsonStr.endsWith("}")) {
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed === "object") {
+        if (parsed.id) adminId = String(parsed.id).trim();
+        if (parsed.adminId) adminId = String(parsed.adminId).trim();
+        if (parsed.phone) adminPhone = String(parsed.phone).trim();
+        if (typeof parsed.exp === "number" && Date.now() > parsed.exp) {
+          return {
+            authorized: false,
+            error: "انتهت صلاحية الجلسة الإدارية. يرجى تسجيل الدخول مجدداً.",
+          };
+        }
+      }
+    }
+  } catch {
+    // ليس base64 صالحاً
+  }
+
+  if (!adminId && token.includes("-") && token.length >= 32) {
+    adminId = token;
+  } else if (!adminId && !adminPhone) {
+    adminPhone = token;
+  }
+
+  let profileRow: RawAdminProfileRow | null = null;
+
+  if (adminId) {
+    try {
+      const { data, error } = await supabase
+        .from("admin_profiles")
+        .select("*")
+        .eq("id", adminId)
+        .maybeSingle();
+      if (!error && data) {
+        profileRow = data as RawAdminProfileRow;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!profileRow && adminPhone) {
+    profileRow = await findAdminProfileByPhone(adminPhone);
+  }
+
+  if (!profileRow) {
+    return {
+      authorized: false,
+      error: "لم يتم العثور على حساب مشرف نشط مطابق في السجلات الإدارية.",
+    };
+  }
+
+  if (!profileRow.is_active) {
+    return {
+      authorized: false,
+      error: "هذا الحساب الإداري مجمد حالياً.",
+    };
+  }
+
+  const mapped = mapAdminProfileRow(profileRow, loadAdminStore());
+  const isSuperAdmin = mapped.role === "SUPER_ADMIN";
+
+  // فحص صلاحيات العمليات الخاصة:
+  if (action === "danger_reset" && !isSuperAdmin) {
+    return {
+      authorized: false,
+      profile: mapped,
+      error: "عملية تصفير النظام مقصورة حصرياً على الأدمن الرئيسي (Super Admin).",
+    };
+  }
+
+  if (
+    action &&
+    action.startsWith("team_") &&
+    !isSuperAdmin &&
+    !mapped.permissions.includes("manage_admins")
+  ) {
+    return {
+      authorized: false,
+      profile: mapped,
+      error: "غير مصرح لك بإدارة فريق المشرفين والصلاحيات. تتطلب صلاحية (manage_admins).",
+    };
+  }
+
+  return {
+    authorized: true,
+    profile: mapped,
+  };
+}
+
+/**
  * مسار الإشعارات المعزول ومكافحة الإزعاج (Zero-Leak & 5-Minute Cooldown)
  * يستعلم داخلياً عن هاتف المالك وقناة التنبيه دون كشف الرقم للواجهة الأمامية مطلقاً
  */

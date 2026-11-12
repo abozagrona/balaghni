@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   supabase,
   verifyAdminAuthentication,
+  verifyAdminActionPermission,
   getExecutiveAdminOverview,
   adminManageTagLifecycle,
   adminImportPrintedTags,
@@ -204,6 +205,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(res, { status: res.ok ? 200 : 401 });
     }
 
+    // التحقق الأمني الصارم من صلاحيات المشرف من جهة الخادم لجميع العمليات الإدارية
+    const authHeader = req.headers.get("authorization") || "";
+    const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
+    const xAdminId =
+      req.headers.get("x-admin-id") || req.headers.get("x-admin-token") || "";
+    const cookieToken =
+      req.cookies.get("balaghni_admin_session")?.value || "";
+    const bodyToken = String(body.sessionToken || body.adminId || "").trim();
+
+    const candidateToken = bearerToken || xAdminId || bodyToken || cookieToken;
+
+    const authCheck = await verifyAdminActionPermission(candidateToken, action);
+    if (!authCheck.authorized || !authCheck.profile) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            authCheck.error ||
+            "غير مصرح لك بتنفيذ هذه العملية. يتطلب تسجيل الدخول بحساب إداري نشط.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const effectiveAdminId = authCheck.profile.id;
+    const effectiveAdminName =
+      authCheck.profile.fullName || authCheck.profile.phone;
+
     // 2. إدارة دورة حياة الملصقات (تعديل المركبة، تبديل الحالة، ضبط المصنع، إعادة تعيين أمان المالك)
     if (
       action === "update_vehicle" ||
@@ -214,8 +245,8 @@ export async function POST(req: NextRequest) {
       const res = await adminManageTagLifecycle({
         action,
         tagCode: String(body.tagCode || ""),
-        adminId,
-        adminName,
+        adminId: effectiveAdminId,
+        adminName: effectiveAdminName,
         status: body.status as TagStatus | undefined,
         vehicleInfo: body.vehicleInfo,
         city: body.city,
@@ -235,8 +266,8 @@ export async function POST(req: NextRequest) {
     if (action === "import_tags") {
       const items = Array.isArray(body.items) ? body.items : [];
       const res = await adminImportPrintedTags({
-        adminId,
-        adminName,
+        adminId: effectiveAdminId,
+        adminName: effectiveAdminName,
         items,
       });
       const overview = await getExecutiveAdminOverview();
@@ -268,8 +299,8 @@ export async function POST(req: NextRequest) {
 
       const res = await adminManageTeamMember({
         action: mappedAction,
-        adminId,
-        adminName,
+        adminId: effectiveAdminId,
+        adminName: effectiveAdminName,
         memberId: body.memberId,
         fullName: body.fullName,
         username: body.username,
@@ -287,7 +318,10 @@ export async function POST(req: NextRequest) {
 
     // 5. منطقة الطوارئ وتصفير بيانات الاختبار (Danger Zone)
     if (action === "danger_reset") {
-      await adminDangerZoneResetSystem({ adminId, adminName });
+      await adminDangerZoneResetSystem({
+        adminId: effectiveAdminId,
+        adminName: effectiveAdminName,
+      });
       const overview = await getExecutiveAdminOverview();
       return NextResponse.json({
         ok: true,

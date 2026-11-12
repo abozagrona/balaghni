@@ -10,15 +10,15 @@ export const GREEN_API_URL =
 export const GREEN_API_INSTANCE =
   process.env.GREEN_API_INSTANCE_ID ||
   process.env.GREEN_API_INSTANCE ||
-  "710722798667";
+  "";
 export const GREEN_API_TOKEN =
   process.env.GREEN_API_TOKEN ||
   process.env.GREEN_API_API_TOKEN ||
   process.env.GREEN_API_KEY ||
-  "267e254f43ca4baf98e2e36363b30b99305c9329c62c4943b2";
+  "";
 export const RESALA_API_KEY =
   process.env.RESALA_API_KEY ||
-  "rsl_fdce9ec04c23e3df473685c9acfcfd12a3cc750458c516f8";
+  "";
 export const RESALA_ENDPOINT =
   process.env.RESALA_ENDPOINT || "https://dev.resala.ly/api/v1/pins";
 
