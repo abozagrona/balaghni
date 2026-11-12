@@ -126,6 +126,13 @@ function collectExistingCodes() {
   return existing;
 }
 
+/**
+ * توليد رمز خدش سري (Scratch PIN) مكون من 6 أرقام عشوائية آمنة
+ */
+function generateScratchPin() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
 export async function generateOfflineBatch(options = {}) {
   const args = process.argv.slice(2);
   let batchCount = options.count || 10;
@@ -161,20 +168,22 @@ export async function generateOfflineBatch(options = {}) {
   const existingCodes = collectExistingCodes();
   console.log(`🔍 تم فحص الملفات السابقة: (${existingCodes.size}) كود مسجل مسبقاً لمنع التكرار.`);
 
-  // 3. توليد الأكواد الجديدة
+  // 3. توليد الأكواد الجديدة مع رمز الخدش السري (6 أرقام)
   const records = [];
   for (let i = 0; i < batchCount; i++) {
     const code = generateSecureTagCode(existingCodes);
     const qrUrl = `${BASE_URL}/s/${code}`;
+    const scratchPin = generateScratchPin();
     records.push({
       code,
       qrUrl,
       batchName,
       status: "LOCKED",
+      scratchPin,
     });
   }
 
-  // 4. تصدير ملف الـ CSV بالصيغة المطلوبة: code, qr_url, batch_name, status
+  // 4. تصدير ملف الـ CSV بالصيغة المطلوبة: code, qr_url, batch_name, status, scratch_pin
   const exportsDir = path.join(projectRoot, "exports");
   if (!fs.existsSync(exportsDir)) {
     fs.mkdirSync(exportsDir, { recursive: true });
@@ -183,10 +192,10 @@ export async function generateOfflineBatch(options = {}) {
   const exportFileName = `balaghni-batch-${dateStr}-${timeStr}.csv`;
   const exportFilePath = path.join(exportsDir, exportFileName);
 
-  // رأس الملف: code, qr_url, batch_name, status
-  const header = "code,qr_url,batch_name,status";
+  // رأس الملف: code, qr_url, batch_name, status, scratch_pin
+  const header = "code,qr_url,batch_name,status,scratch_pin";
   const rows = records.map(
-    (r) => `"${r.code}","${r.qrUrl}","${r.batchName}","${r.status}"`
+    (r) => `"${r.code}","${r.qrUrl}","${r.batchName}","${r.status}","${r.scratchPin}"`
   );
 
   // إضافة UTF-8 BOM (\uFEFF) لدعم اللغة العربية في إكسل مباشرة
@@ -217,7 +226,7 @@ export async function generateOfflineBatch(options = {}) {
     console.log(`   ${downloadFilePath}`);
   }
   console.log(`📊 إجمالي الأكواد المولدة: ${records.length}`);
-  console.log(`📑 الأعمدة: code, qr_url, batch_name, status`);
+  console.log(`📑 الأعمدة: code, qr_url, batch_name, status, scratch_pin`);
   console.log(`🔒 الحالة: LOCKED (جاهزة للرفع اليدوي في /admin)`);
   console.log(`🚫 حالة قاعدة البيانات: لم يتم إدراج أي كود في السحابة (0 عمليات إدراج)`);
   console.log("==================================================");
