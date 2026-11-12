@@ -249,9 +249,15 @@ export default function ExecutiveAdminDashboardPage() {
   );
   const [changePassLoading, setChangePassLoading] = React.useState(false);
 
+  const isSuperAdmin = adminSession?.role === "SUPER_ADMIN";
   const canManageAdmins =
-    adminSession?.role === "SUPER_ADMIN" ||
+    isSuperAdmin ||
     Boolean(adminSession?.permissions?.includes("manage_admins"));
+
+  // نافذة تأكيد مسح الملصق نهائياً (للأدمن الرئيسي فقط)
+  const [deleteModalTag, setDeleteModalTag] =
+    React.useState<AdminTagRecord | null>(null);
+  const [deleteTagLoading, setDeleteTagLoading] = React.useState(false);
 
   // منطقة الطوارئ وتصفير النظام (Danger Zone)
   const [showDangerModal, setShowDangerModal] = React.useState(false);
@@ -947,6 +953,44 @@ export default function ExecutiveAdminDashboardPage() {
     }
   };
 
+  // مسح الملصق نهائياً من قاعدة البيانات (خاصية مقصورة على الأدمن الرئيسي فقط)
+  const handleDeleteTag = async (tagCode: string) => {
+    if (!isSuperAdmin) return;
+    setDeleteTagLoading(true);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "delete_tag",
+          tagCode,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
+      if (res.ok && data.ok) {
+        setTags(data.tags || []);
+        setAuditLogs(data.auditLogs || []);
+        setDeleteModalTag(null);
+        showToast(`تم مسح الملصق (${tagCode}) نهائياً بنجاح ✓`);
+      } else {
+        showToast(data.error || "تعذر مسح الملصق.");
+      }
+    } catch {
+      showToast("تعذر مسح الملصق نتيجة خطأ في الاتصال.");
+    } finally {
+      setDeleteTagLoading(false);
+    }
+  };
+
   const handleSaveVehicleEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTag) return;
@@ -1126,10 +1170,11 @@ export default function ExecutiveAdminDashboardPage() {
 
             let tagCode = "";
             let scratchPin: string | undefined = undefined;
+            let activationPinHash: string | undefined = undefined;
             let batchName: string | undefined = undefined;
             let status: string | undefined = undefined;
 
-            // الحالة الأولى: code, qr_url, batch_name, status
+            // الحالة الأولى: code, qr_url, batch_name, status, (activation_pin_hash | scratch_pin)
             if (cols[0] && cols[0].toUpperCase().startsWith("LY-")) {
               tagCode = cols[0];
               if (cols[2] && !cols[2].toUpperCase().startsWith("LOCKED") && !cols[2].toUpperCase().startsWith("ACTIVE")) {
@@ -1138,8 +1183,12 @@ export default function ExecutiveAdminDashboardPage() {
               if (cols[3]) {
                 status = cols[3].toUpperCase();
               }
-              if (cols[4] && /^\d{4,8}$/.test(cols[4])) {
-                scratchPin = cols[4];
+              if (cols[4]) {
+                if (/^[a-f0-9]{64}$/i.test(cols[4])) {
+                  activationPinHash = cols[4].toLowerCase();
+                } else if (/^\d{4,8}$/.test(cols[4])) {
+                  scratchPin = cols[4];
+                }
               }
             }
             // الحالة الثانية: qr_url, tag_code, scratch_pin
@@ -1157,6 +1206,7 @@ export default function ExecutiveAdminDashboardPage() {
               parsedItems.push({
                 tagCode: formatBalaghniTagCode(tagCode),
                 scratchPin,
+                activationPinHash,
               });
             }
           }
@@ -2287,6 +2337,19 @@ export default function ExecutiveAdminDashboardPage() {
                                 <RotateCcw className="h-3.5 w-3.5" />
                                 <span>ضبط مصنع</span>
                               </button>
+
+                              {/* 4. مسح الملصق نهائياً (خاص بالأدمن الرئيسي SUPER_ADMIN فقط) */}
+                              {isSuperAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeleteModalTag(tag)}
+                                  className="inline-flex items-center gap-1 rounded-xl border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] font-bold text-red-400 hover:bg-red-600 hover:text-white transition active:scale-95"
+                                  title="مسح الملصق نهائياً (للأدمن الرئيسي فقط)"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <span>مسح</span>
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -3002,6 +3065,60 @@ export default function ExecutiveAdminDashboardPage() {
                 className="rounded-xl bg-primary text-white hover:bg-primary/90 font-bold"
               >
                 {factoryResetLoading ? "جاري إعادة الضبط..." : "تأكيد ضبط المصنع وفك الارتباط"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة تأكيد مسح الملصق نهائياً (خاصية الأدمن الرئيسي SUPER_ADMIN فقط) */}
+      {isSuperAdmin && deleteModalTag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl border-2 border-red-500/60 bg-[#12151F] p-6 text-white shadow-2xl space-y-5">
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-2 rounded-full bg-red-500/15 px-3 py-1 text-xs font-black text-red-400">
+                <Trash2 className="h-4 w-4" />
+                مسح الملصق نهائياً (الأدمن الرئيسي)
+              </span>
+              <button
+                type="button"
+                onClick={() => !deleteTagLoading && setDeleteModalTag(null)}
+                className="text-white/60 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[#0B0D14] p-4 text-center">
+              <span className="text-xs text-white/50 block mb-1">
+                كود الملصق المراد حذفه نهائياً
+              </span>
+              <span dir="ltr" className="font-mono text-xl font-black text-red-400">
+                {deleteModalTag.tagCode}
+              </span>
+            </div>
+
+            <p className="text-xs leading-relaxed text-white/75">
+              سيتم حذف هذا الملصق وكافة البلاغات والوثائق المرتبطة به نهائياً من النظام، ولن يعود قابلاً للاستخدام أو المسح عبر QR.
+            </p>
+
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={deleteTagLoading}
+                onClick={() => setDeleteModalTag(null)}
+                className="flex-1 rounded-xl border-white/20 bg-white/5 text-white"
+              >
+                إلغاء
+              </Button>
+              <Button
+                type="button"
+                disabled={deleteTagLoading}
+                onClick={() => handleDeleteTag(deleteModalTag.tagCode)}
+                className="flex-1 rounded-xl bg-red-600 text-white hover:bg-red-700 font-bold"
+              >
+                {deleteTagLoading ? "جاري المسح..." : "تأكيد المسح النهائي"}
               </Button>
             </div>
           </div>

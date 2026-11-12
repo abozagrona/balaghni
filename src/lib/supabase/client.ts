@@ -149,6 +149,18 @@ function saveToSyncedStore(row: StoredTagRow) {
   }
 }
 
+function removeFromSyncedStore(tagCode: string) {
+  try {
+    if (fs.existsSync(LOCAL_STORE_PATH)) {
+      const saved = JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf8"));
+      delete saved[tagCode.toUpperCase()];
+      fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(saved, null, 2), "utf8");
+    }
+  } catch {
+    // ignore write error
+  }
+}
+
 function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
   const ch = String(row.alert_channel || "BOTH").toUpperCase();
   const alertChannel: AlertChannel =
@@ -2289,6 +2301,14 @@ export async function verifyAdminActionPermission(
     };
   }
 
+  if (action === "delete_tag" && !isSuperAdmin) {
+    return {
+      authorized: false,
+      profile: mapped,
+      error: "عملية مسح الملصق نهائياً مقصورة حصرياً على الأدمن الرئيسي (Super Admin).",
+    };
+  }
+
   if (
     action &&
     action.startsWith("team_") &&
@@ -2562,7 +2582,8 @@ export async function adminManageTagLifecycle(params: {
     | "update_vehicle"
     | "set_status"
     | "factory_reset"
-    | "reset_owner_security";
+    | "reset_owner_security"
+    | "delete_tag";
   tagCode: string;
   adminId?: string | null;
   adminName: string;
@@ -2803,6 +2824,38 @@ export async function adminManageTagLifecycle(params: {
     });
 
     return { ok: true, tag: mapRowToRecord(updated) };
+  }
+
+  if (params.action === "delete_tag") {
+    try {
+      await supabaseAdmin.from("reports").delete().eq("tag_code", normalizedCode);
+      await supabaseAdmin.from("reports").delete().eq("tag_id", normalizedCode);
+      await supabaseAdmin
+        .from("vehicle_documents")
+        .delete()
+        .eq("tag_code", normalizedCode);
+      await supabaseAdmin.from("tags").delete().eq("tag_code", normalizedCode);
+    } catch {
+      // ignore
+    }
+
+    removeFromSyncedStore(normalizedCode);
+
+    const dashStore = loadDashboardStore();
+    delete dashStore.documents[normalizedCode];
+    delete dashStore.reports[normalizedCode];
+    delete dashStore.maintenance[normalizedCode];
+    saveDashboardStore(dashStore);
+
+    await recordAdminAuditLog({
+      adminId: params.adminId,
+      adminName: params.adminName,
+      actionType: "TAG_DELETED",
+      actionDetails: `مسح نهائي للملصق (${normalizedCode}) وكافة البلاغات والوثائق المرتبطة به من النظام (بواسطة الأدمن الرئيسي)`,
+      tagCode: normalizedCode,
+    });
+
+    return { ok: true };
   }
 
   return { ok: false, error: "إجراء غير معروف." };

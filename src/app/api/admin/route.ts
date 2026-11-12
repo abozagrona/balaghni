@@ -291,7 +291,8 @@ export async function POST(req: NextRequest) {
       action === "update_vehicle" ||
       action === "set_status" ||
       action === "factory_reset" ||
-      action === "reset_owner_security"
+      action === "reset_owner_security" ||
+      action === "delete_tag"
     ) {
       const res = await adminManageTagLifecycle({
         action,

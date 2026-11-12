@@ -168,22 +168,27 @@ export async function generateOfflineBatch(options = {}) {
   const existingCodes = collectExistingCodes();
   console.log(`🔍 تم فحص الملفات السابقة: (${existingCodes.size}) كود مسجل مسبقاً لمنع التكرار.`);
 
-  // 3. توليد الأكواد الجديدة مع رمز الخدش السري (6 أرقام)
+  // 3. توليد الأكواد الجديدة مع رمز الخدش السري (6 أرقام) وحساب SHA-256
   const records = [];
   for (let i = 0; i < batchCount; i++) {
     const code = generateSecureTagCode(existingCodes);
     const qrUrl = `${BASE_URL}/s/${code}`;
     const scratchPin = generateScratchPin();
+    const activationPinHash = crypto
+      .createHash("sha256")
+      .update(scratchPin)
+      .digest("hex");
     records.push({
       code,
       qrUrl,
       batchName,
       status: "LOCKED",
       scratchPin,
+      activationPinHash,
     });
   }
 
-  // 4. تصدير ملف الـ CSV بالصيغة المطلوبة: code, qr_url, batch_name, status, scratch_pin
+  // 4. تصدير ملف الـ CSV بدون أكواد الخدش الصريحة (فقط الكود والرابط والدفعة والحالة والتشفير)
   const exportsDir = path.join(projectRoot, "exports");
   if (!fs.existsSync(exportsDir)) {
     fs.mkdirSync(exportsDir, { recursive: true });
@@ -192,10 +197,10 @@ export async function generateOfflineBatch(options = {}) {
   const exportFileName = `balaghni-batch-${dateStr}-${timeStr}.csv`;
   const exportFilePath = path.join(exportsDir, exportFileName);
 
-  // رأس الملف: code, qr_url, batch_name, status, scratch_pin
-  const header = "code,qr_url,batch_name,status,scratch_pin";
+  // رأس الملف: code, qr_url, batch_name, status, activation_pin_hash
+  const header = "code,qr_url,batch_name,status,activation_pin_hash";
   const rows = records.map(
-    (r) => `"${r.code}","${r.qrUrl}","${r.batchName}","${r.status}","${r.scratchPin}"`
+    (r) => `"${r.code}","${r.qrUrl}","${r.batchName}","${r.status}","${r.activationPinHash}"`
   );
 
   // إضافة UTF-8 BOM (\uFEFF) لدعم اللغة العربية في إكسل مباشرة
@@ -226,9 +231,11 @@ export async function generateOfflineBatch(options = {}) {
     console.log(`   ${downloadFilePath}`);
   }
   console.log(`📊 إجمالي الأكواد المولدة: ${records.length}`);
-  console.log(`📑 الأعمدة: code, qr_url, batch_name, status, scratch_pin`);
-  console.log(`🔒 الحالة: LOCKED (جاهزة للرفع اليدوي في /admin)`);
-  console.log(`🚫 حالة قاعدة البيانات: لم يتم إدراج أي كود في السحابة (0 عمليات إدراج)`);
+  console.log(`📑 الأعمدة في الملف: code, qr_url, batch_name, status, activation_pin_hash`);
+  console.log(`🔒 أكواد الخدش السرية (للمشرف هنا فقط - غير مكتوبة في الملف):`);
+  for (const r of records) {
+    console.log(`   ${r.code}  =>  رمز الخدش: ${r.scratchPin}`);
+  }
   console.log("==================================================");
 
   return {
