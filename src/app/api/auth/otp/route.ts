@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import {
   requestSmartOtp,
   verifyOtpCode,
@@ -12,10 +13,41 @@ import {
 } from "@/lib/rate-limiter";
 
 /**
+ * إنشاء عميل Supabase معزول ونظيف خاص بمسار الـ OTP
+ * لا يقرأ الكوكيز (cookies) أو ترويسات المتصفح لمنع تمرير أي JWT غير صالح
+ */
+function getIsolatedOtpSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
+
+  const isValidJwt =
+    serviceRoleKey.startsWith("eyJ") && serviceRoleKey.split(".").length === 3;
+
+  if (!serviceRoleKey || !isValidJwt) {
+    console.warn(
+      "[OTP Route Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو غير مضبوط بصيغة JWT صحيحة (يجب أن يبدأ بـ eyJ ويحتوي على نقطتين .)."
+    );
+  }
+
+  const keyToUse = isValidJwt ? serviceRoleKey : anonKey;
+  if (!supabaseUrl || !keyToUse) return null;
+
+  return createClient(supabaseUrl, keyToUse, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
+/**
  * مسار التحقق الذكي عبر واتساب ورسائل SMS (Smart Multi-level Fallback OTP API)
  */
 export async function POST(req: NextRequest) {
   try {
+    // تهيئة وفحص عميل Supabase المعزول والتحقق من سلامة المفتاح في سجل الخادم
+    getIsolatedOtpSupabaseClient();
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || "send").trim().toLowerCase();
     const rawPhone = String(body.phone || body.ownerPhone || "").trim();

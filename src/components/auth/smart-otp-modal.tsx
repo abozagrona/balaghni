@@ -87,6 +87,7 @@ export function SmartOtpModal({
     try {
       const res = await fetch("/api/auth/otp", {
         method: "POST",
+        credentials: "omit",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "send",
@@ -173,6 +174,7 @@ export function SmartOtpModal({
     try {
       const res = await fetch("/api/auth/otp", {
         method: "POST",
+        credentials: "omit",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "verify",

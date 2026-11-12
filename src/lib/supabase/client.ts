@@ -3,12 +3,13 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 
-const rawSupabaseUrl =
-  process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  "https://aivxhxnvgqxylugqrjei.supabase.co";
+const rawSupabaseUrl = (
+  process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
+  "https://aivxhxnvgqxylugqrjei.supabase.co"
+).replace(/\/+$/, "");
 
 const rawSupabaseAnonKey =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
   "sb_publishable_wUsqBoHbhbuvVitBDo2wuw_xOhU-IEe";
 
 // تصحيح تلقائي لحالة الحرف الأول في مفتاح Supabase القابل للنشر (sb_publishable_...)
@@ -17,12 +18,26 @@ const normalizedAnonKey = rawSupabaseAnonKey.replace(
   "sb_publishable_"
 );
 
-export const supabase = createClient(rawSupabaseUrl, normalizedAnonKey);
+export const supabase = createClient(rawSupabaseUrl, normalizedAnonKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
 
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const rawServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+const isValidServiceJwt =
+  rawServiceRoleKey.startsWith("eyJ") && rawServiceRoleKey.split(".").length === 3;
+
+if (rawServiceRoleKey && !isValidServiceJwt) {
+  console.warn(
+    "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو بصيغة غير صالحة (يجب أن يبدأ بـ eyJ ويحتوي على نقطتين .). سيتم استخدام المفتاح العام مؤقتاً لتفادي خطأ malformed jwt token."
+  );
+}
+
 export const supabaseAdmin = createClient(
   rawSupabaseUrl,
-  serviceRoleKey || normalizedAnonKey,
+  isValidServiceJwt ? rawServiceRoleKey : normalizedAnonKey,
   {
     auth: {
       autoRefreshToken: false,
