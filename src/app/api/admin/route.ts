@@ -4,6 +4,9 @@ import {
   supabaseAdmin,
   verifyAdminAuthentication,
   verifyAdminActionPermission,
+  verifyAdminSessionToken,
+  createAdminSessionToken,
+  ADMIN_COOKIE_MAX_AGE_SECONDS,
   getExecutiveAdminOverview,
   adminManageTagLifecycle,
   adminImportPrintedTags,
@@ -17,6 +20,35 @@ import {
 
 export async function GET(req: NextRequest) {
   try {
+    // التحقق الصارم من حالة الجلسة وانتهاء الصلاحية من جهة الخادم
+    const authHeader = req.headers.get("authorization") || "";
+    const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
+    const cookieToken =
+      req.cookies.get("balaghni_admin_session")?.value || "";
+    const candidateToken = bearerToken || cookieToken;
+
+    if (candidateToken) {
+      const sessionCheck = verifyAdminSessionToken(candidateToken);
+      if (sessionCheck.expired) {
+        const res = NextResponse.json(
+          {
+            ok: false,
+            sessionExpired: true,
+            error: "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+          },
+          { status: 401 }
+        );
+        res.cookies.set("balaghni_admin_session", "", {
+          path: "/",
+          maxAge: 0,
+          expires: new Date(0),
+        });
+        return res;
+      }
+    }
+
     const identifier = req.nextUrl.searchParams.get("identifier") || "";
     const authStatus = await verifyAdminAuthentication({
       mode: "status",
@@ -166,23 +198,20 @@ export async function POST(req: NextRequest) {
         createdAt: adminProfile.created_at,
       };
 
-      const sessionToken = Buffer.from(
-        JSON.stringify({
-          id: formattedProfile.id,
-          phone: formattedProfile.phone,
-          fullName: formattedProfile.fullName,
-          role: formattedProfile.role,
-          permissions: formattedProfile.permissions,
-          iat: Date.now(),
-        })
-      ).toString("base64");
+      const sessionToken = createAdminSessionToken(formattedProfile);
 
-      return NextResponse.json({
+      const response = NextResponse.json({
         ok: true,
         remainingAttempts: 4,
         adminProfile: formattedProfile,
         sessionToken,
       });
+      response.cookies.set("balaghni_admin_session", sessionToken, {
+        path: "/",
+        maxAge: ADMIN_COOKIE_MAX_AGE_SECONDS,
+        sameSite: "lax",
+      });
+      return response;
     }
 
     // 1. المصادقة المؤسسية للمشرفين وتغيير كلمة المرور (password_login / enroll_passkey / change_own_password / status)
@@ -204,6 +233,17 @@ export async function POST(req: NextRequest) {
         passkeyCredentialId: body.passkeyCredentialId || body.credential_id,
         adminId: adminId || undefined,
       });
+
+      if (res.ok && res.sessionToken) {
+        const response = NextResponse.json(res, { status: 200 });
+        response.cookies.set("balaghni_admin_session", res.sessionToken, {
+          path: "/",
+          maxAge: ADMIN_COOKIE_MAX_AGE_SECONDS,
+          sameSite: "lax",
+        });
+        return response;
+      }
+
       return NextResponse.json(res, { status: res.ok ? 200 : 401 });
     }
 
@@ -222,15 +262,24 @@ export async function POST(req: NextRequest) {
 
     const authCheck = await verifyAdminActionPermission(candidateToken, action);
     if (!authCheck.authorized || !authCheck.profile) {
-      return NextResponse.json(
+      const res = NextResponse.json(
         {
           ok: false,
+          sessionExpired: Boolean(authCheck.expired),
           error:
             authCheck.error ||
             "غير مصرح لك بتنفيذ هذه العملية. يتطلب تسجيل الدخول بحساب إداري نشط.",
         },
-        { status: 403 }
+        { status: authCheck.expired ? 401 : 403 }
       );
+      if (authCheck.expired) {
+        res.cookies.set("balaghni_admin_session", "", {
+          path: "/",
+          maxAge: 0,
+          expires: new Date(0),
+        });
+      }
+      return res;
     }
 
     const effectiveAdminId = authCheck.profile.id;

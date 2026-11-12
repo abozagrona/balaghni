@@ -28,7 +28,6 @@ import {
   Activity,
   Ban,
   Copy,
-  Sparkles,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
@@ -61,7 +60,14 @@ interface AdminProfileSession {
   isActive: boolean;
   lastLogin: string | null;
   sessionToken?: string;
+  sessionCreatedAt?: number;
+  lastActivityAt?: number;
 }
+
+// المهل الزمنية الصارمة لجلسات المديرين
+const ADMIN_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 دقيقة خمول
+const ADMIN_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان كحد أقصى للجلسة
+const ADMIN_COOKIE_MAX_AGE_SECONDS = 2 * 60 * 60; // 7200 ثانية
 
 interface AdminTagRecord {
   tagCode: string;
@@ -197,10 +203,6 @@ export default function ExecutiveAdminDashboardPage() {
     React.useState<AdminTagRecord | null>(null);
   const [factoryResetLoading, setFactoryResetLoading] = React.useState(false);
 
-  // توليد وإصدار الدفعات النظيفة الفورية
-  const [issuingBatch, setIssuingBatch] = React.useState(false);
-  const [batchIssueCount, setBatchIssueCount] = React.useState<number>(5);
-
   // تبويب استيراد الدفعات (CSV / JSON) وإدخال ملصق مطبوع مفرد
   const [singleTagCode, setSingleTagCode] = React.useState("");
   const [singleScratchPin, setSingleScratchPin] = React.useState("");
@@ -260,40 +262,89 @@ export default function ExecutiveAdminDashboardPage() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const fetchAdminData = React.useCallback(async (idQuery?: string) => {
-    setLoadingData(true);
+  const handleAdminLogout = React.useCallback((reason?: string) => {
     try {
-      const qs = idQuery
-        ? `?identifier=${encodeURIComponent(idQuery.trim())}`
-        : "";
-      const res = await fetch(`/api/admin${qs}`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        setTags(Array.isArray(data.tags) ? data.tags : []);
-        setAuditLogs(Array.isArray(data.auditLogs) ? data.auditLogs : []);
-        setTeamMembers(Array.isArray(data.teamMembers) ? data.teamMembers : []);
-        setReportsCount(Number(data.reportsCount || 0));
-        if (data.authStatus) {
-          setLockedUntilIso(data.authStatus.lockedUntilIso || null);
-          setRemainingAttempts(
-            typeof data.authStatus.remainingAttempts === "number"
-              ? data.authStatus.remainingAttempts
-              : 4
-          );
-        }
-      }
-    } finally {
-      setLoadingData(false);
+      window.sessionStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+      document.cookie =
+        "balaghni_admin_session=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0;";
+    } catch {
+      // ignore
+    }
+    setAdminSession(null);
+    setPasswordInput("");
+    if (reason) {
+      setAuthError(reason);
+      showToast(reason);
     }
   }, []);
+
+  // ترويسات الصلاحية الإدارية المحمية
+  const getAdminHeaders = React.useCallback(() => {
+    return {
+      "Content-Type": "application/json",
+      ...(adminSession?.sessionToken
+        ? { Authorization: `Bearer ${adminSession.sessionToken}` }
+        : {}),
+      ...(adminSession?.id ? { "x-admin-id": adminSession.id } : {}),
+    };
+  }, [adminSession]);
+
+  const fetchAdminData = React.useCallback(
+    async (idQuery?: string) => {
+      setLoadingData(true);
+      try {
+        const qs = idQuery
+          ? `?identifier=${encodeURIComponent(idQuery.trim())}`
+          : "";
+        const res = await fetch(`/api/admin${qs}`, {
+          cache: "no-store",
+          headers: getAdminHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 || data.sessionExpired) {
+          handleAdminLogout(
+            "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+          );
+          return;
+        }
+        if (res.ok && data.ok) {
+          setTags(Array.isArray(data.tags) ? data.tags : []);
+          setAuditLogs(Array.isArray(data.auditLogs) ? data.auditLogs : []);
+          setTeamMembers(
+            Array.isArray(data.teamMembers) ? data.teamMembers : []
+          );
+          setReportsCount(Number(data.reportsCount || 0));
+          if (data.authStatus) {
+            setLockedUntilIso(data.authStatus.lockedUntilIso || null);
+            setRemainingAttempts(
+              typeof data.authStatus.remainingAttempts === "number"
+                ? data.authStatus.remainingAttempts
+                : 4
+            );
+          }
+        }
+      } finally {
+        setLoadingData(false);
+      }
+    },
+    [getAdminHeaders, handleAdminLogout]
+  );
 
   // 1. التحويل التلقائي من 127.0.0.1 إلى localhost (إلزامي لعمل WebAuthn وبصمة الجهاز)
   React.useEffect(() => {
-    if (typeof window !== "undefined" && window.location.hostname === "127.0.0.1") {
-      window.location.href = window.location.href.replace("127.0.0.1", "localhost");
+    if (
+      typeof window !== "undefined" &&
+      window.location.hostname === "127.0.0.1"
+    ) {
+      window.location.href = window.location.href.replace(
+        "127.0.0.1",
+        "localhost"
+      );
     }
   }, []);
 
+  // استعادة جلسة المدير مع التحقق من انتهاء الصلاحية فور فتح الصفحة
   React.useEffect(() => {
     try {
       const raw =
@@ -302,14 +353,123 @@ export default function ExecutiveAdminDashboardPage() {
       if (raw) {
         const parsed = JSON.parse(raw) as AdminProfileSession;
         if (parsed && parsed.id && parsed.username) {
-          setAdminSession(parsed);
+          const now = Date.now();
+          const createdAt = parsed.sessionCreatedAt || now;
+          const lastActive = parsed.lastActivityAt || createdAt;
+
+          if (
+            now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS ||
+            now - lastActive >= ADMIN_IDLE_TIMEOUT_MS
+          ) {
+            handleAdminLogout(
+              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+            );
+          } else {
+            setAdminSession(parsed);
+          }
         }
       }
     } catch {
       // ignore
     }
     void fetchAdminData();
-  }, [fetchAdminData]);
+  }, [fetchAdminData, handleAdminLogout]);
+
+  // مراقب جلسة المدير التلقائي (Admin Session Watcher):
+  // 15 دقيقة خمول من عدم النشاط أو ساعتان كحد أقصى منذ تسجيل الدخول
+  React.useEffect(() => {
+    if (!adminSession) return;
+
+    const checkSessionExpiry = () => {
+      const now = Date.now();
+      const createdAt = adminSession.sessionCreatedAt || now;
+      const lastActive = adminSession.lastActivityAt || createdAt;
+
+      const idleElapsed = now - lastActive;
+      const totalElapsed = now - createdAt;
+
+      if (
+        idleElapsed >= ADMIN_IDLE_TIMEOUT_MS ||
+        totalElapsed >= ADMIN_ABSOLUTE_TIMEOUT_MS
+      ) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+      }
+    };
+
+    // فحص دوري كل 10 ثوانٍ
+    const intervalId = window.setInterval(checkSessionExpiry, 10000);
+
+    // تحديث وقت النشاط عند تفاعل المشرف (مع Throttle كل 15 ثانية لتجنب كثرة التحديث)
+    let lastRecordTime = Date.now();
+    const handleUserActivity = () => {
+      const now = Date.now();
+      const createdAt = adminSession.sessionCreatedAt || now;
+      const lastActive = adminSession.lastActivityAt || createdAt;
+
+      if (
+        now - lastActive >= ADMIN_IDLE_TIMEOUT_MS ||
+        now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS
+      ) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
+
+      if (now - lastRecordTime >= 15000) {
+        lastRecordTime = now;
+        setAdminSession((prev) => {
+          if (!prev) return null;
+          const updated: AdminProfileSession = {
+            ...prev,
+            lastActivityAt: now,
+          };
+          try {
+            window.sessionStorage.setItem(
+              ADMIN_SESSION_STORAGE_KEY,
+              JSON.stringify(updated)
+            );
+            window.localStorage.setItem(
+              ADMIN_SESSION_STORAGE_KEY,
+              JSON.stringify(updated)
+            );
+          } catch {
+            // ignore
+          }
+          return updated;
+        });
+      }
+    };
+
+    const events = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "touchstart",
+      "scroll",
+      "click",
+    ];
+    events.forEach((evt) => {
+      window.addEventListener(evt, handleUserActivity, { passive: true });
+    });
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        checkSessionExpiry();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      events.forEach((evt) => {
+        window.removeEventListener(evt, handleUserActivity);
+      });
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [adminSession, handleAdminLogout]);
 
   // فحص حالة القفل الزمني (Rate Limit) عند تغيير اسم المستخدم المدخل
   React.useEffect(() => {
@@ -348,9 +508,12 @@ export default function ExecutiveAdminDashboardPage() {
     profile: AdminProfileSession,
     token?: string
   ) => {
+    const now = Date.now();
     const sessionObj: AdminProfileSession = {
       ...profile,
-      sessionToken: token,
+      sessionToken: token || profile.sessionToken,
+      sessionCreatedAt: profile.sessionCreatedAt || now,
+      lastActivityAt: now,
     };
     setAdminSession(sessionObj);
     try {
@@ -363,8 +526,8 @@ export default function ExecutiveAdminDashboardPage() {
         JSON.stringify(sessionObj)
       );
       document.cookie = `balaghni_admin_session=${encodeURIComponent(
-        token || profile.id
-      )}; path=/; max-age=28800; SameSite=Lax`;
+        sessionObj.sessionToken || ""
+      )}; path=/; max-age=7200; SameSite=Lax`;
     } catch {
       // ignore
     }
@@ -673,30 +836,6 @@ export default function ExecutiveAdminDashboardPage() {
     }
   };
 
-  const handleAdminLogout = () => {
-    try {
-      window.sessionStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
-      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
-      document.cookie =
-        "balaghni_admin_session=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;";
-    } catch {
-      // ignore
-    }
-    setAdminSession(null);
-    setPasswordInput("");
-  };
-
-  // ترويسات الصلاحية الإدارية المحمية
-  const getAdminHeaders = React.useCallback(() => {
-    return {
-      "Content-Type": "application/json",
-      ...(adminSession?.sessionToken
-        ? { Authorization: `Bearer ${adminSession.sessionToken}` }
-        : {}),
-      ...(adminSession?.id ? { "x-admin-id": adminSession.id } : {}),
-    };
-  }, [adminSession]);
-
   // إدارة دورة حياة الملصقات مع تحديث فوري لحظي (Optimistic UI) وتطبيق على قاعدة البيانات
   const handleQuickStatusChange = async (
     tagCode: string,
@@ -721,6 +860,13 @@ export default function ExecutiveAdminDashboardPage() {
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        setTags(prevTags);
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
       if (res.ok && data.ok) {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
@@ -751,6 +897,12 @@ export default function ExecutiveAdminDashboardPage() {
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
       if (res.ok && data.ok) {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
@@ -765,37 +917,6 @@ export default function ExecutiveAdminDashboardPage() {
       showToast("تعذر إعادة ضبط المصنع نتيجة خطأ في الاتصال.");
     } finally {
       setFactoryResetLoading(false);
-    }
-  };
-
-  // توليد وإصدار دفعة ملصقات فورية نظيفة (حالة LOCKED غير مرتبطة بأي مركبة أو هاتف)
-  const handleQuickIssueBatch = async (count: number = 5) => {
-    if (issuingBatch) return;
-    setIssuingBatch(true);
-    try {
-      const res = await fetch("/api/admin", {
-        method: "POST",
-        headers: getAdminHeaders(),
-        body: JSON.stringify({
-          action: "issue_batch",
-          count,
-          adminId,
-          adminName,
-          sessionToken: adminSession?.sessionToken,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        setTags(data.tags || []);
-        setAuditLogs(data.auditLogs || []);
-        showToast(`تم إصدار وتوليد ${count} ملصقات جديدة بنجاح بحالة LOCKED ✓`);
-      } else {
-        showToast(data.error || "تعذر إصدار الملصقات الجديدة.");
-      }
-    } catch {
-      showToast("تعذر إصدار الملصقات نتيجة خطأ في الاتصال.");
-    } finally {
-      setIssuingBatch(false);
     }
   };
 
@@ -820,6 +941,12 @@ export default function ExecutiveAdminDashboardPage() {
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
       if (res.ok && data.ok) {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
@@ -851,6 +978,12 @@ export default function ExecutiveAdminDashboardPage() {
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
       if (res.ok && data.ok) {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
@@ -877,11 +1010,12 @@ export default function ExecutiveAdminDashboardPage() {
       const formatted = formatBalaghniTagCode(singleTagCode);
       const res = await fetch("/api/admin", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           action: "import_tags",
           adminId,
           adminName,
+          sessionToken: adminSession?.sessionToken,
           items: [
             {
               tagCode: formatted,
@@ -891,6 +1025,12 @@ export default function ExecutiveAdminDashboardPage() {
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
       if (res.ok && data.ok) {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
@@ -968,15 +1108,22 @@ export default function ExecutiveAdminDashboardPage() {
 
       const res = await fetch("/api/admin", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           action: "import_tags",
           adminId,
           adminName,
+          sessionToken: adminSession?.sessionToken,
           items: parsedItems,
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
       if (res.ok && data.ok) {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
@@ -995,10 +1142,21 @@ export default function ExecutiveAdminDashboardPage() {
   const postTeamAction = async (payload: Record<string, unknown>) => {
     const res = await fetch("/api/admin", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ adminId, adminName, ...payload }),
+      headers: getAdminHeaders(),
+      body: JSON.stringify({
+        adminId,
+        adminName,
+        sessionToken: adminSession?.sessionToken,
+        ...payload,
+      }),
     });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || data.sessionExpired) {
+      handleAdminLogout(
+        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+      );
+      return { ok: false, data };
+    }
     if (Array.isArray(data.teamMembers)) setTeamMembers(data.teamMembers);
     if (Array.isArray(data.auditLogs)) setAuditLogs(data.auditLogs);
     return { ok: Boolean(res.ok && data.ok), data };
@@ -1240,7 +1398,7 @@ export default function ExecutiveAdminDashboardPage() {
 
     const res = await fetch("/api/admin", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAdminHeaders(),
       body: JSON.stringify({
         action: "danger_reset",
         adminId,
@@ -1248,6 +1406,12 @@ export default function ExecutiveAdminDashboardPage() {
       }),
     });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || data.sessionExpired) {
+      handleAdminLogout(
+        data.error || "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+      );
+      return;
+    }
     if (res.ok && data.ok) {
       setTags(data.tags || []);
       setAuditLogs(data.auditLogs || []);
@@ -1584,7 +1748,7 @@ export default function ExecutiveAdminDashboardPage() {
 
           <button
             type="button"
-            onClick={handleAdminLogout}
+            onClick={() => handleAdminLogout()}
             className="w-full text-center text-xs font-bold text-white/50 hover:text-white"
           >
             تسجيل الخروج
@@ -1678,7 +1842,7 @@ export default function ExecutiveAdminDashboardPage() {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={handleAdminLogout}
+              onClick={() => handleAdminLogout()}
               className="rounded-xl text-white/70 hover:bg-white/10 hover:text-white"
             >
               <LogOut className="h-4 w-4 text-primary" />
@@ -1882,17 +2046,6 @@ export default function ExecutiveAdminDashboardPage() {
                     {st === "ALL" ? "الكل" : st}
                   </button>
                 ))}
-
-                <button
-                  type="button"
-                  disabled={issuingBatch}
-                  onClick={() => handleQuickIssueBatch(5)}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-black text-emerald-400 hover:bg-emerald-500 hover:text-black transition active:scale-95 disabled:opacity-50"
-                  title="توليد 5 ملصقات جديدة فوراً بحالة LOCKED غير مرتبطة بأي مركبة أو هاتف"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>{issuingBatch ? "جاري التوليد..." : "إصدار 5 ملصقات جديدة"}</span>
-                </button>
               </div>
             </div>
 
@@ -2086,52 +2239,6 @@ export default function ExecutiveAdminDashboardPage() {
         {/* ==================================================================== */}
         {activeTab === "import" && (
           <section className="grid gap-6 lg:grid-cols-2">
-            {/* بطاقة توليد وإصدار دفعة نظيفة مباشرة لقاعدة البيانات وملف المطبعة */}
-            <div className="rounded-3xl border border-emerald-500/30 bg-gradient-to-l from-emerald-500/10 via-[#12151F] to-[#12151F] p-6 space-y-4 lg:col-span-2">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/20 text-emerald-400 shrink-0">
-                    <Sparkles className="h-6 w-6" />
-                  </span>
-                  <div>
-                    <h2 className="text-base font-black text-white sm:text-lg">
-                      توليد وإصدار دفعة ملصقات نظيفة فورية (Clean Batch Issuance)
-                    </h2>
-                    <p className="text-xs text-white/65">
-                      توليد أكواد ملصقات رسمية جديدة (LY-XXXX-XXXX) مع أرقام خدش سرية وتشفير SHA-256 وحفظها بحالة LOCKED غير مرتبطة بأي مركبة، وتحديث ملف الطباعة print_batch.csv تلقائياً.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {[5, 10, 25, 50].map((cnt) => (
-                    <button
-                      key={cnt}
-                      type="button"
-                      onClick={() => setBatchIssueCount(cnt)}
-                      className={cn(
-                        "rounded-xl px-3 py-1.5 text-xs font-mono font-black transition",
-                        batchIssueCount === cnt
-                          ? "bg-emerald-500 text-black shadow-lg"
-                          : "border border-white/10 bg-[#07090E] text-white/70 hover:text-white"
-                      )}
-                    >
-                      {cnt}
-                    </button>
-                  ))}
-                  <Button
-                    type="button"
-                    disabled={issuingBatch}
-                    onClick={() => handleQuickIssueBatch(batchIssueCount)}
-                    className="rounded-2xl bg-emerald-500 text-black hover:bg-emerald-400 font-black shadow-lg text-xs h-10 px-4 active:scale-95"
-                  >
-                    <Plus className="h-4 w-4" />
-                    <span>{issuingBatch ? "جاري التوليد..." : `إصدار ${batchIssueCount} ملصقات الآن`}</span>
-                  </Button>
-                </div>
-              </div>
-            </div>
-
             {/* رفع ملف دفعات المطبعة (CSV / JSON) */}
             <div className="rounded-3xl border border-white/10 bg-[#12151F] p-6 space-y-4">
               <div className="flex items-center gap-3">

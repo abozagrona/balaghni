@@ -1824,16 +1824,7 @@ export async function verifyAdminAuthentication(params: {
       store
     );
 
-    const sessionToken = Buffer.from(
-      JSON.stringify({
-        id: mappedProfile.id,
-        phone: mappedProfile.phone,
-        fullName: mappedProfile.fullName,
-        role: mappedProfile.role,
-        permissions: mappedProfile.permissions,
-        iat: Date.now(),
-      })
-    ).toString("base64");
+    const sessionToken = createAdminSessionToken(mappedProfile);
 
     return {
       ok: true,
@@ -1943,16 +1934,7 @@ export async function verifyAdminAuthentication(params: {
     { ...profileRow, last_login: nowIso },
     store
   );
-  const sessionToken = Buffer.from(
-    JSON.stringify({
-      id: mappedProfile.id,
-      phone: mappedProfile.phone,
-      fullName: mappedProfile.fullName,
-      role: mappedProfile.role,
-      permissions: mappedProfile.permissions,
-      iat: Date.now(),
-    })
-  ).toString("base64");
+  const sessionToken = createAdminSessionToken(mappedProfile);
 
   return {
     ok: true,
@@ -1963,10 +1945,121 @@ export async function verifyAdminAuthentication(params: {
 }
 
 /**
+ * الحدود الزمنية الصارمة لجلسات المديرين
+ */
+export const ADMIN_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 دقيقة خمول
+export const ADMIN_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان كحد أقصى للجلسة
+export const ADMIN_COOKIE_MAX_AGE_SECONDS = 2 * 60 * 60; // 7200 ثانية
+
+/**
+ * توليد رمز جلسة إدارية مشفر وموثق زمنياً
+ */
+export function createAdminSessionToken(profile: {
+  id: string;
+  phone: string;
+  fullName: string;
+  role: string;
+  permissions: AdminPermission[];
+  sessionCreatedAt?: number;
+}): string {
+  const now = Date.now();
+  const sessionCreatedAt = profile.sessionCreatedAt || now;
+  return Buffer.from(
+    JSON.stringify({
+      id: profile.id,
+      phone: profile.phone,
+      fullName: profile.fullName,
+      role: profile.role,
+      permissions: profile.permissions,
+      iat: sessionCreatedAt,
+      sessionCreatedAt,
+      lastActivityAt: now,
+      exp: sessionCreatedAt + ADMIN_ABSOLUTE_TIMEOUT_MS,
+    })
+  ).toString("base64");
+}
+
+/**
+ * فحص صلاحية وتوقيت جلسة المدير (مهلة خمول 15 دقيقة / حد أقصى ساعتان)
+ */
+export function verifyAdminSessionToken(token?: string): {
+  valid: boolean;
+  expired?: boolean;
+  error?: string;
+  payload?: {
+    id?: string;
+    phone?: string;
+    fullName?: string;
+    role?: string;
+    permissions?: AdminPermission[];
+    sessionCreatedAt?: number;
+    lastActivityAt?: number;
+  };
+} {
+  const raw = String(token || "").trim();
+  if (!raw) {
+    return { valid: false, error: "لا توجد جلسة إدارية نشطة." };
+  }
+
+  try {
+    const jsonStr = Buffer.from(raw, "base64").toString("utf-8");
+    if (jsonStr.startsWith("{") && jsonStr.endsWith("}")) {
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed === "object") {
+        const now = Date.now();
+        const createdAt = Number(parsed.sessionCreatedAt || parsed.iat || 0);
+        const lastActive = Number(parsed.lastActivityAt || createdAt || 0);
+
+        // 1. فحص الحد الأقصى لعمر الجلسة (ساعتان من لحظة تسجيل الدخول)
+        if (
+          (createdAt > 0 && now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS) ||
+          (typeof parsed.exp === "number" && now >= parsed.exp)
+        ) {
+          return {
+            valid: false,
+            expired: true,
+            error:
+              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+          };
+        }
+
+        // 2. فحص مهلة الخمول (15 دقيقة من عدم النشاط)
+        if (lastActive > 0 && now - lastActive >= ADMIN_IDLE_TIMEOUT_MS) {
+          return {
+            valid: false,
+            expired: true,
+            error:
+              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+          };
+        }
+
+        return {
+          valid: true,
+          payload: {
+            id: parsed.id,
+            phone: parsed.phone,
+            fullName: parsed.fullName,
+            role: parsed.role,
+            permissions: parsed.permissions,
+            sessionCreatedAt: createdAt,
+            lastActivityAt: lastActive,
+          },
+        };
+      }
+    }
+  } catch {
+    // ليس JSON Base64 صالحاً
+  }
+
+  return { valid: false, error: "رمز الجلسة غير صالح." };
+}
+
+/**
  * التحقق الأمني الصارم من صلاحية المشرف لتعديل وحفظ التعديلات المرئية المباشرة (can_live_edit أو SUPER_ADMIN)
  */
 export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Promise<{
   authorized: boolean;
+  expired?: boolean;
   profile?: AdminProfileRecord | null;
   error?: string;
 }> {
@@ -1981,18 +2074,21 @@ export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Pro
   let adminId: string | null = null;
   let adminPhone: string | null = null;
 
-  // فحص ما إذا كان الرمز base64 لجلسة إدارية مشفرة
-  try {
-    const jsonStr = Buffer.from(token, "base64").toString("utf-8");
-    if (jsonStr.startsWith("{") && jsonStr.endsWith("}")) {
-      const parsed = JSON.parse(jsonStr);
-      if (parsed && typeof parsed === "object") {
-        if (parsed.id) adminId = String(parsed.id).trim();
-        if (parsed.phone) adminPhone = String(parsed.phone).trim();
-      }
-    }
-  } catch {
-    // ليس base64 صالحاً، نفترض أنه adminId أو phone مباشرة
+  // فحص صلاحية رمز الجلسة والمهل الزمنية
+  const sessionCheck = verifyAdminSessionToken(token);
+  if (sessionCheck.expired) {
+    return {
+      authorized: false,
+      expired: true,
+      error:
+        sessionCheck.error ||
+        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+    };
+  }
+
+  if (sessionCheck.valid && sessionCheck.payload) {
+    if (sessionCheck.payload.id) adminId = sessionCheck.payload.id;
+    if (sessionCheck.payload.phone) adminPhone = sessionCheck.payload.phone;
   }
 
   if (!adminId && token.includes("-") && token.length >= 32) {
@@ -2036,6 +2132,21 @@ export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Pro
     };
   }
 
+  if (profileRow.last_login) {
+    const lastLoginTime = new Date(profileRow.last_login).getTime();
+    if (
+      !Number.isNaN(lastLoginTime) &&
+      Date.now() - lastLoginTime >= ADMIN_ABSOLUTE_TIMEOUT_MS
+    ) {
+      return {
+        authorized: false,
+        expired: true,
+        error:
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+      };
+    }
+  }
+
   const mapped = mapAdminProfileRow(profileRow, loadAdminStore());
   const isSuperAdmin = mapped.role === "SUPER_ADMIN";
   const hasLiveEdit = mapped.permissions.includes("can_live_edit");
@@ -2062,6 +2173,7 @@ export async function verifyAdminActionPermission(
   action?: string
 ): Promise<{
   authorized: boolean;
+  expired?: boolean;
   profile?: AdminProfileRecord | null;
   error?: string;
 }> {
@@ -2076,25 +2188,21 @@ export async function verifyAdminActionPermission(
   let adminId: string | null = null;
   let adminPhone: string | null = null;
 
-  // فحص ما إذا كان الرمز base64 لجلسة إدارية مشفرة
-  try {
-    const jsonStr = Buffer.from(token, "base64").toString("utf-8");
-    if (jsonStr.startsWith("{") && jsonStr.endsWith("}")) {
-      const parsed = JSON.parse(jsonStr);
-      if (parsed && typeof parsed === "object") {
-        if (parsed.id) adminId = String(parsed.id).trim();
-        if (parsed.adminId) adminId = String(parsed.adminId).trim();
-        if (parsed.phone) adminPhone = String(parsed.phone).trim();
-        if (typeof parsed.exp === "number" && Date.now() > parsed.exp) {
-          return {
-            authorized: false,
-            error: "انتهت صلاحية الجلسة الإدارية. يرجى تسجيل الدخول مجدداً.",
-          };
-        }
-      }
-    }
-  } catch {
-    // ليس base64 صالحاً
+  // فحص صلاحية رمز الجلسة والمهل الزمنية (15 دقيقة خمول / ساعتان حد أقصى)
+  const sessionCheck = verifyAdminSessionToken(token);
+  if (sessionCheck.expired) {
+    return {
+      authorized: false,
+      expired: true,
+      error:
+        sessionCheck.error ||
+        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+    };
+  }
+
+  if (sessionCheck.valid && sessionCheck.payload) {
+    if (sessionCheck.payload.id) adminId = sessionCheck.payload.id;
+    if (sessionCheck.payload.phone) adminPhone = sessionCheck.payload.phone;
   }
 
   if (!adminId && token.includes("-") && token.length >= 32) {
@@ -2136,6 +2244,21 @@ export async function verifyAdminActionPermission(
       authorized: false,
       error: "هذا الحساب الإداري مجمد حالياً.",
     };
+  }
+
+  if (profileRow.last_login) {
+    const lastLoginTime = new Date(profileRow.last_login).getTime();
+    if (
+      !Number.isNaN(lastLoginTime) &&
+      Date.now() - lastLoginTime >= ADMIN_ABSOLUTE_TIMEOUT_MS
+    ) {
+      return {
+        authorized: false,
+        expired: true,
+        error:
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+      };
+    }
   }
 
   const mapped = mapAdminProfileRow(profileRow, loadAdminStore());
