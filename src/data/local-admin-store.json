@@ -1,0 +1,216 @@
+{
+  "rateLimits": {
+    "0919009899": {
+      "failedAttempts": 0,
+      "lockoutUntilIso": null
+    },
+    "0910000000": {
+      "failedAttempts": 1,
+      "lockoutUntilIso": null
+    }
+  },
+  "lastLogins": {
+    "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02": "2026-11-09T21:05:33.762Z"
+  },
+  "notifyCooldowns": {},
+  "auditLogs": [
+    {
+      "id": "aud_mw9wtgsz_ku11",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "IMPORT_TAGS_BATCH",
+      "actionDetails": "تم إدراج 5 ملصق جديد بحالة LOCKED مع تشفير رموز الخدش عبر SHA-256",
+      "tagCode": null,
+      "createdAt": "2026-11-09T23:46:02.962Z"
+    },
+    {
+      "id": "aud_mw9r32yx_gh90",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T21:05:33.897Z"
+    },
+    {
+      "id": "aud_mw9r2trz_oyog",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_ENROLLED",
+      "actionDetails": "تم تفعيل وربط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T21:05:21.983Z"
+    },
+    {
+      "id": "aud_mw9r2j7k_egxz",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T21:05:08.288Z"
+    },
+    {
+      "id": "aud_mw9r0fem_pe9u",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_UNLINKED",
+      "actionDetails": "تم مسح وفك ارتباط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T21:03:30.046Z"
+    },
+    {
+      "id": "aud_mw9qn05q_abk2",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_ENROLLED",
+      "actionDetails": "تم تفعيل وربط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:53:03.758Z"
+    },
+    {
+      "id": "aud_mw9qmmsr_spz8",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:52:46.443Z"
+    },
+    {
+      "id": "aud_mw9qjhuz_qbxm",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:50:20.075Z"
+    },
+    {
+      "id": "aud_mw9qj28y_bi8j",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_UNLINKED",
+      "actionDetails": "تم مسح وفك ارتباط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:49:59.842Z"
+    },
+    {
+      "id": "aud_mw9qixpk_ihpa",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بنقرة واحدة بالبصمة الحيوية (Zero-Typing Passkey Login) للمشرف (مدير النظام الرئيسي)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:49:53.960Z"
+    },
+    {
+      "id": "aud_mw9q38ob_h3p9",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بالبصمة الحيوية (Passkey) للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:37:41.675Z"
+    },
+    {
+      "id": "aud_mw9pw5ho_u2nf",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بالبصمة الحيوية (Passkey) للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:32:10.956Z"
+    },
+    {
+      "id": "aud_mw9pts4z_i1wd",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بالبصمة الحيوية (Passkey) للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:30:20.339Z"
+    },
+    {
+      "id": "aud_mw9ps51j_2co5",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بالبصمة الحيوية (Passkey) للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:29:03.751Z"
+    },
+    {
+      "id": "aud_mw9prrby_t89p",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_ENROLLED",
+      "actionDetails": "تم تفعيل وربط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:28:45.982Z"
+    },
+    {
+      "id": "aud_mw9prepq_6fka",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:28:29.630Z"
+    },
+    {
+      "id": "aud_mw9pabqu_0rfv",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:15:12.630Z"
+    },
+    {
+      "id": "aud_mw9p3b4t_xr2g",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_UNLINKED",
+      "actionDetails": "تم مسح وفك ارتباط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:09:45.245Z"
+    },
+    {
+      "id": "aud_mw9p31kp_u6zt",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_PASSKEY_ENROLLED",
+      "actionDetails": "تم تفعيل وربط البصمة الحيوية (Passkey) لحساب المشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T20:09:32.857Z"
+    },
+    {
+      "id": "aud_mw9on00q_qd9c",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T19:57:04.346Z"
+    },
+    {
+      "id": "aud_mw9okp6v_mcys",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T19:55:16.999Z"
+    },
+    {
+      "id": "aud_mw9oiepe_2k0m",
+      "adminId": "8b13d3d1-7cdb-4ab2-b52d-5248f3eb9d02",
+      "adminName": "مدير النظام الرئيسي",
+      "actionType": "ADMIN_LOGIN",
+      "actionDetails": "تسجيل دخول مؤسسي ناجح بكلمة المرور للمشرف (0919009899)",
+      "tagCode": null,
+      "createdAt": "2026-11-09T19:53:30.098Z"
+    }
+  ]
+}
