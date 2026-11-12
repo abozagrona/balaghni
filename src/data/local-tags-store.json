@@ -1,1 +1,102 @@
-{}
+{
+  "LY-U5Z4-HBM7": {
+    "tag_code": "LY-U5Z4-HBM7",
+    "activation_pin_hash": "38a462f8fb0cd34ff12d1bccded6e65e63e16433192abef51d7ad37a0605b2ee",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.836Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-7RJM-A38U": {
+    "tag_code": "LY-7RJM-A38U",
+    "activation_pin_hash": "4f731d8e46d441864de81d68fcb5c93919c60b72c220a2eec319ddbc9108ac62",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.837Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-G3CV-7MTX": {
+    "tag_code": "LY-G3CV-7MTX",
+    "activation_pin_hash": "5ff71d9324066e73e84868e0d5ab9613585c46560cc510c72e275d91e6f7afb5",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.838Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-8EY6-5NDG": {
+    "tag_code": "LY-8EY6-5NDG",
+    "activation_pin_hash": "cec7f3c3de909763698121829bb6e4e0dceeec7136d662e28aa1b95bbb694b95",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.838Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-7WP3-9DH5": {
+    "tag_code": "LY-7WP3-9DH5",
+    "activation_pin_hash": "94eb21062bf15dfbbcaf48b546866718911cf0a27f0b9f78987ce94ac336f954",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.838Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-4PCB-KEG9": {
+    "tag_code": "LY-4PCB-KEG9",
+    "activation_pin_hash": "ba25c84fc022a070940cb7a9fcb1a2087029ac4bfb331060248f52361d10d563",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.838Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-SQ2Y-6AMC": {
+    "tag_code": "LY-SQ2Y-6AMC",
+    "activation_pin_hash": "145732cfe9aeac063c6fcb4825c058fbf9df0a3a083428f2783431c6dd2b1ff0",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.838Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-7HZ8-KYB2": {
+    "tag_code": "LY-7HZ8-KYB2",
+    "activation_pin_hash": "d164dbf93f6b396415124c52d38cc4d081e6fb5e3e900646e2b7cbbe39e18651",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.838Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-HCSZ-U94T": {
+    "tag_code": "LY-HCSZ-U94T",
+    "activation_pin_hash": "3738d1d06bab241be3122f2b761438f421df563d0346ed38d5138ede0f88a145",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.839Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  },
+  "LY-T2RM-J8SZ": {
+    "tag_code": "LY-T2RM-J8SZ",
+    "activation_pin_hash": "5ccadbe006597fb79e76eafc6124028cc9343f4475ba281650ead7f4fac0f271",
+    "status": "LOCKED",
+    "batch_name": "دفعة-تجريبية-1",
+    "created_at": "2026-11-12T18:52:34.839Z",
+    "tier": "premium",
+    "alert_channel": "BOTH",
+    "has_emergency_contacts": false
+  }
+}
