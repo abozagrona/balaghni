@@ -35,8 +35,8 @@ function generateRecoveryKeyShort(): string {
 function SecuritySetupContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const rawTag = searchParams.get("tag") || "LY-K7W9-P2M4";
-  const tagCode = formatBalaghniTagCode(rawTag);
+  const rawTag = searchParams?.get("tag") || "";
+  const tagCode = formatBalaghniTagCode(rawTag || "LY-000000");
 
   const [recoveryKey, setRecoveryKey] = React.useState("BK-8492-X7M1");
   const [vehicleInfo, setVehicleInfo] = React.useState("سيارة مسجلة");

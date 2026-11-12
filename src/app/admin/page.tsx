@@ -28,6 +28,7 @@ import {
   Activity,
   Ban,
   Copy,
+  Sparkles,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
@@ -190,6 +191,15 @@ export default function ExecutiveAdminDashboardPage() {
   const [securityModalTag, setSecurityModalTag] =
     React.useState<AdminTagRecord | null>(null);
   const [newClientPin, setNewClientPin] = React.useState("");
+
+  // نافذة استعراض وتأكيد إعادة ضبط المصنع
+  const [factoryResetModalTag, setFactoryResetModalTag] =
+    React.useState<AdminTagRecord | null>(null);
+  const [factoryResetLoading, setFactoryResetLoading] = React.useState(false);
+
+  // توليد وإصدار الدفعات النظيفة الفورية
+  const [issuingBatch, setIssuingBatch] = React.useState(false);
+  const [batchIssueCount, setBatchIssueCount] = React.useState<number>(5);
 
   // تبويب استيراد الدفعات (CSV / JSON) وإدخال ملصق مطبوع مفرد
   const [singleTagCode, setSingleTagCode] = React.useState("");
@@ -676,48 +686,116 @@ export default function ExecutiveAdminDashboardPage() {
     setPasswordInput("");
   };
 
-  // إدارة دورة حياة الملصقات
+  // ترويسات الصلاحية الإدارية المحمية
+  const getAdminHeaders = React.useCallback(() => {
+    return {
+      "Content-Type": "application/json",
+      ...(adminSession?.sessionToken
+        ? { Authorization: `Bearer ${adminSession.sessionToken}` }
+        : {}),
+      ...(adminSession?.id ? { "x-admin-id": adminSession.id } : {}),
+    };
+  }, [adminSession]);
+
+  // إدارة دورة حياة الملصقات مع تحديث فوري لحظي (Optimistic UI) وتطبيق على قاعدة البيانات
   const handleQuickStatusChange = async (
     tagCode: string,
     status: TagStatus
   ) => {
-    const res = await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "set_status",
-        tagCode,
-        status,
-        adminId,
-        adminName,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) {
-      setTags(data.tags || []);
-      setAuditLogs(data.auditLogs || []);
-      showToast(`تم تغيير حالة الملصق (${tagCode}) إلى ${status}`);
+    const prevTags = [...tags];
+    setTags((current) =>
+      current.map((t) => (t.tagCode === tagCode ? { ...t, status } : t))
+    );
+
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "set_status",
+          tagCode,
+          status,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTags(data.tags || []);
+        setAuditLogs(data.auditLogs || []);
+        showToast(`تم تغيير حالة الملصق (${tagCode}) إلى ${status} بنجاح ✓`);
+      } else {
+        setTags(prevTags);
+        showToast(data.error || "تعذر تغيير حالة الملصق.");
+      }
+    } catch {
+      setTags(prevTags);
+      showToast("تعذر تغيير حالة الملصق نتيجة خطأ في الاتصال.");
     }
   };
 
+  // إعادة ضبط المصنع الشاملة للملصق وإعادته نظيفاً لحالة LOCKED
   const handleFactoryResetTag = async (tagCode: string) => {
-    const res = await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "factory_reset",
-        tagCode,
-        adminId,
-        adminName,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) {
-      setTags(data.tags || []);
-      setAuditLogs(data.auditLogs || []);
-      showToast(
-        `تمت إعادة ضبط المصنع للملصق (${tagCode}) وإرجاعه لحالة LOCKED ✓`
-      );
+    setFactoryResetLoading(true);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "factory_reset",
+          tagCode,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTags(data.tags || []);
+        setAuditLogs(data.auditLogs || []);
+        setFactoryResetModalTag(null);
+        showToast(
+          `تمت إعادة ضبط المصنع للملصق (${tagCode}) وإرجاعه لحالة LOCKED بنجاح ✓`
+        );
+      } else {
+        showToast(data.error || "تعذر إعادة ضبط المصنع للملصق.");
+      }
+    } catch {
+      showToast("تعذر إعادة ضبط المصنع نتيجة خطأ في الاتصال.");
+    } finally {
+      setFactoryResetLoading(false);
+    }
+  };
+
+  // توليد وإصدار دفعة ملصقات فورية نظيفة (حالة LOCKED غير مرتبطة بأي مركبة أو هاتف)
+  const handleQuickIssueBatch = async (count: number = 5) => {
+    if (issuingBatch) return;
+    setIssuingBatch(true);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "issue_batch",
+          count,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTags(data.tags || []);
+        setAuditLogs(data.auditLogs || []);
+        showToast(`تم إصدار وتوليد ${count} ملصقات جديدة بنجاح بحالة LOCKED ✓`);
+      } else {
+        showToast(data.error || "تعذر إصدار الملصقات الجديدة.");
+      }
+    } catch {
+      showToast("تعذر إصدار الملصقات نتيجة خطأ في الاتصال.");
+    } finally {
+      setIssuingBatch(false);
     }
   };
 
@@ -725,26 +803,33 @@ export default function ExecutiveAdminDashboardPage() {
     e.preventDefault();
     if (!editingTag) return;
 
-    const res = await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "update_vehicle",
-        tagCode: editingTag.tagCode,
-        vehicleInfo: editVehicleInfo,
-        city: editCity,
-        ownerPhone: editOwnerPhone,
-        alertChannel: editAlertChannel,
-        adminId,
-        adminName,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) {
-      setTags(data.tags || []);
-      setAuditLogs(data.auditLogs || []);
-      setEditingTag(null);
-      showToast(`تم تحديث بيانات المركبة للملصق (${editingTag.tagCode}) ✓`);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "update_vehicle",
+          tagCode: editingTag.tagCode,
+          vehicleInfo: editVehicleInfo,
+          city: editCity,
+          ownerPhone: editOwnerPhone,
+          alertChannel: editAlertChannel,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTags(data.tags || []);
+        setAuditLogs(data.auditLogs || []);
+        setEditingTag(null);
+        showToast(`تم تحديث بيانات المركبة للملصق (${editingTag.tagCode}) ✓`);
+      } else {
+        showToast(data.error || "تعذر تحديث بيانات المركبة.");
+      }
+    } catch {
+      showToast("تعذر تحديث بيانات المركبة نتيجة خطأ في الاتصال.");
     }
   };
 
@@ -752,26 +837,33 @@ export default function ExecutiveAdminDashboardPage() {
     e.preventDefault();
     if (!securityModalTag) return;
 
-    const res = await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "reset_owner_security",
-        tagCode: securityModalTag.tagCode,
-        newOwnerPin: newClientPin.trim() || undefined,
-        adminId,
-        adminName,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) {
-      setTags(data.tags || []);
-      setAuditLogs(data.auditLogs || []);
-      setSecurityModalTag(null);
-      setNewClientPin("");
-      showToast(
-        `تمت إعادة تعيين أمان المالك وفك ربط البصمة للملصق (${securityModalTag.tagCode}) ✓`
-      );
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "reset_owner_security",
+          tagCode: securityModalTag.tagCode,
+          newOwnerPin: newClientPin.trim() || undefined,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTags(data.tags || []);
+        setAuditLogs(data.auditLogs || []);
+        setSecurityModalTag(null);
+        setNewClientPin("");
+        showToast(
+          `تمت إعادة تعيين أمان المالك وفك ربط البصمة للملصق (${securityModalTag.tagCode}) ✓`
+        );
+      } else {
+        showToast(data.error || "تعذر إعادة تعيين أمان المالك.");
+      }
+    } catch {
+      showToast("تعذر إعادة تعيين أمان المالك نتيجة خطأ في الاتصال.");
     }
   };
 
@@ -1790,6 +1882,17 @@ export default function ExecutiveAdminDashboardPage() {
                     {st === "ALL" ? "الكل" : st}
                   </button>
                 ))}
+
+                <button
+                  type="button"
+                  disabled={issuingBatch}
+                  onClick={() => handleQuickIssueBatch(5)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-black text-emerald-400 hover:bg-emerald-500 hover:text-black transition active:scale-95 disabled:opacity-50"
+                  title="توليد 5 ملصقات جديدة فوراً بحالة LOCKED غير مرتبطة بأي مركبة أو هاتف"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>{issuingBatch ? "جاري التوليد..." : "إصدار 5 ملصقات جديدة"}</span>
+                </button>
               </div>
             </div>
 
@@ -1956,13 +2059,12 @@ export default function ExecutiveAdminDashboardPage() {
                                 <span>أمان المالك</span>
                               </button>
 
-                              {/* 3. إعادة ضبط المصنع (Factory Reset) */}
+                              {/* 3. إعادة ضبط المصنع (Factory Reset) مع نافذة تأكيد تحذيرية */}
                               <button
                                 type="button"
-                                onClick={() =>
-                                  handleFactoryResetTag(tag.tagCode)
-                                }
-                                className="inline-flex items-center gap-1 rounded-xl border border-primary/35 bg-primary/10 px-2.5 py-1.5 text-[11px] font-bold text-[#FF6B72] hover:bg-primary hover:text-white"
+                                onClick={() => setFactoryResetModalTag(tag)}
+                                className="inline-flex items-center gap-1 rounded-xl border border-primary/35 bg-primary/10 px-2.5 py-1.5 text-[11px] font-bold text-[#FF6B72] hover:bg-primary hover:text-white transition active:scale-95"
+                                title="إعادة ضبط المصنع وفك ارتباط المركبة"
                               >
                                 <RotateCcw className="h-3.5 w-3.5" />
                                 <span>ضبط مصنع</span>
@@ -1984,6 +2086,52 @@ export default function ExecutiveAdminDashboardPage() {
         {/* ==================================================================== */}
         {activeTab === "import" && (
           <section className="grid gap-6 lg:grid-cols-2">
+            {/* بطاقة توليد وإصدار دفعة نظيفة مباشرة لقاعدة البيانات وملف المطبعة */}
+            <div className="rounded-3xl border border-emerald-500/30 bg-gradient-to-l from-emerald-500/10 via-[#12151F] to-[#12151F] p-6 space-y-4 lg:col-span-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/20 text-emerald-400 shrink-0">
+                    <Sparkles className="h-6 w-6" />
+                  </span>
+                  <div>
+                    <h2 className="text-base font-black text-white sm:text-lg">
+                      توليد وإصدار دفعة ملصقات نظيفة فورية (Clean Batch Issuance)
+                    </h2>
+                    <p className="text-xs text-white/65">
+                      توليد أكواد ملصقات رسمية جديدة (LY-XXXX-XXXX) مع أرقام خدش سرية وتشفير SHA-256 وحفظها بحالة LOCKED غير مرتبطة بأي مركبة، وتحديث ملف الطباعة print_batch.csv تلقائياً.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  {[5, 10, 25, 50].map((cnt) => (
+                    <button
+                      key={cnt}
+                      type="button"
+                      onClick={() => setBatchIssueCount(cnt)}
+                      className={cn(
+                        "rounded-xl px-3 py-1.5 text-xs font-mono font-black transition",
+                        batchIssueCount === cnt
+                          ? "bg-emerald-500 text-black shadow-lg"
+                          : "border border-white/10 bg-[#07090E] text-white/70 hover:text-white"
+                      )}
+                    >
+                      {cnt}
+                    </button>
+                  ))}
+                  <Button
+                    type="button"
+                    disabled={issuingBatch}
+                    onClick={() => handleQuickIssueBatch(batchIssueCount)}
+                    className="rounded-2xl bg-emerald-500 text-black hover:bg-emerald-400 font-black shadow-lg text-xs h-10 px-4 active:scale-95"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>{issuingBatch ? "جاري التوليد..." : `إصدار ${batchIssueCount} ملصقات الآن`}</span>
+                  </Button>
+                </div>
+              </div>
+            </div>
+
             {/* رفع ملف دفعات المطبعة (CSV / JSON) */}
             <div className="rounded-3xl border border-white/10 bg-[#12151F] p-6 space-y-4">
               <div className="flex items-center gap-3">
@@ -2605,6 +2753,86 @@ export default function ExecutiveAdminDashboardPage() {
               </Button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* نافذة تأكيد إعادة ضبط المصنع الشاملة للملصق */}
+      {factoryResetModalTag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl border-2 border-primary/50 bg-[#12151F] p-6 text-white shadow-2xl space-y-5">
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/20 px-3 py-1 text-xs font-black text-primary">
+                <RotateCcw className="h-4 w-4" />
+                تأكيد إعادة ضبط المصنع للملصق
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!factoryResetLoading) setFactoryResetModalTag(null);
+                }}
+                className="text-white/60 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[#07090E] p-4 text-center">
+              <span className="text-xs text-white/50 block mb-1">كود الملصق المراد تصفيره</span>
+              <span dir="ltr" className="font-mono text-xl font-black text-white">
+                {factoryResetModalTag.tagCode}
+              </span>
+            </div>
+
+            <div className="space-y-2 rounded-2xl border border-primary/25 bg-primary/5 p-4 text-xs text-white/85">
+              <p className="font-black text-primary flex items-center gap-1.5 text-sm">
+                <AlertOctagon className="h-4 w-4 text-primary" />
+                تحذير: سيترتب على هذا الإجراء ما يلي فوراً:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-white/70 pr-2 leading-relaxed">
+                <li>
+                  فك ارتباط المركبة (
+                  <strong className="text-white font-bold">
+                    {factoryResetModalTag.vehicleInfo || "غير مرتبط بمركبة"}
+                  </strong>
+                  ) وإلغاء المدينة وقناة التنبيه.
+                </li>
+                <li>
+                  حذف رقم هاتف المالك (
+                  <strong className="text-white font-mono font-bold" dir="ltr">
+                    {factoryResetModalTag.ownerPhone || "—"}
+                  </strong>
+                  ) نهائياً من سجلات الملصق.
+                </li>
+                <li>إلغاء وإتلاف كافة إعدادات الأمان (رمز PIN وبصمة المالك Passkey).</li>
+                <li>حذف ومسح كافة البلاغات والتنبيهات المرتبطة بهذا الملصق من قاعدة البيانات.</li>
+                <li>
+                  إرجاع حالة الملصق إلى{" "}
+                  <span className="font-mono font-bold text-amber-400">LOCKED</span> كأنه
+                  جديد ومطبوع للتو، ليصبح متاحاً للربط والتفعيل من الصفر.
+                </li>
+              </ul>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={factoryResetLoading}
+                onClick={() => setFactoryResetModalTag(null)}
+                className="rounded-xl border-white/20 bg-white/5 text-white"
+              >
+                إلغاء
+              </Button>
+              <Button
+                type="button"
+                disabled={factoryResetLoading}
+                onClick={() => handleFactoryResetTag(factoryResetModalTag.tagCode)}
+                className="rounded-xl bg-primary text-white hover:bg-primary/90 font-bold"
+              >
+                {factoryResetLoading ? "جاري إعادة الضبط..." : "تأكيد ضبط المصنع وفك الارتباط"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 

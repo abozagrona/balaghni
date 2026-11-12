@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { createClient } = require("@supabase/supabase-js");
 
 const SAFE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const SAFE_LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ";
@@ -30,15 +31,23 @@ function hashSha256(val) {
   return crypto.createHash("sha256").update(String(val).trim(), "utf8").digest("hex");
 }
 
-function main() {
+async function main() {
   const storePath = path.join(process.cwd(), "src/data/local-tags-store.json");
   let store = {};
   if (fs.existsSync(storePath)) {
-    store = JSON.parse(fs.readFileSync(storePath, "utf8"));
+    try {
+      store = JSON.parse(fs.readFileSync(storePath, "utf8"));
+    } catch {
+      store = {};
+    }
   }
 
   const existing = new Set(Object.keys(store));
   const newTags = [];
+
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://aivxhxnvgqxylugqrjei.supabase.co";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_wUsqBoHbhbuvVitBDo2wuw_xOhU-IEe";
+  const supabase = createClient(rawUrl, serviceKey);
 
   for (let i = 0; i < 5; i++) {
     const tagCode = generateTagCode(existing);
@@ -65,24 +74,19 @@ function main() {
       alert_channel: "BOTH",
       has_emergency_contacts: false,
     };
+
+    try {
+      await supabase.from("tags").upsert({
+        tag_code: tagCode,
+        activation_pin_hash: pinHash,
+        status: "LOCKED",
+      }, { onConflict: "tag_code" });
+    } catch {
+      // ignore
+    }
   }
 
   fs.writeFileSync(storePath, JSON.stringify(store, null, 2), "utf8");
-
-  // إضافة الأكواد لملف SQL
-  const sqlLines = newTags
-    .map((t) => `  ('${t.tagCode}', '${t.pinHash}', 'LOCKED')`)
-    .join(",\n");
-  const sqlContent = [
-    `\n-- إضافة 5 ملصقات جديدة بحالة LOCKED (${new Date().toISOString()})`,
-    "insert into public.tags (tag_code, activation_pin_hash, status)",
-    "values",
-    sqlLines,
-    "on conflict (tag_code) do nothing;\n",
-  ].join("\n");
-
-  const sqlPath = path.join(process.cwd(), "seed_supabase.sql");
-  fs.appendFileSync(sqlPath, sqlContent, "utf8");
 
   // إضافة الأكواد لملف المطبعة
   const baseUrl = "https://balaghni.ly";
@@ -96,7 +100,15 @@ function main() {
     fs.appendFileSync(csvPath, csvLines + "\n", "utf8");
   }
 
+  console.log("Successfully generated 5 new tags (LOCKED status):");
   console.log(JSON.stringify(newTags, null, 2));
 }
 
-main();
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = { main };

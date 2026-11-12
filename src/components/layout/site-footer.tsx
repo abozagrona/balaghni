@@ -91,7 +91,7 @@ export function SiteFooter() {
               </li>
               <li>
                 <Link
-                  href="/s/LY-K7W9-P2M4"
+                  href="/activate"
                   className="inline-flex items-center gap-2 font-bold text-white transition-colors hover:text-primary"
                 >
                   <QrCode className="h-4 w-4 text-primary" />

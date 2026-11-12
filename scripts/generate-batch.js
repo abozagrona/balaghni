@@ -83,17 +83,6 @@ function main() {
   const generatedCodes = new Set();
   const records = [];
 
-  // إضافة كود تجريبي ثابت بحالة LOCKED لتسهيل الاختبار الفوري (LY-K7W9-P2M4 / PIN: 482915)
-  const demoLockedCode = "LY-K7W9-P2M4";
-  const demoLockedPin = "482915";
-  generatedCodes.add(demoLockedCode);
-  records.push({
-    tagCode: demoLockedCode,
-    pin: demoLockedPin,
-    pinHash: hashPinSha256(demoLockedPin),
-    qrUrl: `${baseUrl}/s/${demoLockedCode}`,
-  });
-
   while (records.length < batchSize) {
     const tagCode = generateUniqueTagCode(generatedCodes);
     const pin = generateScratchPin();

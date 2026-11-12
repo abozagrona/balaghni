@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   supabase,
+  supabaseAdmin,
   verifyAdminAuthentication,
   verifyAdminActionPermission,
   getExecutiveAdminOverview,
   adminManageTagLifecycle,
   adminImportPrintedTags,
+  adminGenerateNewBatch,
   adminManageTeamMember,
   adminDangerZoneResetSystem,
   type TagStatus,
@@ -50,7 +52,7 @@ export async function POST(req: NextRequest) {
       (action === "auth" && body.mode === "lookup_passkey" && !body.identifier) ||
       (body.mode === "lookup_passkey" && !body.identifier)
     ) {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from("admin_profiles")
         .select("passkey_credential_id")
         .not("passkey_credential_id", "is", null)
@@ -89,7 +91,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const { data: adminProfile, error } = await supabase
+      const { data: adminProfile, error } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
         .eq("passkey_credential_id", credentialId)
@@ -108,7 +110,7 @@ export async function POST(req: NextRequest) {
 
       const nowIso = new Date().toISOString();
       try {
-        await supabase
+        await supabaseAdmin
           .from("admin_profiles")
           .update({ last_login: nowIso })
           .eq("id", adminProfile.id);
@@ -269,6 +271,23 @@ export async function POST(req: NextRequest) {
         adminId: effectiveAdminId,
         adminName: effectiveAdminName,
         items,
+      });
+      const overview = await getExecutiveAdminOverview();
+      return NextResponse.json({
+        ...res,
+        tags: overview.tags,
+        auditLogs: overview.auditLogs,
+      });
+    }
+
+    // إصدار وتوليد دفعة ملصقات جديدة مشفرة بحالة LOCKED (غير مرتبطة بمركبة أو رقم هاتف)
+    if (action === "issue_batch") {
+      const count =
+        typeof body.count === "number" && body.count > 0 ? body.count : 5;
+      const res = await adminGenerateNewBatch({
+        count,
+        adminId: effectiveAdminId,
+        adminName: effectiveAdminName,
       });
       const overview = await getExecutiveAdminOverview();
       return NextResponse.json({

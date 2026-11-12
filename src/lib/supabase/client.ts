@@ -19,6 +19,18 @@ const normalizedAnonKey = rawSupabaseAnonKey.replace(
 
 export const supabase = createClient(rawSupabaseUrl, normalizedAnonKey);
 
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+export const supabaseAdmin = createClient(
+  rawSupabaseUrl,
+  serviceRoleKey || normalizedAnonKey,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  }
+);
+
 export type TagStatus = "LOCKED" | "ACTIVE" | "REVOKED";
 export type AlertChannel = "SMS" | "WHATSAPP" | "BOTH";
 
@@ -81,97 +93,7 @@ function normalizeStatus(raw?: string | null): TagStatus {
   return "LOCKED";
 }
 
-export const INITIAL_SEED_TAGS: Record<string, StoredTagRow> = {
-  "LY-K7W9-P2M4": {
-    tag_code: "LY-K7W9-P2M4",
-    activation_pin_hash: "48290cf691c41cbc99b2396d2e5313ccfba91987b384e6d8f08b951fa5045e83",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-A2Z8-CSUE": {
-    tag_code: "LY-A2Z8-CSUE",
-    activation_pin_hash: "3f1805615ba88904a1a963ea596cf1a8d0932f2fc19a648290e30b3d3ebd9f74",
-    status: "ACTIVE",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-    owner_phone: "+218929009899",
-    vehicle_info: "هونداي سوناتا رصاصية",
-    vehicle_brand: "هونداي سوناتا رصاصية",
-    vehicle_model: "",
-    city: "طرابلس",
-    activated_at: "2026-11-09T23:53:49.801Z",
-    passkey_credential_id: "i9UXuXs-ZpDR15PcvuQYtw",
-    owner_pin_hash: "6a11e608ce7c07b82d3e64e28645fc03bfd6d18c6c76ef5baacfe6ffdb468258",
-    recovery_key_hash: "81fa6ee1effdb09dd5de25b8e02e3c530befed25c521708d789c828f267c3d38",
-  },
-  "LY-AF9C-Y4ST": {
-    tag_code: "LY-AF9C-Y4ST",
-    activation_pin_hash: "d7470674d878e9150eb195ebe94c7832580396f362cb02ade28ae78ae2c042f7",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-8E79-534M": {
-    tag_code: "LY-8E79-534M",
-    activation_pin_hash: "8fc91e9b15d2e39576644efd12b45c4c8cace9564debecc1d5de8b754917b448",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-9MZF-2CYK": {
-    tag_code: "LY-9MZF-2CYK",
-    activation_pin_hash: "1eb050371e90d872d029ef8aa40fdc31074da3954d13aad7f5608ca7787de7ed",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-VC6U-D8FZ": {
-    tag_code: "LY-VC6U-D8FZ",
-    activation_pin_hash: "5688d19b1e820965dfbf9e08a699f1719f8919ce82c8ab78473bf51d5ed68d7f",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-PCH4-UTM3": {
-    tag_code: "LY-PCH4-UTM3",
-    activation_pin_hash: "5c9355d75bd31cfa4ecbbbdee20827ae09c8419ad040939fb9222cd6f766bd89",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-548X-3FQR": {
-    tag_code: "LY-548X-3FQR",
-    activation_pin_hash: "cec576b3ced48017980099421967fae1632be93005445e517f41fe285f3d8c2c",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-MJ4S-8V9K": {
-    tag_code: "LY-MJ4S-8V9K",
-    activation_pin_hash: "d17606214c1c0242086685c3ac526884bcfbcc308ab1e190e4d57736eeaad67f",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-  "LY-ED6R-XPF3": {
-    tag_code: "LY-ED6R-XPF3",
-    activation_pin_hash: "8bd0f5833526981664093ad99753fad5153ea58f000ab8d2a7c7eba84b0dac5d",
-    status: "LOCKED",
-    tier: "premium",
-    alert_channel: "BOTH",
-    has_emergency_contacts: false,
-  },
-};
+export const INITIAL_SEED_TAGS: Record<string, StoredTagRow> = {};
 
 function loadSyncedStore(): Record<string, StoredTagRow> {
   const map: Record<string, StoredTagRow> = {};
@@ -238,24 +160,9 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
   };
 }
 
-/**
- * محاولة مزامنة/إدراج الملصق في جدول tags بـ Supabase
- */
 export async function ensureDemoTagSeededInSupabase() {
-  try {
-    const pinHash =
-      "48290cf691c41cbc99b2396d2e5313ccfba91987b384e6d8f08b951fa5045e83";
-    await supabase.from("tags").upsert(
-      {
-        tag_code: "LY-K7W9-P2M4",
-        activation_pin_hash: pinHash,
-        status: "LOCKED",
-      },
-      { onConflict: "tag_code", ignoreDuplicates: true }
-    );
-  } catch {
-    // قد تكون سياسة RLS للإدراج مقيدة للمفتاح العام قبل تشغيل ملف SQL
-  }
+  // تم إيقاف أي إدراج افتراضي لملصقات تجريبية لضمان الاعتماد الحصري على قاعدة البيانات النظيفة بنسبة 100%
+  return;
 }
 
 /**
@@ -2530,7 +2437,7 @@ export async function adminManageTagLifecycle(params: {
   let targetRow: StoredTagRow | null = localMap[normalizedCode] || null;
 
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("tags")
       .select("*")
       .eq("tag_code", normalizedCode)
@@ -2572,13 +2479,20 @@ export async function adminManageTagLifecycle(params: {
     };
 
     try {
-      await supabase
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          owner_phone: updated.owner_phone,
+        })
+        .eq("tag_code", normalizedCode);
+
+      await supabaseAdmin
         .from("tags")
         .update({
           vehicle_info: updated.vehicle_info,
           vehicle_brand: updated.vehicle_brand,
           city: updated.city,
-          owner_phone: updated.owner_phone,
+          alert_channel: updated.alert_channel,
         })
         .eq("tag_code", normalizedCode);
     } catch {
@@ -2606,7 +2520,7 @@ export async function adminManageTagLifecycle(params: {
     };
 
     try {
-      await supabase
+      await supabaseAdmin
         .from("tags")
         .update({ status: nextStatus })
         .eq("tag_code", normalizedCode);
@@ -2622,7 +2536,7 @@ export async function adminManageTagLifecycle(params: {
       actionType: `TAG_STATUS_${nextStatus}`,
       actionDetails:
         nextStatus === "REVOKED"
-          ? "إلغاء وأرشفة الملصق (Soft Delete / REVOKED) وسحبه من الخدمة"
+          ? "إلغاء وأرشفة الملصق (Soft Delete / REVOKED) وإيقاف استقبال البلاغات عليه نهائياً"
           : `تبديل حالة الملصق إلى ${nextStatus}`,
       tagCode: normalizedCode,
     });
@@ -2648,17 +2562,46 @@ export async function adminManageTagLifecycle(params: {
     };
 
     try {
-      await supabase
+      // Base columns
+      await supabaseAdmin
         .from("tags")
         .update({
           status: "LOCKED",
           owner_phone: null,
           owner_pin_hash: null,
-          recovery_key_hash: null,
           passkey_credential_id: null,
-          vehicle_info: null,
           activated_at: null,
         })
+        .eq("tag_code", normalizedCode);
+
+      // Extended columns
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          vehicle_info: null,
+          vehicle_brand: null,
+          vehicle_model: null,
+          city: null,
+          recovery_key_hash: null,
+        })
+        .eq("tag_code", normalizedCode);
+    } catch {
+      // ignore
+    }
+
+    // حذف جميع البلاغات والتنبيهات والوثائق المسجلة على هذا الملصق في Supabase
+    try {
+      await supabaseAdmin
+        .from("reports")
+        .delete()
+        .eq("tag_code", normalizedCode);
+      await supabaseAdmin
+        .from("reports")
+        .delete()
+        .eq("tag_id", normalizedCode);
+      await supabaseAdmin
+        .from("vehicle_documents")
+        .delete()
         .eq("tag_code", normalizedCode);
     } catch {
       // ignore
@@ -2677,7 +2620,7 @@ export async function adminManageTagLifecycle(params: {
       adminName: params.adminName,
       actionType: "TAG_FACTORY_RESET",
       actionDetails:
-        "تصفير ربط السيارة والهاتف والـ PIN والبصمة وإرجاع الملصق لحالة LOCKED كأنه خرج من المطبعة",
+        "ضبط مصنع كامل: مسح ربط السيارة، هاتف المالك، رمز PIN، بصمة Passkey، وحذف البلاغات، وإرجاع الملصق لحالة LOCKED كأنه خرج من المطبعة",
       tagCode: normalizedCode,
     });
 
@@ -2695,7 +2638,7 @@ export async function adminManageTagLifecycle(params: {
     };
 
     try {
-      await supabase
+      await supabaseAdmin
         .from("tags")
         .update({
           owner_pin_hash: newPinHash,
@@ -2762,7 +2705,7 @@ export async function adminImportPrintedTags(params: {
     };
 
     try {
-      await supabase.from("tags").upsert(
+      await supabaseAdmin.from("tags").upsert(
         {
           tag_code: code,
           activation_pin_hash: pinHash,
@@ -2789,6 +2732,142 @@ export async function adminImportPrintedTags(params: {
   }
 
   return { ok: true, importedCount };
+}
+
+const SAFE_TAG_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const SAFE_TAG_LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ";
+const SAFE_TAG_DIGITS = "23456789";
+
+function generateSecureTagCode(existingCodes: Set<string>): string {
+  while (true) {
+    const pool = SAFE_TAG_CHARS.split("");
+    const chosen: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const idx = crypto.randomInt(0, pool.length);
+      chosen.push(pool[idx]);
+      pool.splice(idx, 1);
+    }
+    const hasLetters =
+      chosen.filter((c) => SAFE_TAG_LETTERS.includes(c)).length >= 2;
+    const hasDigits =
+      chosen.filter((c) => SAFE_TAG_DIGITS.includes(c)).length >= 2;
+    if (!hasLetters || !hasDigits) continue;
+    const code = `LY-${chosen.slice(0, 4).join("")}-${chosen.slice(4, 8).join("")}`;
+    if (!existingCodes.has(code)) {
+      existingCodes.add(code);
+      return code;
+    }
+  }
+}
+
+/**
+ * توليد وإصدار دفعة ملصقات جديدة نظيفة بحالة LOCKED وغير مرتبطة بمركبة أو رقم هاتف
+ */
+export async function adminGenerateNewBatch(params: {
+  count?: number;
+  adminId?: string | null;
+  adminName: string;
+}): Promise<{
+  ok: boolean;
+  generatedCount: number;
+  tags: Array<{
+    tagCode: string;
+    scratchPin: string;
+    activationPinHash: string;
+    status: TagStatus;
+  }>;
+  csvContent: string;
+  error?: string;
+}> {
+  const count =
+    typeof params.count === "number" && params.count > 0 ? params.count : 5;
+  const localMap = loadSyncedStore();
+  const existingCodes = new Set<string>(Object.keys(localMap));
+
+  try {
+    const { data } = await supabaseAdmin.from("tags").select("tag_code");
+    if (Array.isArray(data)) {
+      for (const r of data) {
+        if (r.tag_code) existingCodes.add(String(r.tag_code).toUpperCase());
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const generatedList: Array<{
+    tagCode: string;
+    scratchPin: string;
+    activationPinHash: string;
+    status: TagStatus;
+  }> = [];
+
+  const csvRows: string[] = [];
+  const baseUrl = "https://balaghni.ly";
+
+  for (let i = 0; i < count; i++) {
+    const tagCode = generateSecureTagCode(existingCodes);
+    const scratchPin = String(crypto.randomInt(100000, 1000000));
+    const activationPinHash = hashSha256(scratchPin);
+
+    const newRow: StoredTagRow = {
+      tag_code: tagCode,
+      activation_pin_hash: activationPinHash,
+      status: "LOCKED",
+      tier: "premium",
+      alert_channel: "BOTH",
+      has_emergency_contacts: false,
+    };
+
+    try {
+      await supabaseAdmin.from("tags").insert({
+        tag_code: tagCode,
+        activation_pin_hash: activationPinHash,
+        status: "LOCKED",
+      });
+    } catch {
+      // ignore
+    }
+
+    saveToSyncedStore(newRow);
+
+    generatedList.push({
+      tagCode,
+      scratchPin,
+      activationPinHash,
+      status: "LOCKED",
+    });
+
+    csvRows.push(`"${baseUrl}/s/${tagCode}","${tagCode}","${scratchPin}"`);
+  }
+
+  // حفظ في print_batch.csv
+  const printBatchPath = path.join(process.cwd(), "print_batch.csv");
+  const header = "qr_url,tag_code,scratch_pin\n";
+  const newCsvData = csvRows.join("\n") + "\n";
+  try {
+    if (!fs.existsSync(printBatchPath)) {
+      fs.writeFileSync(printBatchPath, header + newCsvData, "utf8");
+    } else {
+      fs.appendFileSync(printBatchPath, newCsvData, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+
+  await recordAdminAuditLog({
+    adminId: params.adminId,
+    adminName: params.adminName,
+    actionType: "BATCH_ISSUE_TAGS",
+    actionDetails: `تم إصدار دفعة جديدة مكونة من ${count} ملصقات مشفرة بحالة LOCKED (غير مرتبطة بمركبة أو رقم هاتف)`,
+  });
+
+  return {
+    ok: true,
+    generatedCount: count,
+    tags: generatedList,
+    csvContent: header + newCsvData,
+  };
 }
 
 /**
@@ -3070,11 +3149,37 @@ export async function adminDangerZoneResetSystem(params: {
 }): Promise<{ ok: boolean }> {
   try {
     if (fs.existsSync(LOCAL_STORE_PATH)) {
-      fs.unlinkSync(LOCAL_STORE_PATH);
+      fs.writeFileSync(LOCAL_STORE_PATH, "{}", "utf8");
     }
     if (fs.existsSync(DASHBOARD_STORE_PATH)) {
-      fs.unlinkSync(DASHBOARD_STORE_PATH);
+      fs.writeFileSync(
+        DASHBOARD_STORE_PATH,
+        JSON.stringify({ documents: {}, reports: {}, maintenance: {} }, null, 2),
+        "utf8"
+      );
     }
+    const printBatchPath = path.join(process.cwd(), "print_batch.csv");
+    if (fs.existsSync(printBatchPath)) {
+      fs.writeFileSync(printBatchPath, "qr_url,tag_code,scratch_pin\n", "utf8");
+    }
+  } catch {
+    // ignore
+  }
+
+  // مسح السجلات من قاعدة بيانات Supabase دون المساس بملفات المشرفين admin_profiles
+  try {
+    await supabaseAdmin
+      .from("reports")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabaseAdmin
+      .from("vehicle_documents")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabaseAdmin
+      .from("tags")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
   } catch {
     // ignore
   }
@@ -3088,7 +3193,7 @@ export async function adminDangerZoneResetSystem(params: {
     adminName: params.adminName,
     actionType: "DANGER_ZONE_RESET",
     actionDetails:
-      "تم مسح سجلات الاختبار وإعادة جميع الملصقات المولدة إلى حالة LOCKED النظيفة دون المساس ببنية الجداول",
+      "تم مسح كافة سجلات الملصقات والبيانات الوهمية وإعادة النظام لحالة نظيفة (0 ملصقات) بالكامل",
   });
 
   return { ok: true };
