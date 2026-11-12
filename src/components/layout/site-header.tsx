@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import {
   Menu,
   X,
-  QrCode,
   ShoppingBag,
   LogIn,
   User,
@@ -79,24 +78,11 @@ export function SiteHeader() {
 
           {/* روابط سطح المكتب */}
           <nav className="hidden items-center gap-6 text-sm font-bold text-muted-foreground lg:flex">
-            <Link
-              href="/#how-it-works"
-              className="transition hover:text-primary"
-            >
-              كيف يعمل؟
-            </Link>
             <Link href="/#situations" className="transition hover:text-primary">
               مواقف يومية
             </Link>
             <Link href="/#pricing" className="transition hover:text-primary">
               الباقات والأسعار
-            </Link>
-            <Link
-              href="/s/LY-123456"
-              className="inline-flex items-center gap-1.5 text-primary transition hover:opacity-80"
-            >
-              <QrCode className="h-4 w-4" />
-              <span>تجربة صفحة المسح</span>
             </Link>
           </nav>
 
@@ -288,13 +274,6 @@ export function SiteHeader() {
               )}
 
               <Link
-                href="/#how-it-works"
-                onClick={() => setMobileOpen(false)}
-                className="rounded-xl px-3 py-2 hover:bg-muted"
-              >
-                كيف يعمل؟
-              </Link>
-              <Link
                 href="/#situations"
                 onClick={() => setMobileOpen(false)}
                 className="rounded-xl px-3 py-2 hover:bg-muted"
@@ -307,13 +286,6 @@ export function SiteHeader() {
                 className="rounded-xl px-3 py-2 hover:bg-muted"
               >
                 الباقات والأسعار (د.ل)
-              </Link>
-              <Link
-                href="/s/LY-123456"
-                onClick={() => setMobileOpen(false)}
-                className="rounded-xl bg-secondary px-3 py-2 text-primary"
-              >
-                تجربة صفحة المسح الفورية (LY-123456)
               </Link>
 
               {/* أزرار الإجراءات للموبايل */}

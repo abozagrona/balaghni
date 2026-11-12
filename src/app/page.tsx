@@ -4,7 +4,7 @@ import {
   ShieldCheck,
   LockKeyhole,
   Zap,
-  QrCode,
+  ArrowDown,
   Check,
   ArrowLeft,
 } from "lucide-react";
@@ -128,11 +128,11 @@ export default function HomePage() {
                     asChild
                     variant="outline"
                     size="xl"
-                    className="rounded-full px-6"
+                    className="rounded-full border-primary/25 bg-secondary/50 px-6 text-foreground hover:border-primary hover:bg-secondary transition-all"
                   >
-                    <Link href="/s/LY-123456">
-                      <QrCode className="h-4 w-4 text-primary" />
-                      <span>جرّب صفحة المسح الحية</span>
+                    <Link href="#how-it-works">
+                      <span>كيف يعمل؟</span>
+                      <ArrowDown className="h-4 w-4 text-primary" />
                     </Link>
                   </Button>
                 </div>
