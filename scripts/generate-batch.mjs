@@ -194,12 +194,28 @@ export async function generateOfflineBatch(options = {}) {
   const csvContent = bom + [header, ...rows].join("\r\n") + "\r\n";
   fs.writeFileSync(exportFilePath, csvContent, "utf8");
 
+  // حفظ نسخة تلقائية في مجلد التنزيلات العام بالجهاز (/sdcard/Download/) لسهولة الرفع
+  const downloadDir = "/sdcard/Download";
+  let downloadFilePath = null;
+  try {
+    if (fs.existsSync(downloadDir)) {
+      downloadFilePath = path.join(downloadDir, exportFileName);
+      fs.writeFileSync(downloadFilePath, csvContent, "utf8");
+    }
+  } catch (err) {
+    console.warn("⚠️ تعذر نسخ الملف إلى /sdcard/Download:", err.message);
+  }
+
   console.log("");
   console.log("==================================================");
   console.log("          تم توليد وتصدير الملف بنجاح!            ");
   console.log("==================================================");
-  console.log(`📄 المسار الدقيق لملف الـ CSV:`);
+  console.log(`📄 المسار داخل مجلد المشروع (exports):`);
   console.log(`   ${exportFilePath}`);
+  if (downloadFilePath) {
+    console.log(`📥 مسار نسخة التنزيلات العامة (جاهزة للرفع المباشر من المتصفح):`);
+    console.log(`   ${downloadFilePath}`);
+  }
   console.log(`📊 إجمالي الأكواد المولدة: ${records.length}`);
   console.log(`📑 الأعمدة: code, qr_url, batch_name, status`);
   console.log(`🔒 الحالة: LOCKED (جاهزة للرفع اليدوي في /admin)`);
@@ -210,6 +226,7 @@ export async function generateOfflineBatch(options = {}) {
     success: true,
     count: records.length,
     exportFilePath,
+    downloadFilePath,
     exportFileName,
     records,
   };
