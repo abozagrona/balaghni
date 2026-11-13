@@ -1447,7 +1447,7 @@ export async function pullAndActivateLockedTag(params: {
           activated_at: params.startsAt,
         })
         .eq("tag_code", candidateCode)
-        .in("status", ["LOCKED", "locked", "unactivated", "UNACTIVATED"])
+        .eq("status", "LOCKED")
         .select("tag_code");
 
       if (!tagErr && Array.isArray(tagRows) && tagRows.length > 0) {
