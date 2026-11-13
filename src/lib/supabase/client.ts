@@ -2581,49 +2581,60 @@ export async function sendZeroLeakNotification(params: {
   let deliveredChannels: AlertChannel = tag.alertChannel || "BOTH";
 
   if (tag.ownerPhone) {
-    const vehicleLabel = tag.vehicleInfo || tag.vehicleBrand || "سيارتك";
+    const var1 = (tag.vehicleInfo || tag.vehicleBrand || normalizedCode)
+      .trim()
+      .slice(0, 25);
+    const var2 = meta.title.trim().slice(0, 25);
+    const var3 = meta.description.trim().slice(0, 35);
+    const localCallerDigits = callerPhone.replace(/[^\d]/g, "");
+    const formattedCaller = localCallerDigits
+      ? (localCallerDigits.startsWith("218")
+          ? `0${localCallerDigits.slice(3)}`
+          : localCallerDigits.startsWith("9") && localCallerDigits.length === 9
+          ? `0${localCallerDigits}`
+          : callerPhone
+        ).slice(0, 15)
+      : "غير مرفق";
+
     const whatsappLines = [
-      `🚨 تنبيه فوري من منصة بَلِّغْنِي (${normalizedCode})`,
-      `المركبة: ${vehicleLabel}`,
-      `السبب: ${meta.title}`,
-      `التفاصيل: ${meta.description}`,
-      ...(callerPhone ? [`رقم المبلِّغ للتواصل: ${callerPhone}`] : []),
+      `(منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}): ${var2}، ${var3}، رقم المبلّغ (${formattedCaller}) للتواصل السريع`,
+      ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
       ...(params.location ? [`الموقع التقريبي: ${params.location}`] : []),
     ];
 
-    const smsVar1 = (tag.vehicleInfo || tag.vehicleBrand || normalizedCode)
-      .trim()
-      .slice(0, 30);
-    const smsVar2 = `${meta.title}${callerPhone ? ` - ${callerPhone}` : ""}`
-      .trim()
-      .slice(0, 70);
+    const waResult = await sendWhatsappAlertMessage(
+      tag.ownerPhone,
+      whatsappLines.join("\n"),
+      params.photoUrl
+    );
+    const waOk = waResult.ok;
 
-    const [waResult, smsResult] = await Promise.allSettled([
-      sendWhatsappAlertMessage(tag.ownerPhone, whatsappLines.join("\n")),
-      sendSmsAlertMessage(tag.ownerPhone, smsVar1, smsVar2),
-    ]);
+    let smsOk = false;
+    let smsStatus: number | undefined;
+    let smsError: string | undefined;
 
-    const waOk = waResult.status === "fulfilled" && waResult.value.ok;
-    const smsOk = smsResult.status === "fulfilled" && smsResult.value.ok;
+    if (!waOk) {
+      const smsResult = await sendSmsAlertMessage(
+        tag.ownerPhone,
+        var1,
+        var2,
+        var3,
+        formattedCaller
+      );
+      smsOk = smsResult.ok;
+      smsStatus = smsResult.status;
+      smsError = smsResult.error;
+    }
 
     console.log(
-      `[Dual Delivery ${normalizedCode}] WhatsApp=${
-        waOk
-          ? "OK"
-          : waResult.status === "fulfilled"
-          ? waResult.value.error
-          : waResult.reason
+      `[Report Delivery ${normalizedCode}] WhatsApp=${
+        waOk ? "OK" : waResult.error
       } | SMS=${
-        smsOk
-          ? "OK"
-          : smsResult.status === "fulfilled"
-          ? `${smsResult.value.status || ""} ${smsResult.value.error}`
-          : smsResult.reason
+        !waOk ? (smsOk ? "OK" : `${smsStatus || ""} ${smsError || ""}`) : "SKIPPED (WA OK)"
       }`
     );
 
-    if (waOk && smsOk) deliveredChannels = "BOTH";
-    else if (waOk) deliveredChannels = "WHATSAPP";
+    if (waOk) deliveredChannels = "WHATSAPP";
     else if (smsOk) deliveredChannels = "SMS";
   }
 

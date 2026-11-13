@@ -227,7 +227,8 @@ export async function sendOtpViaWhatsapp(
 
 export async function sendWhatsappAlertMessage(
   phone: string,
-  message: string
+  message: string,
+  photoUrl?: string | null
 ): Promise<{ ok: boolean; error?: string }> {
   if (!GREEN_API_TOKEN || !GREEN_API_INSTANCE) {
     return { ok: false, error: "Green-API credentials are not configured" };
@@ -243,6 +244,36 @@ export async function sendWhatsappAlertMessage(
       /\/$/,
       ""
     );
+    const chatId = `${cleanPhone}@c.us`;
+    const trimmedPhoto = String(photoUrl || "").trim();
+
+    if (/^https?:\/\//i.test(trimmedPhoto)) {
+      const fileController = new AbortController();
+      const fileTimeout = setTimeout(() => fileController.abort(), 8000);
+      try {
+        const fileRes = await fetch(
+          `${baseUrl}/waInstance${GREEN_API_INSTANCE}/sendFileByUrl/${GREEN_API_TOKEN}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chatId,
+              urlFile: trimmedPhoto,
+              fileName: "report.jpg",
+              caption: message,
+            }),
+            signal: fileController.signal,
+          }
+        ).finally(() => clearTimeout(fileTimeout));
+
+        if (fileRes.ok) {
+          return { ok: true };
+        }
+      } catch {
+        // fallback to text sendMessage if media upload fails
+      }
+    }
+
     const url = `${baseUrl}/waInstance${GREEN_API_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 7000);
@@ -251,7 +282,7 @@ export async function sendWhatsappAlertMessage(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chatId: `${cleanPhone}@c.us`,
+        chatId,
         message,
       }),
       signal: controller.signal,
@@ -359,19 +390,23 @@ async function sendResalaTemplateMessage(params: {
 
 export async function sendSmsAlertMessage(
   phone: string,
-  var1: string,
-  var2: string
+  vehicleOrTag: string,
+  reportTitle: string,
+  reportDescription: string,
+  callerPhone?: string
 ): Promise<{ ok: boolean; status?: number; response?: unknown; error?: string }> {
   const templateId =
     process.env.RESALA_SMS_TEMPLATE_ID?.trim() ||
-    "94f4d6a2-8cc1-4448-a267-6abf0b8bdd90";
+    "9f578af8-10d1-43ef-a7c8-70b323363eb7";
 
   return sendResalaTemplateMessage({
     phone,
     templateId,
     variables: {
-      $1: String(var1 || "").trim().slice(0, 30),
-      $2: String(var2 || "").trim().slice(0, 70),
+      $1: String(vehicleOrTag || "").trim().slice(0, 25),
+      $2: String(reportTitle || "").trim().slice(0, 25),
+      $3: String(reportDescription || "").trim().slice(0, 35),
+      $4: String(callerPhone || "غير مرفق").trim().slice(0, 15),
     },
     logLabel: "Resala Report SMS",
   });
