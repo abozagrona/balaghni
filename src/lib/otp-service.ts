@@ -403,19 +403,19 @@ export async function sendNabehniReminderSms(
 
 export async function sendSubscriptionExpirySms(
   phone: string,
-  vehicleOrTag: string,
-  expiryLabel: string
+  statusLabel: string,
+  expiryDetail: string
 ): Promise<{ ok: boolean; status?: number; response?: unknown; error?: string }> {
   const templateId =
     process.env.RESALA_SUBSCRIPTION_TEMPLATE_ID?.trim() ||
-    "da2107a0-c318-42bb-b2ac-b6117b49a49f";
+    "d10d86ca-4be1-4807-89d4-497cfdc0c145";
 
   return sendResalaTemplateMessage({
     phone,
     templateId,
     variables: {
-      $1: String(vehicleOrTag || "").trim().slice(0, 25),
-      $2: String(expiryLabel || "").trim().slice(0, 25),
+      $1: String(statusLabel || "").trim().slice(0, 25),
+      $2: String(expiryDetail || "").trim().slice(0, 30),
     },
     logLabel: "Resala Subscription Expiry SMS",
   });

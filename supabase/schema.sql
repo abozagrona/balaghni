@@ -38,6 +38,8 @@ create table if not exists public.tags (
   emergency_phones text[] default '{}',
   -- تاريخ التفعيل الذاتي وتاريخ الإنشاء
   activated_at timestamptz,
+  last_sub_reminder_stage text,
+  last_sub_reminder_sent_at timestamptz,
   created_at timestamptz not null default now()
 );
 

@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const NABEHNI_STAGE_DAYS = new Set([30, 14, 3, 0]);
-const SUBSCRIPTION_MILESTONES = new Set([14, 7, 3, 1, 0]);
+const SUBSCRIPTION_STAGE_DAYS = new Set([30, 14, 3, 0, -7]);
 
 function computeDaysUntil(expiryDate: string): number | null {
   const target = new Date(expiryDate);
@@ -64,11 +64,39 @@ function getNabehniPhaseLabel(
   }
 }
 
-function formatExpiryLabelArabic(daysLeft: number): string {
-  if (daysLeft === 0) return "اليوم";
-  if (daysLeft === 1) return "غداً";
-  if (daysLeft <= 10) return `بعد ${daysLeft} أيام`;
-  return `بعد ${daysLeft} يوم`;
+function getSubscriptionStageVars(
+  daysRemaining: number,
+  slashExpiryDate: string
+): { statusLabel: string; expiryDetail: string } | null {
+  switch (daysRemaining) {
+    case 30:
+      return {
+        statusLabel: "حيتم خلال شهر",
+        expiryDetail: `تاريخ الانتهاء ${slashExpiryDate}`,
+      };
+    case 14:
+      return {
+        statusLabel: "حيتم خلال أسبوعين",
+        expiryDetail: `تاريخ الانتهاء ${slashExpiryDate}`,
+      };
+    case 3:
+      return {
+        statusLabel: "حيتم خلال 3 أيام",
+        expiryDetail: `تاريخ الانتهاء ${slashExpiryDate}`,
+      };
+    case 0:
+      return {
+        statusLabel: "حيتم اليوم",
+        expiryDetail: `تاريخ الانتهاء ${slashExpiryDate}`,
+      };
+    case -7:
+      return {
+        statusLabel: "توقّف حالياً",
+        expiryDetail: "تمّ من أسبوع فات",
+      };
+    default:
+      return null;
+  }
 }
 
 function resolveSubscriptionExpiryIso(
@@ -87,6 +115,51 @@ function resolveSubscriptionExpiryIso(
   return expiryDate.toISOString().slice(0, 10);
 }
 
+function isSubscriptionActiveForTag(
+  tag: Record<string, unknown>,
+  subDaysRemaining: number | null
+): boolean {
+  const subStatus = String(tag.subscription_status || "")
+    .trim()
+    .toUpperCase();
+  if (
+    subStatus === "EXPIRED" ||
+    subStatus === "INACTIVE" ||
+    subStatus === "SUSPENDED" ||
+    subStatus === "CANCELLED"
+  ) {
+    return false;
+  }
+  if (subDaysRemaining !== null && subDaysRemaining < 0) {
+    return false;
+  }
+  return true;
+}
+
+async function sendWhatsappWithSmsFallback(
+  phone: string,
+  whatsappText: string,
+  sendSmsFallback: () => Promise<{ ok: boolean; error?: string }>
+): Promise<{
+  whatsappOk: boolean;
+  smsAttempted: boolean;
+  smsOk: boolean;
+  smsError?: string;
+}> {
+  const waRes = await sendWhatsappAlertMessage(phone, whatsappText);
+  if (waRes.ok) {
+    return { whatsappOk: true, smsAttempted: false, smsOk: false };
+  }
+
+  const smsRes = await sendSmsFallback();
+  return {
+    whatsappOk: false,
+    smsAttempted: true,
+    smsOk: smsRes.ok,
+    ...(smsRes.error ? { smsError: smsRes.error } : {}),
+  };
+}
+
 async function handleRemindersCron(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET?.trim();
   if (cronSecret) {
@@ -99,8 +172,7 @@ async function handleRemindersCron(request: NextRequest) {
     }
   }
 
-  const forceAllUpcoming =
-    request.nextUrl.searchParams.get("force") === "true";
+  const forceAll = request.nextUrl.searchParams.get("force") === "true";
   const todayIso = new Date().toISOString().slice(0, 10);
 
   try {
@@ -124,9 +196,13 @@ async function handleRemindersCron(request: NextRequest) {
     }
 
     type TagTarget = {
+      tagId: string;
       tagCode: string;
       ownerPhone: string;
       vehicleOrTag: string;
+      subExpiryIso: string | null;
+      subDaysRemaining: number | null;
+      subscriptionActive: boolean;
       raw: Record<string, unknown>;
     };
 
@@ -140,10 +216,23 @@ async function handleRemindersCron(request: NextRequest) {
       const phone = String(row.owner_phone || "").trim();
       if (!code || !phone) continue;
 
+      const subExpiryIso = resolveSubscriptionExpiryIso(row);
+      const subDaysRemaining = subExpiryIso
+        ? computeDaysUntil(subExpiryIso)
+        : null;
+      const subscriptionActive = isSubscriptionActiveForTag(
+        row,
+        subDaysRemaining
+      );
+
       const target: TagTarget = {
+        tagId: id,
         tagCode: code,
         ownerPhone: phone,
         vehicleOrTag: String(row.vehicle_make_model || code).trim(),
+        subExpiryIso,
+        subDaysRemaining,
+        subscriptionActive,
         raw: row,
       };
       tagByCode.set(code, target);
@@ -163,9 +252,88 @@ async function handleRemindersCron(request: NextRequest) {
       smsError?: string;
     }> = [];
 
-    // 1. تذكيرات خدمة «نَبِّهْنِي» (4 مراحل: 30، 14، 3، 0 + متابعة أسبوعية واتساب فقط بعد الانتهاء)
+    let suspendedDocumentsCount = 0;
+
+    // 1. إشعارات تجديد اشتراك ملصق بَلِّغْنِي (5 مراحل: 30، 14، 3، 0، -7 فقط)
+    //    WhatsApp أولاً ثم SMS (d10d86ca-4be1-4807-89d4-497cfdc0c145) عند فشل WhatsApp فقط
+    for (const target of tagByCode.values()) {
+      if (!target.subExpiryIso || target.subDaysRemaining === null) continue;
+      if (!SUBSCRIPTION_STAGE_DAYS.has(target.subDaysRemaining)) continue;
+
+      const stageKey = `sub_day_${target.subDaysRemaining}`;
+      const lastSubStage = String(
+        target.raw.last_sub_reminder_stage || ""
+      ).trim();
+      const lastSubSentDate = String(
+        target.raw.last_sub_reminder_sent_at || ""
+      )
+        .trim()
+        .slice(0, 10);
+
+      if (
+        !forceAll &&
+        (lastSubStage === stageKey || lastSubSentDate === todayIso)
+      ) {
+        continue;
+      }
+
+      const slashDate = formatSlashDate(target.subExpiryIso);
+      const vars = getSubscriptionStageVars(target.subDaysRemaining, slashDate);
+      if (!vars) continue;
+
+      const var1 = vars.statusLabel.slice(0, 25);
+      const var2 = vars.expiryDetail.slice(0, 30);
+      const whatsappText = `(منصة بَلِّغْنِي): اشتراك ملصق بَلِّغْنِي ${var1} جدّد اشتراكك لاستمرار الخدمة (${var2})`;
+
+      const delivery = await sendWhatsappWithSmsFallback(
+        target.ownerPhone,
+        whatsappText,
+        () => sendSubscriptionExpirySms(target.ownerPhone, var1, var2)
+      );
+
+      if ((delivery.whatsappOk || delivery.smsOk) && target.tagCode) {
+        try {
+          await supabaseAdmin
+            .from("tags")
+            .update({
+              last_sub_reminder_stage: stageKey,
+              last_sub_reminder_sent_at: new Date().toISOString(),
+            })
+            .eq("tag_code", target.tagCode);
+        } catch {
+          // ignore if dedup columns are not yet present in remote tags table
+        }
+      }
+
+      results.push({
+        kind: "subscription_expiry",
+        tagCode: target.tagCode,
+        stageKey,
+        title: "اشتراك ملصق بَلِّغْنِي",
+        expiryDate: slashDate,
+        daysRemaining: target.subDaysRemaining,
+        ...delivery,
+      });
+    }
+
+    // 2. تذكيرات خدمة «نَبِّهْنِي» (للمشتركين النشطين فقط — تتوقف فوراً إذا انتهى الاشتراك)
     for (const rawDoc of docs || []) {
       const doc = rawDoc as Record<string, unknown>;
+      const docCode = String(doc.tag_code || doc.tagCode || "")
+        .toUpperCase()
+        .trim();
+      const docTagId = String(doc.tag_id || doc.tagId || "").trim();
+      const target =
+        (docCode ? tagByCode.get(docCode) : undefined) ||
+        (docTagId ? tagById.get(docTagId) : undefined);
+      if (!target) continue;
+
+      // الربط الشرطي: إذا انتهى اشتراك الملصق أو كان غير نشط، علّق جميع تذكيرات «نَبِّهْنِي»
+      if (!target.subscriptionActive) {
+        suspendedDocumentsCount += 1;
+        continue;
+      }
+
       const expiryRaw = String(doc.expiry_date || doc.expiryDate || "").trim();
       const daysRemaining = computeDaysUntil(expiryRaw);
       if (daysRemaining === null) continue;
@@ -186,27 +354,18 @@ async function handleRemindersCron(request: NextRequest) {
         .slice(0, 10);
 
       if (
-        !forceAllUpcoming &&
+        !forceAll &&
         (lastStage === stageKey || lastSentDate === todayIso)
       ) {
         continue;
       }
-
-      const docCode = String(doc.tag_code || doc.tagCode || "")
-        .toUpperCase()
-        .trim();
-      const docTagId = String(doc.tag_id || doc.tagId || "").trim();
-      const target =
-        (docCode ? tagByCode.get(docCode) : undefined) ||
-        (docTagId ? tagById.get(docTagId) : undefined);
-      if (!target) continue;
 
       const var2 = String(doc.title || "وثيقة المركبة").trim().slice(0, 25);
       const var3 = target.vehicleOrTag.trim().slice(0, 25);
       const var4 = formatSlashDate(expiryRaw);
 
       if (isWeeklyOverdue) {
-        // المتابعة الأسبوعية بعد انتهاء الصلاحية: WhatsApp فقط (لا SMS نهائياً)
+        // المتابعة الأسبوعية بعد انتهاء وثيقة «نَبِّهْنِي» (طالما الاشتراك سارٍ): WhatsApp فقط بدون SMS
         const weeklyText = `(منصة بَلِّغْنِي) خدمة نَبِّهْنِي: تذكير أسبوعي — ${var2} سيارتك (${var3}) طاح من يوم ${var4} ومزال ما جددتاش، حدّث التاريخ في حسابك بعد التجديد باش نوقفو التذكير.`;
         const waRes = await sendWhatsappAlertMessage(
           target.ownerPhone,
@@ -241,35 +400,19 @@ async function handleRemindersCron(request: NextRequest) {
         continue;
       }
 
-      // المراحل الأربع (30، 14، 3، 0): WhatsApp أولاً، ثم SMS احتياطي فقط عند فشل WhatsApp
+      // المراحل الأربع (30، 14، 3، 0): WhatsApp أولاً، ثم SMS (f1416035-9b11-4699-8289-f4685428c7af) عند فشل WhatsApp فقط
       const phaseLabel = getNabehniPhaseLabel(daysRemaining, var2);
       if (!phaseLabel) continue;
       const var1 = phaseLabel.slice(0, 25);
 
       const whatsappText = `(منصة بَلِّغْنِي) خدمة نَبِّهْنِي: ${var1} ${var2} سيارتك (${var3}) تاريخ الانتهاء ${var4}`;
-      const waRes = await sendWhatsappAlertMessage(
+      const delivery = await sendWhatsappWithSmsFallback(
         target.ownerPhone,
-        whatsappText
+        whatsappText,
+        () => sendNabehniReminderSms(target.ownerPhone, var1, var2, var3, var4)
       );
 
-      let smsAttempted = false;
-      let smsOk = false;
-      let smsError: string | undefined;
-
-      if (!waRes.ok) {
-        smsAttempted = true;
-        const smsRes = await sendNabehniReminderSms(
-          target.ownerPhone,
-          var1,
-          var2,
-          var3,
-          var4
-        );
-        smsOk = smsRes.ok;
-        smsError = smsRes.error;
-      }
-
-      if ((waRes.ok || smsOk) && doc.id) {
+      if ((delivery.whatsappOk || delivery.smsOk) && doc.id) {
         try {
           await supabaseAdmin
             .from("vehicle_documents")
@@ -290,59 +433,7 @@ async function handleRemindersCron(request: NextRequest) {
         title: var2,
         expiryDate: var4,
         daysRemaining,
-        whatsappOk: waRes.ok,
-        smsAttempted,
-        smsOk,
-        ...(smsError ? { smsError } : {}),
-      });
-    }
-
-    // 2. تنبيهات قرب انتهاء اشتراك الملصق (RESALA_SUBSCRIPTION_TEMPLATE_ID)
-    for (const target of tagByCode.values()) {
-      const subExpiry = resolveSubscriptionExpiryIso(target.raw);
-      if (!subExpiry) continue;
-      const daysRemaining = computeDaysUntil(subExpiry);
-      if (daysRemaining === null || daysRemaining < 0 || daysRemaining > 14) {
-        continue;
-      }
-      if (!forceAllUpcoming && !SUBSCRIPTION_MILESTONES.has(daysRemaining)) {
-        continue;
-      }
-
-      const expiryLabel = formatExpiryLabelArabic(daysRemaining);
-      const whatsappMessage = [
-        `⏳ تنبيه اشتراك بَلِّغْنِي`,
-        `اشتراك ملصق (${target.vehicleOrTag}) ينتهي ${expiryLabel} (${formatSlashDate(subExpiry)}).`,
-        `جدّد اشتراكك لاستمرار الخدمة.`,
-      ].join("\n");
-
-      const [waRes, smsRes] = await Promise.allSettled([
-        sendWhatsappAlertMessage(target.ownerPhone, whatsappMessage),
-        sendSubscriptionExpirySms(
-          target.ownerPhone,
-          target.vehicleOrTag,
-          expiryLabel
-        ),
-      ]);
-
-      const whatsappOk = waRes.status === "fulfilled" && waRes.value.ok;
-      const smsOk = smsRes.status === "fulfilled" && smsRes.value.ok;
-      const smsError =
-        smsRes.status === "fulfilled"
-          ? smsRes.value.error
-          : String(smsRes.reason);
-
-      results.push({
-        kind: "subscription_expiry",
-        tagCode: target.tagCode,
-        stageKey: `sub_day_${daysRemaining}`,
-        title: "اشتراك الملصق",
-        expiryDate: formatSlashDate(subExpiry),
-        daysRemaining,
-        whatsappOk,
-        smsAttempted: true,
-        smsOk,
-        ...(smsError ? { smsError } : {}),
+        ...delivery,
       });
     }
 
@@ -350,6 +441,7 @@ async function handleRemindersCron(request: NextRequest) {
       ok: true,
       checkedDocuments: (docs || []).length,
       checkedTags: tagByCode.size,
+      suspendedDocumentsCount,
       remindersSent: results.filter((r) => r.kind === "nabehni_document").length,
       weeklyOverdueSent: results.filter(
         (r) => r.kind === "nabehni_weekly_overdue"
