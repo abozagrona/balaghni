@@ -6,11 +6,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   ShieldCheck,
   KeyRound,
-  Fingerprint,
   Download,
   Copy,
   Check,
-  CheckCircle2,
   AlertCircle,
   LoaderCircle,
   LayoutDashboard,
@@ -19,7 +17,7 @@ import {
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
-import { arrayBufferToBase64Url, formatBalaghniTagCode } from "@/lib/utils";
+import { formatBalaghniTagCode } from "@/lib/utils";
 import { saveOwnerSession } from "@/lib/auth-session";
 
 function generateRecoveryKeyShort(): string {
@@ -49,12 +47,6 @@ function SecuritySetupContent() {
   // الخطوة 2: رمز مرور الحساب (PIN من 6 أرقام) وتأكيده
   const [ownerPin, setOwnerPin] = React.useState("");
   const [confirmPin, setConfirmPin] = React.useState("");
-
-  // الخطوة 3: البصمة الاختيارية (Passkey)
-  const [passkeyCredentialId, setPasskeyCredentialId] = React.useState<
-    string | null
-  >(null);
-  const [passkeyLoading, setPasskeyLoading] = React.useState(false);
 
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -165,77 +157,6 @@ function SecuritySetupContent() {
     setCardSaved(true);
   };
 
-  // تفعيل الدخول ببصمة الوجه / الإصبع (Passkey) عبر WebAuthn مع rp.id = "localhost"
-  const handleEnablePasskey = async () => {
-    if (passkeyLoading || passkeyCredentialId) return;
-    setError(null);
-    setPasskeyLoading(true);
-
-    try {
-      const phone = ownerPhone || "+218912345678";
-      if (
-        typeof window === "undefined" ||
-        !window.PublicKeyCredential ||
-        !navigator.credentials?.create
-      ) {
-        setError(
-          "متصفحك الحالي لا يدعم البصمة (WebAuthn). يمكنك الاعتماد على رمز الـ PIN."
-        );
-        return;
-      }
-
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
-
-      const credential = (await navigator.credentials.create({
-        publicKey: {
-          challenge,
-          rp: { name: "بَلِّغْنِي", id: "localhost" }, // بدون منفذ :3000 نهائياً
-          user: {
-            id: new TextEncoder().encode(phone),
-            name: phone,
-            displayName: phone,
-          },
-          pubKeyCredParams: [
-            { type: "public-key", alg: -7 },
-            { type: "public-key", alg: -257 },
-          ],
-          authenticatorSelection: {
-            authenticatorAttachment: "platform",
-            userVerification: "required",
-            residentKey: "required",
-          },
-          timeout: 60000,
-        },
-      })) as PublicKeyCredential | null;
-
-      if (!credential || !credential.rawId) {
-        setError("تم إلغاء عملية تسجيل البصمة أو لم تكتمل.");
-        return;
-      }
-
-      // تحويل credential.rawId إلى نص Base64URL وتخزينه في عمود passkey_credential_id في جدول tags بـ Supabase
-      const base64UrlCredId = arrayBufferToBase64Url(credential.rawId);
-      setPasskeyCredentialId(base64UrlCredId);
-
-      await fetch("/api/auth/passkey", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tagCode,
-          passkeyCredentialId: base64UrlCredId,
-          ownerPhone: phone,
-        }),
-      }).catch(() => null);
-    } catch {
-      setError(
-        "تعذر تفعيل البصمة على هذا الجهاز حالياً. يمكنك المتابعة برمز الـ PIN (6 أرقام)."
-      );
-    } finally {
-      setPasskeyLoading(false);
-    }
-  };
-
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
@@ -261,7 +182,6 @@ function SecuritySetupContent() {
           body: JSON.stringify({
             ownerPin,
             recoveryKey,
-            passkeyCredentialId,
           }),
         }
       );
@@ -458,56 +378,6 @@ function SecuritySetupContent() {
                 />
               </div>
             </div>
-          </div>
-
-          {/* الخطوة 3: زر اختياري تفعيل الدخول ببصمة الوجه / الإصبع (Passkey) */}
-          <div className="rounded-3xl border border-white/12 bg-[#141721] p-6 space-y-4 sm:p-7">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10 font-mono text-xs font-black text-white">
-                  03
-                </span>
-                <div>
-                  <h2 className="text-base font-black text-white sm:text-lg">
-                    الدخول السريع بالبصمة (Passkey)
-                  </h2>
-                  <p className="text-xs text-white/65">
-                    ربط بصمة الوجه أو الإصبع بجهازك للدخول بدون كتابة الرمز
-                  </p>
-                </div>
-              </div>
-              <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-bold text-white/75">
-                اختياري
-              </span>
-            </div>
-
-            <Button
-              type="button"
-              variant="outline"
-              size="lg"
-              onClick={handleEnablePasskey}
-              disabled={passkeyLoading}
-              className="w-full rounded-2xl border-white/20 bg-white/5 text-white hover:bg-white/12"
-            >
-              {passkeyLoading ? (
-                <>
-                  <LoaderCircle className="h-5 w-5 animate-spin" />
-                  <span>جاري تسجيل البصمة...</span>
-                </>
-              ) : passkeyCredentialId ? (
-                <>
-                  <CheckCircle2 className="h-5 w-5 text-emerald-400" />
-                  <span className="text-emerald-400">
-                    تم تفعيل الدخول بالبصمة (Passkey) ✓
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Fingerprint className="h-5 w-5 text-primary" />
-                  <span>تفعيل الدخول بالبصمة (Passkey)</span>
-                </>
-              )}
-            </Button>
           </div>
 
           {error && (

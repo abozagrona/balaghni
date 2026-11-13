@@ -851,6 +851,37 @@ export async function savePasskeyCredentialForTag(params: {
   return { ok: true };
 }
 
+/**
+ * إلغاء ربط البصمة (Passkey) عن ملصق محدد من لوحة تحكم الزبون
+ */
+export async function clearPasskeyCredentialForTag(
+  rawTagCode: string
+): Promise<{ ok: boolean; error?: string }> {
+  const normalizedCode = rawTagCode.toUpperCase().trim();
+  if (!normalizedCode) {
+    return { ok: false, error: "كود الملصق مطلوب." };
+  }
+
+  try {
+    await supabase
+      .from("tags")
+      .update({ passkey_credential_id: null })
+      .eq("tag_code", normalizedCode);
+  } catch {
+    // ignore
+  }
+
+  const localMap = loadSyncedStore();
+  if (localMap[normalizedCode]) {
+    saveToSyncedStore({
+      ...localMap[normalizedCode],
+      passkey_credential_id: null,
+    });
+  }
+
+  return { ok: true };
+}
+
 export interface VehicleDocumentRecord {
   id: string;
   tagCode: string;

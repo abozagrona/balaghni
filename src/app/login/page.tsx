@@ -182,9 +182,11 @@ export default function OwnerLoginPage() {
         assertion = (await navigator.credentials.get({
           publicKey: {
             challenge,
-            rpId: window.location.hostname,
+            rpId:
+              lookupData.rpId ||
+              window.location.hostname.replace(/^www\./, ""),
             allowCredentials,
-            userVerification: "required",
+            userVerification: "preferred",
             timeout: 60000,
           },
         })) as PublicKeyCredential | null;
