@@ -379,21 +379,23 @@ export async function sendSmsAlertMessage(
 
 export async function sendNabehniReminderSms(
   phone: string,
+  phaseLabel: string,
   reminderType: string,
   vehicleOrTag: string,
   dueDate: string
 ): Promise<{ ok: boolean; status?: number; response?: unknown; error?: string }> {
   const templateId =
     process.env.RESALA_REMINDER_TEMPLATE_ID?.trim() ||
-    "9c32120e-72c0-45ee-abb8-9ad5788ba3ed";
+    "f1416035-9b11-4699-8289-f4685428c7af";
 
   return sendResalaTemplateMessage({
     phone,
     templateId,
     variables: {
-      $1: String(reminderType || "").trim().slice(0, 30),
-      $2: String(vehicleOrTag || "").trim().slice(0, 25),
-      $3: String(dueDate || "").trim().slice(0, 25),
+      $1: String(phaseLabel || "").trim().slice(0, 25),
+      $2: String(reminderType || "").trim().slice(0, 25),
+      $3: String(vehicleOrTag || "").trim().slice(0, 25),
+      $4: String(dueDate || "").trim().slice(0, 15),
     },
     logLabel: "Resala Nabehni Reminder SMS",
   });

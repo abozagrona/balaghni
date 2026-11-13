@@ -128,6 +128,8 @@ create table if not exists public.vehicle_documents (
   title text not null,
   subtitle text,
   expiry_date date not null,
+  last_reminder_stage text,
+  last_reminder_sent_at timestamptz,
   created_at timestamptz not null default now()
 );
 
