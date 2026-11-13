@@ -138,3 +138,75 @@ export function recordOtpAttempt(phone: string, ip: string): void {
     recordKeyAttempt(`ip:${ip.trim()}`);
   }
 }
+
+// ============================================================================
+// حماية فحص رمز الخدش السري (PIN) ضد التخمين (Brute-Force Protection)
+// أقصى حد: 5 محاولات خاطئة لنفس الملصق خلال 15 دقيقة
+// ============================================================================
+
+export const PIN_RATE_LIMIT_MAX_ATTEMPTS = 5;
+export const PIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 دقيقة
+
+const pinFailureStore = new Map<string, RateLimitRecord>();
+
+export function checkPinRateLimit(
+  tagCode: string,
+  ip: string
+): {
+  allowed: boolean;
+  remaining: number;
+  resetMs: number;
+} {
+  const now = Date.now();
+  const windowStart = now - PIN_RATE_LIMIT_WINDOW_MS;
+  const keys = [`tag:${tagCode.toUpperCase().trim()}`];
+  if (ip && ip !== "127.0.0.1") {
+    keys.push(`pin_ip:${ip.trim()}:${tagCode.toUpperCase().trim()}`);
+  }
+
+  for (const key of keys) {
+    const record = pinFailureStore.get(key) || { timestamps: [] };
+    record.timestamps = record.timestamps.filter((t) => t > windowStart);
+    pinFailureStore.set(key, record);
+
+    if (record.timestamps.length >= PIN_RATE_LIMIT_MAX_ATTEMPTS) {
+      const oldest = record.timestamps[0];
+      const resetMs = Math.max(0, oldest + PIN_RATE_LIMIT_WINDOW_MS - now);
+      return {
+        allowed: false,
+        remaining: 0,
+        resetMs,
+      };
+    }
+  }
+
+  const tagRec = pinFailureStore.get(keys[0]) || { timestamps: [] };
+  return {
+    allowed: true,
+    remaining: Math.max(0, PIN_RATE_LIMIT_MAX_ATTEMPTS - tagRec.timestamps.length),
+    resetMs: 0,
+  };
+}
+
+export function recordPinFailure(tagCode: string, ip: string): void {
+  const now = Date.now();
+  const windowStart = now - PIN_RATE_LIMIT_WINDOW_MS;
+  const keys = [`tag:${tagCode.toUpperCase().trim()}`];
+  if (ip && ip !== "127.0.0.1") {
+    keys.push(`pin_ip:${ip.trim()}:${tagCode.toUpperCase().trim()}`);
+  }
+
+  for (const key of keys) {
+    const record = pinFailureStore.get(key) || { timestamps: [] };
+    record.timestamps = record.timestamps.filter((t) => t > windowStart);
+    record.timestamps.push(now);
+    pinFailureStore.set(key, record);
+  }
+}
+
+export function clearPinFailures(tagCode: string, ip: string): void {
+  pinFailureStore.delete(`tag:${tagCode.toUpperCase().trim()}`);
+  if (ip && ip !== "127.0.0.1") {
+    pinFailureStore.delete(`pin_ip:${ip.trim()}:${tagCode.toUpperCase().trim()}`);
+  }
+}

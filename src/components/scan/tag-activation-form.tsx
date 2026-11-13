@@ -49,16 +49,16 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
   const formattedOwnerPhone =
     formatFullLibyaE164(ownerPhone) || `+218${ownerPhone.replace(/\D/g, "")}`;
 
-  // 1. عند الضغط على "تأكيد وتفعيل": فحص الحقول وفتح نافذة الـ OTP أولاً دون الحفظ المباشر
-  const handleSubmit = (e: React.FormEvent) => {
+  // 1. عند الضغط على "تأكيد وتفعيل": التحقق أولاً من رمز الخدش السري (PIN) في الخادم قبل إرسال أي OTP
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
     setError(null);
 
     const cleanPin = pin.trim();
-    if (!/^\d{4,8}$/.test(cleanPin)) {
+    if (!/^\d{6}$/.test(cleanPin)) {
       setError(
-        "يرجى إدخال رمز الخدش السري المكون من 6 أرقام الموجود تحت طبقة الخدش بالبطاقة."
+        "رمز الخدش السري (PIN) غير صحيح. يرجى التأكد من الأرقام الستة تحت طبقة الخدش."
       );
       return;
     }
@@ -78,8 +78,36 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
       return;
     }
 
-    // إيقاف الحفظ المباشر وفتح نافذة التحقق الذكية (SmartOtpModal)
-    setOtpModalOpen(true);
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/tags/${encodeURIComponent(tagCode)}/verify-pin`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: cleanPin }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.ok) {
+        setError(
+          data.error ||
+            "رمز الخدش السري (PIN) غير صحيح. يرجى التأكد من الأرقام الستة تحت طبقة الخدش."
+        );
+        setLoading(false);
+        return;
+      }
+
+      // الرمز صحيح بنسبة 100% -> ننتقل الآن فقط لفتح نافذة التحقق عبر واتساب/SMS
+      setLoading(false);
+      setOtpModalOpen(true);
+    } catch {
+      setError(
+        "تعذر الاتصال بالخادم للتحقق من رمز الخدش. يرجى المحاولة مجدداً."
+      );
+      setLoading(false);
+    }
   };
 
   // 2. بعد تأكيد رمز الـ OTP بنجاح: يتم اعتماد الحفظ والتفعيل في قاعدة البيانات
@@ -173,10 +201,10 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
             type="text"
             inputMode="numeric"
             dir="ltr"
-            maxLength={8}
+            maxLength={6}
             required
             value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
             placeholder="••••••"
             className="h-12 w-full rounded-2xl border border-input bg-surface px-4 text-center font-mono text-xl font-black tracking-[0.35em] text-foreground placeholder:tracking-normal placeholder:text-placeholder focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring"
           />
@@ -260,7 +288,7 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
         <Button
           type="submit"
           size="xl"
-          disabled={loading}
+          disabled={loading || pin.trim().length !== 6}
           className="w-full rounded-2xl"
         >
           {loading ? (

@@ -249,20 +249,22 @@ export async function getVehicleTagByCode(
 }
 
 /**
- * الخطوة 1: تفعيل الملصق عبر رمز الخدش السري (PIN) وتحديث حالته إلى ACTIVE وربطه برقم الهاتف ونوع السيارة
+ * التحقق المسبق من صلاحية رمز الخدش السري (PIN) للملصق قبل إرسال أي رمز OTP
  */
-export async function activateVehicleTag(params: {
+export async function verifyTagScratchPin(params: {
   tagCode: string;
   pin: string;
-  ownerPhone: string;
-  vehicleInfo: string;
-  city?: string;
-}): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
+}): Promise<{ ok: boolean; error?: string; targetRow?: StoredTagRow }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
-  const inputPinHash = hashSha256(params.pin);
-  const nowIso = new Date().toISOString();
+  const inputPinHash = hashSha256(params.pin.trim());
 
-  // فحص السجل في Supabase أولاً
+  if (LEGACY_TEST_CODES.has(normalizedCode)) {
+    return {
+      ok: false,
+      error: "كود الملصق غير مسجل في قاعدة البيانات.",
+    };
+  }
+
   let targetRow: StoredTagRow | null = null;
   try {
     const { data, error } = await supabase
@@ -313,6 +315,31 @@ export async function activateVehicleTag(params: {
         "رمز الخدش السري (PIN) غير صحيح. يرجى التأكد من الأرقام الستة تحت طبقة الخدش.",
     };
   }
+
+  return { ok: true, targetRow };
+}
+
+/**
+ * الخطوة 1: تفعيل الملصق عبر رمز الخدش السري (PIN) وتحديث حالته إلى ACTIVE وربطه برقم الهاتف ونوع السيارة
+ */
+export async function activateVehicleTag(params: {
+  tagCode: string;
+  pin: string;
+  ownerPhone: string;
+  vehicleInfo: string;
+  city?: string;
+}): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
+  const normalizedCode = params.tagCode.toUpperCase().trim();
+  const nowIso = new Date().toISOString();
+
+  const pinCheck = await verifyTagScratchPin({
+    tagCode: normalizedCode,
+    pin: params.pin,
+  });
+  if (!pinCheck.ok || !pinCheck.targetRow) {
+    return { ok: false, error: pinCheck.error };
+  }
+  const targetRow = pinCheck.targetRow;
 
   const updatedFields = {
     status: "ACTIVE" as TagStatus,
