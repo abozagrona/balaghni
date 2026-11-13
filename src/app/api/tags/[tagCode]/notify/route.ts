@@ -5,6 +5,8 @@ import {
 } from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
+export const maxDuration = 30;
+
 export async function POST(
   req: NextRequest,
   context: { params: Promise<{ tagCode: string }> }

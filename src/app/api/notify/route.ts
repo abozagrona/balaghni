@@ -5,6 +5,8 @@ import {
 } from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
+export const maxDuration = 30;
+
 /**
  * مسار إرسال البلاغات الآمن والمعزول (Zero-Leak & Anti-Spam Cooldown API)
  * المتصفح يرسل فقط: tag_code, reason, custom_note, senderPhone, image

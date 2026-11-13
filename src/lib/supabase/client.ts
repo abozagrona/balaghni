@@ -2662,7 +2662,8 @@ export async function sendZeroLeakNotification(params: {
     const waResult = await sendWhatsappAlertMessage(
       tag.ownerPhone,
       whatsappLines.join("\n"),
-      params.photoUrl
+      params.photoUrl,
+      { verifyDelivery: true }
     );
     const waOk = waResult.ok;
 

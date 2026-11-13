@@ -225,11 +225,87 @@ export async function sendOtpViaWhatsapp(
   }
 }
 
+async function verifyGreenApiDelivery(
+  baseUrl: string,
+  chatId: string,
+  idMessage: string
+): Promise<{ delivered: boolean; statusMessage: string }> {
+  let lastStatus = "sent";
+  const maxAttempts = 5;
+  const intervalMs = 3000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(
+        `${baseUrl}/waInstance${GREEN_API_INSTANCE}/getMessage/${GREEN_API_TOKEN}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId, idMessage }),
+          signal: controller.signal,
+        }
+      ).finally(() => clearTimeout(timeout));
+
+      let status = "";
+      if (res.ok) {
+        const data = (await res.json().catch(() => ({}))) as {
+          statusMessage?: string;
+        };
+        status = String(data?.statusMessage || "").trim().toLowerCase();
+      }
+
+      if (!status) {
+        const listController = new AbortController();
+        const listTimeout = setTimeout(() => listController.abort(), 4000);
+        const listRes = await fetch(
+          `${baseUrl}/waInstance${GREEN_API_INSTANCE}/lastOutgoingMessages/${GREEN_API_TOKEN}?minutes=2`,
+          { signal: listController.signal }
+        ).finally(() => clearTimeout(listTimeout));
+
+        if (listRes.ok) {
+          const items = (await listRes.json().catch(() => [])) as Array<{
+            idMessage?: string;
+            statusMessage?: string;
+          }>;
+          const match = Array.isArray(items)
+            ? items.find((m) => m.idMessage === idMessage)
+            : undefined;
+          if (match?.statusMessage) {
+            status = String(match.statusMessage).trim().toLowerCase();
+          }
+        }
+      }
+
+      if (status) {
+        lastStatus = status;
+      }
+
+      if (status === "delivered" || status === "read") {
+        return { delivered: true, statusMessage: status };
+      }
+    } catch {
+      // continue polling until 15s window expires
+    }
+  }
+
+  return { delivered: false, statusMessage: lastStatus };
+}
+
 export async function sendWhatsappAlertMessage(
   phone: string,
   message: string,
-  photoUrl?: string | null
-): Promise<{ ok: boolean; error?: string }> {
+  photoUrl?: string | null,
+  options?: { verifyDelivery?: boolean }
+): Promise<{
+  ok: boolean;
+  idMessage?: string;
+  deliveryStatus?: string;
+  error?: string;
+}> {
   if (!GREEN_API_TOKEN || !GREEN_API_INSTANCE) {
     return { ok: false, error: "Green-API credentials are not configured" };
   }
@@ -246,6 +322,8 @@ export async function sendWhatsappAlertMessage(
     );
     const chatId = `${cleanPhone}@c.us`;
     const trimmedPhoto = String(photoUrl || "").trim();
+    let idMessage: string | undefined;
+    let sent = false;
 
     if (/^https?:\/\//i.test(trimmedPhoto)) {
       const fileController = new AbortController();
@@ -267,32 +345,68 @@ export async function sendWhatsappAlertMessage(
         ).finally(() => clearTimeout(fileTimeout));
 
         if (fileRes.ok) {
-          return { ok: true };
+          const fileData = (await fileRes.json().catch(() => ({}))) as {
+            idMessage?: string;
+          };
+          idMessage = fileData?.idMessage;
+          sent = true;
         }
       } catch {
         // fallback to text sendMessage if media upload fails
       }
     }
 
-    const url = `${baseUrl}/waInstance${GREEN_API_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    if (!sent) {
+      const url = `${baseUrl}/waInstance${GREEN_API_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 7000);
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chatId,
-        message,
-      }),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeout));
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chatId,
+          message,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
 
-    if (!res.ok) {
-      return { ok: false, error: `Green-API send error: ${res.status}` };
+      if (!res.ok) {
+        return { ok: false, error: `Green-API send error: ${res.status}` };
+      }
+
+      const data = (await res.json().catch(() => ({}))) as {
+        idMessage?: string;
+      };
+      idMessage = data?.idMessage;
     }
 
-    return { ok: true };
+    if (!options?.verifyDelivery) {
+      return { ok: true, idMessage };
+    }
+
+    if (!idMessage) {
+      return {
+        ok: false,
+        error: "Green-API did not return idMessage for delivery verification",
+      };
+    }
+
+    const check = await verifyGreenApiDelivery(baseUrl, chatId, idMessage);
+    if (check.delivered) {
+      return {
+        ok: true,
+        idMessage,
+        deliveryStatus: check.statusMessage,
+      };
+    }
+
+    return {
+      ok: false,
+      idMessage,
+      deliveryStatus: check.statusMessage,
+      error: `WhatsApp not delivered within 15s (status: ${check.statusMessage})`,
+    };
   } catch (error) {
     return {
       ok: false,
@@ -421,7 +535,7 @@ export async function sendNabehniReminderSms(
 ): Promise<{ ok: boolean; status?: number; response?: unknown; error?: string }> {
   const templateId =
     process.env.RESALA_REMINDER_TEMPLATE_ID?.trim() ||
-    "f1416035-9b11-4699-8289-f4685428c7af";
+    "77552d78-11e4-41b4-a996-07feea175912";
 
   return sendResalaTemplateMessage({
     phone,
