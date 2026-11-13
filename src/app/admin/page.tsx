@@ -29,6 +29,7 @@ import {
   Ban,
   Copy,
   Store,
+  ShoppingBag,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { AdminLifecyclePanel } from "@/components/admin/admin-lifecycle-panel";
@@ -170,7 +171,7 @@ export default function ExecutiveAdminDashboardPage() {
 
   // بيانات لوحة الإدارة التنفيذية
   const [activeTab, setActiveTab] = React.useState<
-    "tags" | "lifecycle" | "import" | "audit" | "team" | "danger"
+    "tags" | "orders" | "lifecycle" | "import" | "audit" | "team" | "danger"
   >("tags");
   const [tags, setTags] = React.useState<AdminTagRecord[]>([]);
   const [auditLogs, setAuditLogs] = React.useState<AdminAuditLog[]>([]);
@@ -2073,6 +2074,20 @@ export default function ExecutiveAdminDashboardPage() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("orders")}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
+              activeTab === "orders"
+                ? "bg-primary text-white shadow-primary-glow"
+                : "text-white/70 hover:bg-white/5 hover:text-white"
+            )}
+          >
+            <ShoppingBag className="h-4 w-4" />
+            <span>الطلبات الواردة</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("lifecycle")}
             className={cn(
               "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
@@ -2796,6 +2811,8 @@ export default function ExecutiveAdminDashboardPage() {
             </div>
           </section>
         )}
+
+        {activeTab === "orders" && <AdminLifecyclePanel viewMode="orders" />}
 
         {activeTab === "lifecycle" && <AdminLifecyclePanel />}
 

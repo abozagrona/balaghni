@@ -57,6 +57,9 @@ export default function OrderPage() {
   const [orderSuccessId, setOrderSuccessId] = React.useState<string | null>(
     null
   );
+  const [assignedStickerCode, setAssignedStickerCode] = React.useState<
+    string | null
+  >(null);
   const [error, setError] = React.useState<string | null>(null);
 
   const activeTierObj =
@@ -83,14 +86,17 @@ export default function OrderPage() {
 
     setIsSubmitting(true);
     try {
-      const res = await fetch("/api/marketplace/orders", {
+      const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          packageType: selectedTier,
           tier: selectedTier,
           paymentMethod,
           quantity,
+          customerName: fullName.trim(),
           fullName: fullName.trim(),
+          customerPhone: formattedPhone,
           phone: formattedPhone,
           city,
           address: address.trim(),
@@ -100,13 +106,16 @@ export default function OrderPage() {
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      if (!res.ok || !data.ok) {
         setError(data.error || "تعذر إرسال الطلب حالياً، حاول مرة أخرى.");
         setIsSubmitting(false);
         return;
       }
 
-      setOrderSuccessId(data.orderCode || `LY-ORD-${Date.now().toString().slice(-5)}`);
+      setOrderSuccessId(
+        data.orderNumber || data.orderCode || `ORD-${Date.now().toString(36).slice(-6).toUpperCase()}`
+      );
+      setAssignedStickerCode(data.stickerCode || null);
       setIsSubmitting(false);
     } catch {
       setError("تأكد من الاتصال بالإنترنت وحاول مرة أخرى.");
@@ -143,14 +152,40 @@ export default function OrderPage() {
               سنتواصل معك عبر رقمك الليبي لتأكيد توصيل ملصق «بَلِّغْنِي» إلى{" "}
               <strong className="text-foreground">{city}</strong>.
             </p>
-            <div
-              dir="ltr"
-              className="mt-4 inline-block rounded-xl bg-muted px-4 py-2 font-mono text-sm font-bold text-primary"
-            >
-              Order #{orderSuccessId}
+            <div className="mt-4 space-y-2.5">
+              <div className="inline-block rounded-xl bg-muted px-4 py-2 text-sm font-bold text-primary">
+                رقم الطلب:{" "}
+                <span dir="ltr" className="font-mono">
+                  {orderSuccessId}
+                </span>
+              </div>
+
+              {assignedStickerCode ? (
+                <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-3.5 text-xs font-bold text-emerald-700">
+                  <p>تم سحب وتفعيل كود ملصقك الحقيقي لمدة 365 يوماً:</p>
+                  <p dir="ltr" className="mt-1 font-mono text-base font-black">
+                    {assignedStickerCode}
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-amber-500/35 bg-amber-500/10 p-3 text-xs font-bold text-amber-800">
+                  الحالة: بانتظار ربط ملصق من المخزن وتأكيد التوصيل.
+                </div>
+              )}
             </div>
-            <div className="mt-6">
-              <Button asChild size="lg" className="w-full rounded-2xl">
+
+            <div className="mt-6 flex flex-col gap-2.5">
+              {assignedStickerCode && (
+                <Button asChild size="lg" className="w-full rounded-2xl">
+                  <Link href="/login">دخول لوحة تحكم سيارتي</Link>
+                </Button>
+              )}
+              <Button
+                asChild
+                variant={assignedStickerCode ? "outline" : "default"}
+                size="lg"
+                className="w-full rounded-2xl"
+              >
                 <Link href="/">العودة للصفحة الرئيسية</Link>
               </Button>
             </div>

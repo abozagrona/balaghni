@@ -325,6 +325,7 @@ export async function activateStickerAtomic(params: {
   durationDays?: number;
   companyAccountId?: string | null;
   allowExpiredRenewal?: boolean;
+  skipOrderInsert?: boolean;
 }): Promise<{
   ok: boolean;
   unassignedPaid?: boolean;
@@ -376,7 +377,11 @@ export async function activateStickerAtomic(params: {
           vendorId: params.vendorId,
           activationSource: params.activationSource,
         });
-        if (params.activationSource === "online" && !params.companyAccountId) {
+        if (
+          params.activationSource === "online" &&
+          !params.companyAccountId &&
+          !params.skipOrderInsert
+        ) {
           await recordMarketplaceOrder({
             orderCode: `ORD-${Date.now().toString(36).toUpperCase()}`,
             packageType: pkg,

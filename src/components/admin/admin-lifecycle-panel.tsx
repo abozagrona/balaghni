@@ -75,7 +75,11 @@ interface AdminOrderItem {
   createdAt: string;
 }
 
-export function AdminLifecyclePanel() {
+export function AdminLifecyclePanel({
+  viewMode = "all",
+}: {
+  viewMode?: "all" | "orders";
+}) {
   const [loading, setLoading] = React.useState(true);
   const [busyAction, setBusyAction] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<{
@@ -263,6 +267,7 @@ export function AdminLifecyclePanel() {
       )}
 
       {/* 0. أداة استيراد ملف أكواد ملصقات (.csv / .txt) بدون رمز خدش */}
+      {viewMode === "all" && (
       <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-2 text-sm font-black text-white">
@@ -351,6 +356,7 @@ export function AdminLifecyclePanel() {
           className="w-full rounded-xl border border-white/15 bg-black/40 p-2.5 font-mono text-xs text-white outline-none focus:border-primary"
         />
       </section>
+      )}
 
       {/* 0.5. جدول جميع الطلبات (الأونلاين + الدفع عند الاستلام) مع ربط الملصقات */}
       <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
@@ -508,6 +514,8 @@ export function AdminLifecyclePanel() {
         )}
       </section>
 
+      {viewMode === "all" && (
+      <>
       {/* 1. الطلبات الأونلاين المدفوعة بانتظار ربط ملصق (Race-condition / Unassigned Paid) */}
       <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -949,6 +957,8 @@ export function AdminLifecyclePanel() {
           </div>
         )}
       </section>
+      </>
+      )}
     </div>
   );
 }
