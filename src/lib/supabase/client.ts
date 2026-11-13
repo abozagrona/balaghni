@@ -25,13 +25,18 @@ export const supabase = createClient(rawSupabaseUrl, normalizedAnonKey, {
   },
 });
 
-const rawServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
+const rawServiceRoleKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+  process.env.SUPABASE_SECRET_KEY?.trim() ||
+  "";
 const isValidServiceJwt =
-  rawServiceRoleKey.startsWith("eyJ") && rawServiceRoleKey.split(".").length === 3;
+  (rawServiceRoleKey.startsWith("eyJ") &&
+    rawServiceRoleKey.split(".").length === 3) ||
+  rawServiceRoleKey.startsWith("sb_secret_");
 
 if (rawServiceRoleKey && !isValidServiceJwt) {
   console.warn(
-    "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو بصيغة غير صالحة (يجب أن يبدأ بـ eyJ ويحتوي على نقطتين .). سيتم استخدام المفتاح العام مؤقتاً لتفادي خطأ malformed jwt token."
+    "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو بصيغة غير صالحة."
   );
 }
 
@@ -74,14 +79,18 @@ interface StoredTagRow {
   owner_phone?: string | null;
   owner_pin_hash?: string | null;
   recovery_key_hash?: string | null;
+  emergency_recovery_hash?: string | null;
   passkey_credential_id?: string | null;
   vehicle_info?: string | null;
+  vehicle_make_model?: string | null;
   vehicle_brand?: string;
   vehicle_model?: string;
   vehicle_color?: string;
   city?: string;
+  vehicle_city?: string | null;
   tier?: "standard" | "premium" | "elite";
   alert_channel?: AlertChannel;
+  notification_channel?: string | null;
   has_emergency_contacts?: boolean;
   activated_at?: string | null;
 }
@@ -177,19 +186,24 @@ function removeFromSyncedStore(tagCode: string) {
 }
 
 function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
-  const ch = String(row.alert_channel || "BOTH").toUpperCase();
+  const ch = String(
+    row.alert_channel || row.notification_channel || "BOTH"
+  ).toUpperCase();
   const alertChannel: AlertChannel =
     ch === "SMS" || ch === "WHATSAPP" ? ch : "BOTH";
+  const resolvedVehicleInfo =
+    row.vehicle_info || row.vehicle_make_model || undefined;
   return {
     tagCode: row.tag_code,
     status: normalizeStatus(row.status),
     type: "car",
     ownerPhone: row.owner_phone || null,
-    vehicleInfo: row.vehicle_info || undefined,
-    vehicleBrand: row.vehicle_brand || row.vehicle_info || "مركبة مسجلة",
+    vehicleInfo: resolvedVehicleInfo,
+    vehicleBrand:
+      row.vehicle_brand || resolvedVehicleInfo || "مركبة مسجلة",
     vehicleModel: row.vehicle_model || "",
     vehicleColor: row.vehicle_color || undefined,
-    city: row.city || "طرابلس",
+    city: row.city || row.vehicle_city || "طرابلس",
     tier: row.tier || "premium",
     alertChannel,
     hasEmergencyContacts: Boolean(row.has_emergency_contacts ?? false),
@@ -341,35 +355,36 @@ export async function activateVehicleTag(params: {
   }
   const targetRow = pinCheck.targetRow;
 
-  const updatedFields = {
+  const dbUpdateFields = {
     status: "ACTIVE" as TagStatus,
     owner_phone: params.ownerPhone,
-    vehicle_info: params.vehicleInfo.trim(),
-    vehicle_brand: params.vehicleInfo.trim(),
-    vehicle_model: "",
-    city: params.city || "طرابلس",
+    vehicle_make_model: params.vehicleInfo.trim(),
+    vehicle_city: params.city || "طرابلس",
     activated_at: nowIso,
   };
 
-  // تحديث السجل في جدول tags بـ Supabase
-  try {
-    await supabase
-      .from("tags")
-      .upsert(
-        {
-          tag_code: normalizedCode,
-          activation_pin_hash: targetRow.activation_pin_hash,
-          ...updatedFields,
-        },
-        { onConflict: "tag_code" }
-      );
-  } catch {
-    // ignore if RLS blocks direct client write
+  const { data: updatedRows, error: updateError } = await supabaseAdmin
+    .from("tags")
+    .update(dbUpdateFields)
+    .eq("tag_code", normalizedCode)
+    .select("*");
+
+  if (updateError || !Array.isArray(updatedRows) || updatedRows.length === 0) {
+    return {
+      ok: false,
+      error: updateError?.message
+        ? `تعذر تفعيل الملصق في قاعدة البيانات: ${updateError.message}`
+        : "تعذر تفعيل الملصق في قاعدة البيانات (لم يتم تحديث أي صف).",
+    };
   }
 
+  const persistedRow = updatedRows[0] as StoredTagRow;
   const updatedRow: StoredTagRow = {
     ...targetRow,
-    ...updatedFields,
+    ...persistedRow,
+    vehicle_info: persistedRow.vehicle_make_model || params.vehicleInfo.trim(),
+    vehicle_brand: persistedRow.vehicle_make_model || params.vehicleInfo.trim(),
+    city: persistedRow.vehicle_city || params.city || "طرابلس",
   };
   saveToSyncedStore(updatedRow);
 
@@ -380,13 +395,16 @@ export async function activateVehicleTag(params: {
 }
 
 /**
- * الخطوة 2: حفظ إعدادات أمان المالك (owner_pin_hash, recovery_key_hash, passkey_credential_id) في جدول tags
+ * الخطوة 2: حفظ إعدادات أمان المالك (owner_pin_hash, emergency_recovery_hash) وضمان تفعيل الملصق (ACTIVE) في جدول tags
  */
 export async function saveOwnerSecuritySetup(params: {
   tagCode: string;
   ownerPin: string;
   recoveryKey: string;
   passkeyCredentialId?: string | null;
+  ownerPhone?: string;
+  vehicleInfo?: string;
+  city?: string;
 }): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
   const ownerPinHash = hashSha256(params.ownerPin);
@@ -394,27 +412,23 @@ export async function saveOwnerSecuritySetup(params: {
     params.recoveryKey.trim().toUpperCase()
   );
 
-  let targetRow: StoredTagRow | null = null;
-  try {
-    const { data, error } = await supabase
-      .from("tags")
-      .select("*")
-      .eq("tag_code", normalizedCode)
-      .maybeSingle();
-    if (!error && data) {
-      targetRow = data as StoredTagRow;
-    }
-  } catch {
-    // ignore
+  const { data: existingRow, error: fetchError } = await supabaseAdmin
+    .from("tags")
+    .select("*")
+    .eq("tag_code", normalizedCode)
+    .maybeSingle();
+
+  if (fetchError) {
+    return {
+      ok: false,
+      error: `تعذر التحقق من سجل الملصق في قاعدة البيانات: ${fetchError.message}`,
+    };
   }
 
   const localMap = loadSyncedStore();
-  if (!targetRow && localMap[normalizedCode]) {
-    targetRow = {
-      ...localMap[normalizedCode],
-      ...(targetRow || {}),
-    };
-  }
+  const targetRow: StoredTagRow | null = existingRow
+    ? (existingRow as StoredTagRow)
+    : localMap[normalizedCode] || null;
 
   if (!targetRow) {
     return {
@@ -423,27 +437,55 @@ export async function saveOwnerSecuritySetup(params: {
     };
   }
 
+  const nowIso = new Date().toISOString();
   const securityFields: Partial<StoredTagRow> = {
+    status: "ACTIVE" as TagStatus,
     owner_pin_hash: ownerPinHash,
-    recovery_key_hash: recoveryKeyHash,
+    emergency_recovery_hash: recoveryKeyHash,
+    activated_at: targetRow.activated_at || nowIso,
+    ...(params.ownerPhone && params.ownerPhone.trim()
+      ? { owner_phone: params.ownerPhone.trim() }
+      : {}),
+    ...(params.vehicleInfo && params.vehicleInfo.trim()
+      ? { vehicle_make_model: params.vehicleInfo.trim() }
+      : {}),
+    ...(params.city && params.city.trim()
+      ? { vehicle_city: params.city.trim() }
+      : {}),
     ...(params.passkeyCredentialId
       ? { passkey_credential_id: params.passkeyCredentialId }
       : {}),
   };
 
-  // تحديث جدول tags في Supabase
-  try {
-    await supabase
-      .from("tags")
-      .update(securityFields)
-      .eq("tag_code", normalizedCode);
-  } catch {
-    // ignore
+  const { data: updatedRows, error: updateError } = await supabaseAdmin
+    .from("tags")
+    .update(securityFields)
+    .eq("tag_code", normalizedCode)
+    .select("*");
+
+  if (
+    updateError ||
+    !Array.isArray(updatedRows) ||
+    updatedRows.length === 0 ||
+    normalizeStatus((updatedRows[0] as StoredTagRow).status) !== "ACTIVE"
+  ) {
+    return {
+      ok: false,
+      error: updateError?.message
+        ? `تعذر حفظ إعدادات الأمان وتفعيل الملصق في قاعدة البيانات: ${updateError.message}`
+        : "تعذر تحديث حالة الملصق إلى ACTIVE في قاعدة البيانات (0 rows updated). يرجى التحقق من صلاحيات الخدمة.",
+    };
   }
 
+  const persistedRow = updatedRows[0] as StoredTagRow;
   const updatedRow: StoredTagRow = {
     ...targetRow,
-    ...securityFields,
+    ...persistedRow,
+    vehicle_info:
+      persistedRow.vehicle_make_model ||
+      targetRow.vehicle_info ||
+      params.vehicleInfo,
+    city: persistedRow.vehicle_city || targetRow.city || params.city,
   };
   saveToSyncedStore(updatedRow);
 
@@ -823,16 +865,22 @@ export async function savePasskeyCredentialForTag(params: {
     };
   }
 
-  try {
-    await supabase
-      .from("tags")
-      .update({
-        passkey_credential_id: credentialId,
-        ...(params.ownerPhone ? { owner_phone: params.ownerPhone.trim() } : {}),
-      })
-      .eq("tag_code", normalizedCode);
-  } catch {
-    // ignore
+  const { data: updatedRows, error: updateError } = await supabaseAdmin
+    .from("tags")
+    .update({
+      passkey_credential_id: credentialId,
+      ...(params.ownerPhone ? { owner_phone: params.ownerPhone.trim() } : {}),
+    })
+    .eq("tag_code", normalizedCode)
+    .select("tag_code");
+
+  if (updateError || !Array.isArray(updatedRows) || updatedRows.length === 0) {
+    return {
+      ok: false,
+      error: updateError?.message
+        ? `تعذر حفظ البصمة في قاعدة البيانات: ${updateError.message}`
+        : "تعذر حفظ البصمة في قاعدة البيانات.",
+    };
   }
 
   const localMap = loadSyncedStore();
@@ -862,13 +910,17 @@ export async function clearPasskeyCredentialForTag(
     return { ok: false, error: "كود الملصق مطلوب." };
   }
 
-  try {
-    await supabase
-      .from("tags")
-      .update({ passkey_credential_id: null })
-      .eq("tag_code", normalizedCode);
-  } catch {
-    // ignore
+  const { data: updatedRows, error: updateError } = await supabaseAdmin
+    .from("tags")
+    .update({ passkey_credential_id: null })
+    .eq("tag_code", normalizedCode)
+    .select("tag_code");
+
+  if (updateError || !Array.isArray(updatedRows) || updatedRows.length === 0) {
+    return {
+      ok: false,
+      error: updateError?.message || "تعذر إلغاء ربط البصمة في قاعدة البيانات.",
+    };
   }
 
   const localMap = loadSyncedStore();
@@ -2718,16 +2770,9 @@ export async function adminManageTagLifecycle(params: {
         .from("tags")
         .update({
           owner_phone: updated.owner_phone,
-        })
-        .eq("tag_code", normalizedCode);
-
-      await supabaseAdmin
-        .from("tags")
-        .update({
-          vehicle_info: updated.vehicle_info,
-          vehicle_brand: updated.vehicle_brand,
-          city: updated.city,
-          alert_channel: updated.alert_channel,
+          vehicle_make_model: updated.vehicle_info,
+          vehicle_city: updated.city,
+          notification_channel: updated.alert_channel,
         })
         .eq("tag_code", normalizedCode);
     } catch {

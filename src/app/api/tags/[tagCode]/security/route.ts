@@ -17,6 +17,9 @@ export async function POST(request: Request, { params }: RouteParams) {
     const passkeyCredentialId = body.passkeyCredentialId
       ? String(body.passkeyCredentialId).trim()
       : null;
+    const ownerPhone = body.ownerPhone ? String(body.ownerPhone).trim() : undefined;
+    const vehicleInfo = body.vehicleInfo ? String(body.vehicleInfo).trim() : undefined;
+    const city = body.city ? String(body.city).trim() : undefined;
 
     if (!/^\d{6}$/.test(ownerPin)) {
       return NextResponse.json(
@@ -43,18 +46,26 @@ export async function POST(request: Request, { params }: RouteParams) {
       ownerPin,
       recoveryKey,
       passkeyCredentialId,
+      ownerPhone,
+      vehicleInfo,
+      city,
     });
 
-    if (!result.ok) {
+    if (!result.ok || !result.record || result.record.status !== "ACTIVE") {
       return NextResponse.json(
-        { ok: false, error: result.error },
+        {
+          ok: false,
+          error:
+            result.error ||
+            "تعذر تحديث حالة الملصق إلى ACTIVE في قاعدة البيانات.",
+        },
         { status: 400 }
       );
     }
 
     return NextResponse.json({
       ok: true,
-      message: "تم تأمين حساب سيارتك وحفظ الإعدادات المشفرة بنجاح!",
+      message: "تم تأمين حساب سيارتك وتفعيل الملصق بنجاح!",
       tag: result.record,
     });
   } catch {

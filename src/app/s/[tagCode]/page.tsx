@@ -20,6 +20,7 @@ import { getVehicleTagByCode } from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 interface ScanPageProps {
   params: Promise<{ tagCode: string }>;

@@ -38,7 +38,7 @@ function SecuritySetupContent() {
 
   const [recoveryKey, setRecoveryKey] = React.useState("BK-8492-X7M1");
   const [vehicleInfo, setVehicleInfo] = React.useState("سيارة مسجلة");
-  const [ownerPhone, setOwnerPhone] = React.useState("+218912345678");
+  const [ownerPhone, setOwnerPhone] = React.useState("");
   const [city, setCity] = React.useState("طرابلس");
 
   const [copiedKey, setCopiedKey] = React.useState(false);
@@ -182,13 +182,22 @@ function SecuritySetupContent() {
           body: JSON.stringify({
             ownerPin,
             recoveryKey,
+            ownerPhone: ownerPhone || undefined,
+            vehicleInfo:
+              vehicleInfo && vehicleInfo !== "سيارة مسجلة"
+                ? vehicleInfo
+                : undefined,
+            city: city || undefined,
           }),
         }
       );
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setError(data.error || "تعذر حفظ إعدادات الأمان. حاول مرة أخرى.");
+      if (!res.ok || !data.ok || data.tag?.status !== "ACTIVE") {
+        setError(
+          data.error ||
+            "تعذر تأكيد تفعيل الملصق في قاعدة البيانات. يرجى المحاولة مجدداً."
+        );
         setSubmitting(false);
         return;
       }
@@ -199,7 +208,7 @@ function SecuritySetupContent() {
         vehicleInfo: data.tag?.vehicleInfo || vehicleInfo,
         city: data.tag?.city || city,
         ownerPhone: data.tag?.ownerPhone || ownerPhone,
-        activatedAt: new Date().toISOString(),
+        activatedAt: data.tag?.activatedAt || new Date().toISOString(),
       });
 
       router.push(`/dashboard?tag=${encodeURIComponent(tagCode)}`);
