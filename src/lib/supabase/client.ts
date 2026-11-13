@@ -1177,7 +1177,7 @@ export async function upsertVehicleDocumentForTag(params: {
   };
 
   try {
-    await supabase.from("vehicle_documents").upsert({
+    await supabaseAdmin.from("vehicle_documents").upsert({
       id: params.id || undefined,
       tag_code: normalizedCode,
       title: docRecord.title,
