@@ -54,12 +54,12 @@ export default function OrderPage() {
   const [vehicleModel, setVehicleModel] = React.useState("");
 
   const [isSubmitting, setIsSubmitting] = React.useState(false);
-  const [orderSuccessId, setOrderSuccessId] = React.useState<string | null>(
-    null
-  );
-  const [assignedStickerCode, setAssignedStickerCode] = React.useState<
-    string | null
-  >(null);
+  const [activatedOrder, setActivatedOrder] = React.useState<{
+    stickerCode: string;
+    packageName: string;
+    paymentMethod: "online" | "cod";
+    expiresAt: string;
+  } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   const activeTierObj =
@@ -106,16 +106,20 @@ export default function OrderPage() {
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setError(data.error || "تعذر إرسال الطلب حالياً، حاول مرة أخرى.");
+      if (!res.ok || !data.ok || !data.stickerCode) {
+        setError(
+          data.error || "تعذر إتمام الطلب أو سحب كود ملصق متاح حالياً."
+        );
         setIsSubmitting(false);
         return;
       }
 
-      setOrderSuccessId(
-        data.orderNumber || data.orderCode || `ORD-${Date.now().toString(36).slice(-6).toUpperCase()}`
-      );
-      setAssignedStickerCode(data.stickerCode || null);
+      setActivatedOrder({
+        stickerCode: data.stickerCode,
+        packageName: data.packageName || activeTierObj.name,
+        paymentMethod: data.paymentMethod === "online" ? "online" : "cod",
+        expiresAt: data.subscriptionExpiresAt || "",
+      });
       setIsSubmitting(false);
     } catch {
       setError("تأكد من الاتصال بالإنترنت وحاول مرة أخرى.");
@@ -140,49 +144,56 @@ export default function OrderPage() {
       </header>
 
       <main className="shell flex-1 py-8 sm:py-12">
-        {orderSuccessId ? (
+        {activatedOrder ? (
           <div className="mx-auto max-w-lg rounded-3xl border border-emerald-500/30 bg-card p-8 text-center shadow-card-soft">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600">
               <CheckCircle2 className="h-9 w-9" />
             </div>
             <h1 className="mt-4 text-2xl font-bold text-foreground">
-              تم استلام طلبك بنجاح!
+              تم تأكيد طلبك وتفعيل ملصقك بنجاح!
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              سنتواصل معك عبر رقمك الليبي لتأكيد توصيل ملصق «بَلِّغْنِي» إلى{" "}
+              تم سحب وتفعيل كود ملصقك الحقيقي من المخزن مباشرة وإرسال التفاصيل إلى رقمك عبر الواتساب للتوصيل إلى{" "}
               <strong className="text-foreground">{city}</strong>.
             </p>
             <div className="mt-4 space-y-2.5">
-              <div className="inline-block rounded-xl bg-muted px-4 py-2 text-sm font-bold text-primary">
-                رقم الطلب:{" "}
-                <span dir="ltr" className="font-mono">
-                  {orderSuccessId}
-                </span>
+              <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-4 text-emerald-800">
+                <p className="text-xs font-bold">كود الملصق المفعّل (365 يوماً):</p>
+                <p dir="ltr" className="mt-1 font-mono text-xl font-black tracking-wider">
+                  {activatedOrder.stickerCode}
+                </p>
               </div>
-
-              {assignedStickerCode ? (
-                <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-3.5 text-xs font-bold text-emerald-700">
-                  <p>تم سحب وتفعيل كود ملصقك الحقيقي لمدة 365 يوماً:</p>
-                  <p dir="ltr" className="mt-1 font-mono text-base font-black">
-                    {assignedStickerCode}
-                  </p>
+              <div className="grid grid-cols-2 gap-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-bold text-foreground">
+                <div>
+                  <span className="text-muted-foreground">الباقة:</span>{" "}
+                  <span>{activatedOrder.packageName}</span>
                 </div>
-              ) : (
-                <div className="rounded-2xl border border-amber-500/35 bg-amber-500/10 p-3 text-xs font-bold text-amber-800">
-                  الحالة: بانتظار ربط ملصق من المخزن وتأكيد التوصيل.
+                <div>
+                  <span className="text-muted-foreground">الدفع:</span>{" "}
+                  <span>
+                    {activatedOrder.paymentMethod === "online"
+                      ? "أونلاين"
+                      : "عند الاستلام"}
+                  </span>
                 </div>
-              )}
+                {activatedOrder.expiresAt && (
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground">صالح حتى:</span>{" "}
+                    <span dir="ltr" className="font-mono">
+                      {activatedOrder.expiresAt.slice(0, 10)}
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="mt-6 flex flex-col gap-2.5">
-              {assignedStickerCode && (
-                <Button asChild size="lg" className="w-full rounded-2xl">
-                  <Link href="/login">دخول لوحة تحكم سيارتي</Link>
-                </Button>
-              )}
+              <Button asChild size="lg" className="w-full rounded-2xl">
+                <Link href="/login">دخول لوحة تحكم سيارتي</Link>
+              </Button>
               <Button
                 asChild
-                variant={assignedStickerCode ? "outline" : "default"}
+                variant="outline"
                 size="lg"
                 className="w-full rounded-2xl"
               >

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  activateStickerAtomic,
-  listAvailableStickers,
+  pullAndActivateLockedTag,
   recordMarketplaceOrder,
 } from "@/lib/lifecycle-service";
 import { sendWhatsappAlertMessage } from "@/lib/otp-service";
@@ -11,19 +10,9 @@ import {
   normalizePackageType,
 } from "@/lib/packages";
 
-function generateOrderNumber(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let suffix = "";
-  for (let i = 0; i < 6; i += 1) {
-    suffix += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return `ORD-${suffix}`;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const orderNumber = generateOrderNumber();
 
     const pkgType = normalizePackageType(body.packageType || body.tier);
     const pkgConfig = getPackageConfig(pkgType);
@@ -53,33 +42,34 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let assignedStickerCode: string | null = null;
-    let orderStatus = "pending_assignment";
+    const pullRes = await pullAndActivateLockedTag({
+      packageType: pkgType,
+      ownerPhone: phone,
+      ownerName: fullName,
+      vehicleInfo: vehicleModel,
+      city,
+      paymentMethod,
+      startsAt,
+      expiresAt,
+    });
 
-    // سحب كود ملصق حقيقي من جدول stickers فقط عند الدفع الأونلاين وتوفر المخزون
-    if (paymentMethod === "online") {
-      const available = await listAvailableStickers();
-      if (available.length > 0) {
-        const candidateCode = available[0];
-        const actRes = await activateStickerAtomic({
-          code: candidateCode,
-          packageType: pkgType,
-          ownerPhone: phone,
-          ownerName: fullName,
-          vehicleInfo: vehicleModel || undefined,
-          activationSource: "online",
-          durationDays: 365,
-          skipOrderInsert: true,
-        });
-        if (actRes.ok) {
-          assignedStickerCode = candidateCode;
-          orderStatus = "completed";
-        }
-      }
+    if (!pullRes.ok || !pullRes.stickerCode) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            pullRes.error ||
+            "لا توجد ملصقات متاحة (LOCKED) في المخزن حالياً. يرجى استيراد دفعة جديدة من لوحة الأدمن.",
+        },
+        { status: 409 }
+      );
     }
 
+    const assignedStickerCode = pullRes.stickerCode;
+    const orderStatus = "completed";
+
     await recordMarketplaceOrder({
-      orderCode: orderNumber,
+      orderCode: assignedStickerCode,
       packageType: pkgType,
       quantity,
       customerName: fullName,
@@ -104,21 +94,19 @@ export async function POST(req: NextRequest) {
 
     await sendWhatsappAlertMessage(
       adminPhone,
-      `🛒 طلب ملصق جديد (${orderNumber})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: ${paymentLabel}\n${assignedStickerCode ? `كود الملصق المربوط: ${assignedStickerCode}` : "الحالة: بانتظار ربط ملصق"}\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${quantity}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء المبدئي: ${expiresAt.slice(0, 10)}`
+      `🛒 طلب وتفعيل ملصق جديد (${assignedStickerCode})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: ${paymentLabel}\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${quantity}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء: ${expiresAt.slice(0, 10)}`
     );
 
-    if (assignedStickerCode) {
-      await sendWhatsappAlertMessage(
-        phone,
-        `✅ مرحباً ${fullName}، تم تأكيد طلبك (${orderNumber}) وتفعيل ملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${assignedStickerCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
-      );
-    }
+    await sendWhatsappAlertMessage(
+      phone,
+      `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${assignedStickerCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+    );
 
     return NextResponse.json({
       ok: true,
-      orderNumber,
-      orderCode: orderNumber,
       stickerCode: assignedStickerCode,
+      packageType: pkgType,
+      packageName: pkgConfig.name,
       paymentMethod,
       paymentStatus,
       status: orderStatus,

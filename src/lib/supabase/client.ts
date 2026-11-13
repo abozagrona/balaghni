@@ -74,6 +74,10 @@ export interface VehicleTagRecord {
   hasSecuritySetup?: boolean;
   hasPasskey?: boolean;
   activatedAt?: string | null;
+  packageType?: string | null;
+  activationSource?: string | null;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
 }
 
 interface StoredTagRow {
@@ -97,6 +101,10 @@ interface StoredTagRow {
   notification_channel?: string | null;
   has_emergency_contacts?: boolean;
   activated_at?: string | null;
+  package_type?: string | null;
+  activation_source?: string | null;
+  subscription_starts_at?: string | null;
+  subscription_expires_at?: string | null;
 }
 
 const LOCAL_STORE_PATH = path.join(
@@ -214,6 +222,10 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
     hasSecuritySetup: Boolean(row.owner_pin_hash),
     hasPasskey: Boolean(row.passkey_credential_id),
     activatedAt: row.activated_at || null,
+    packageType: row.package_type || null,
+    activationSource: row.activation_source || null,
+    subscriptionStartsAt: row.subscription_starts_at || row.activated_at || null,
+    subscriptionExpiresAt: row.subscription_expires_at || null,
   };
 }
 
@@ -2744,7 +2756,7 @@ export async function getExecutiveAdminOverview(): Promise<{
   const localMap = loadSyncedStore();
 
   try {
-    const { data, error } = await supabase.from("tags").select("*");
+    const { data, error } = await supabaseAdmin.from("tags").select("*");
     if (!error && Array.isArray(data)) {
       for (const row of data as StoredTagRow[]) {
         const code = String(row.tag_code || "").toUpperCase();
@@ -2769,7 +2781,7 @@ export async function getExecutiveAdminOverview(): Promise<{
 
   let auditLogs: AdminAuditLogRecord[] = [...adminStore.auditLogs];
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("admin_audit_logs")
       .select("*")
       .order("created_at", { ascending: false })
@@ -3185,6 +3197,14 @@ export async function adminImportPrintedTags(params: {
         },
         { onConflict: "tag_code" }
       );
+      await supabaseAdmin.from("stickers").upsert(
+        {
+          code,
+          status: "unactivated",
+          package_type: "nabbihni",
+        },
+        { onConflict: "code" }
+      );
     } catch {
       // ignore
     }
@@ -3198,7 +3218,7 @@ export async function adminImportPrintedTags(params: {
       adminId: params.adminId,
       adminName: params.adminName,
       actionType: "IMPORT_TAGS_BATCH",
-      actionDetails: `تم إدراج ${importedCount} ملصق جديد بحالة LOCKED مع تشفير رموز الخدش عبر SHA-256`,
+      actionDetails: `تم إدراج ${importedCount} ملصق جديد بحالة LOCKED`,
       tagCode: importedCount === 1 ? params.items[0]?.tagCode : null,
     });
   }

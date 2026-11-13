@@ -40,6 +40,12 @@ import {
   cn,
   formatBalaghniTagCode,
 } from "@/lib/utils";
+import {
+  computeCountdownDays,
+  formatSlashDateYmd,
+  getPackageConfig,
+  normalizePackageType,
+} from "@/lib/packages";
 
 type TagStatus = "LOCKED" | "ACTIVE" | "REVOKED";
 type AlertChannel = "SMS" | "WHATSAPP" | "BOTH";
@@ -84,6 +90,10 @@ interface AdminTagRecord {
   hasSecuritySetup?: boolean;
   hasPasskey?: boolean;
   activatedAt?: string | null;
+  packageType?: string | null;
+  activationSource?: string | null;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
 }
 
 interface AdminAuditLog {
@@ -2295,9 +2305,36 @@ export default function ExecutiveAdminDashboardPage() {
                           </td>
 
                           <td className="px-4 py-3.5">
-                            <span className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[11px] font-bold text-white">
-                              {tag.alertChannel || "BOTH"}
-                            </span>
+                            <div className="flex flex-col gap-1">
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[11px] font-bold text-white">
+                                  {tag.alertChannel || "BOTH"}
+                                </span>
+                                {tag.packageType && (
+                                  <span className="rounded-lg border border-sky-400/25 bg-sky-500/10 px-2 py-0.5 text-[10px] font-bold text-sky-200">
+                                    {getPackageConfig(normalizePackageType(tag.packageType)).name}
+                                  </span>
+                                )}
+                                {tag.activationSource && (
+                                  <span className="rounded-lg border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-300">
+                                    {tag.activationSource === "online"
+                                      ? "أونلاين"
+                                      : tag.activationSource === "cod"
+                                        ? "عند الاستلام"
+                                        : tag.activationSource}
+                                  </span>
+                                )}
+                              </div>
+                              {tag.subscriptionExpiresAt && (
+                                <span className="text-[11px] font-bold text-emerald-300">
+                                  متبقي {computeCountdownDays(tag.subscriptionExpiresAt)} يوم
+                                  {" · "}
+                                  <span dir="ltr" className="font-mono text-slate-400">
+                                    {formatSlashDateYmd(tag.subscriptionExpiresAt)}
+                                  </span>
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           <td className="px-4 py-3.5">

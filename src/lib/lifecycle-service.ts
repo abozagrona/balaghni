@@ -1365,6 +1365,22 @@ export async function listAvailableStickers(): Promise<string[]> {
     if (s.status === "unactivated") codes.add(s.code);
   }
   try {
+    const { data: tagRows, error: tagErr } = await supabaseAdmin
+      .from("tags")
+      .select("tag_code,status,owner_phone")
+      .eq("status", "LOCKED")
+      .limit(500);
+    if (!tagErr && Array.isArray(tagRows)) {
+      for (const row of tagRows) {
+        if (row.tag_code && !row.owner_phone) {
+          codes.add(formatBalaghniTagCode(String(row.tag_code)));
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  try {
     const { data, error } = await supabaseAdmin
       .from("stickers")
       .select("code,status")
@@ -1380,6 +1396,124 @@ export async function listAvailableStickers(): Promise<string[]> {
     // ignore
   }
   return Array.from(codes);
+}
+
+export async function pullAndActivateLockedTag(params: {
+  packageType: PackageType;
+  ownerPhone: string;
+  ownerName: string;
+  vehicleInfo?: string | null;
+  city: string;
+  paymentMethod: "online" | "cod";
+  startsAt: string;
+  expiresAt: string;
+}): Promise<{ ok: boolean; stickerCode?: string; error?: string }> {
+  const pkg = normalizePackageType(params.packageType);
+  const features = getDefaultFeaturesForPackage(pkg);
+  const alertChannel = pkg === "basic" ? "WHATSAPP" : "BOTH";
+  const activationSource =
+    params.paymentMethod === "online" ? "online" : "cod_delivered";
+  const vehicleLabel =
+    String(params.vehicleInfo || "").trim() || params.ownerName || "مركبة مسجلة";
+
+  const candidates = await listAvailableStickers();
+  for (const candidateCode of candidates) {
+    try {
+      // محاولة التحديث الذري في جدول tags بشرط status = 'LOCKED'
+      let updated = false;
+      const { data: extRows, error: extErr } = await supabaseAdmin
+        .from("tags")
+        .update({
+          status: "ACTIVE",
+          owner_phone: params.ownerPhone,
+          vehicle_info: vehicleLabel,
+          vehicle_brand: vehicleLabel,
+          city: params.city,
+          alert_channel: alertChannel,
+          package_type: pkg,
+          features,
+          activation_source: activationSource,
+          subscription_starts_at: params.startsAt,
+          subscription_expires_at: params.expiresAt,
+          activated_at: params.startsAt,
+        })
+        .eq("tag_code", candidateCode)
+        .eq("status", "LOCKED")
+        .select("tag_code");
+
+      if (!extErr && Array.isArray(extRows) && extRows.length > 0) {
+        updated = true;
+      } else if (extErr) {
+        const { data: baseRows, error: baseErr } = await supabaseAdmin
+          .from("tags")
+          .update({
+            status: "ACTIVE",
+            owner_phone: params.ownerPhone,
+            vehicle_info: vehicleLabel,
+            vehicle_brand: vehicleLabel,
+            city: params.city,
+            alert_channel: alertChannel,
+            activated_at: params.startsAt,
+          })
+          .eq("tag_code", candidateCode)
+          .eq("status", "LOCKED")
+          .select("tag_code");
+        if (!baseErr && Array.isArray(baseRows) && baseRows.length > 0) {
+          updated = true;
+        }
+      }
+
+      if (!updated) continue;
+
+      // مزامنة جدول stickers والمخزن المحلي
+      try {
+        await supabaseAdmin.from("stickers").upsert(
+          {
+            code: candidateCode,
+            status: "active",
+            package_type: pkg,
+            features,
+            owner_phone: params.ownerPhone,
+            owner_name: params.ownerName,
+            vehicle_info: vehicleLabel,
+            activation_source: activationSource,
+            subscription_starts_at: params.startsAt,
+            subscription_expires_at: params.expiresAt,
+            updated_at: params.startsAt,
+          },
+          { onConflict: "code" }
+        );
+      } catch {
+        // ignore
+      }
+
+      const store = loadStore();
+      store.stickers[candidateCode] = {
+        code: candidateCode,
+        status: "active",
+        packageType: pkg,
+        features,
+        ownerPhone: params.ownerPhone,
+        ownerName: params.ownerName,
+        vehicleInfo: vehicleLabel,
+        activationSource,
+        subscriptionStartsAt: params.startsAt,
+        subscriptionExpiresAt: params.expiresAt,
+        createdAt: store.stickers[candidateCode]?.createdAt || params.startsAt,
+        updatedAt: params.startsAt,
+      };
+      saveStore(store);
+
+      return { ok: true, stickerCode: candidateCode };
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return {
+    ok: false,
+    error: "لا توجد ملصقات متاحة بحالة LOCKED في المخزن حالياً.",
+  };
 }
 
 export async function importStickerCodes(
@@ -1524,6 +1658,7 @@ export async function wipeAllOldData(): Promise<{
     "stickers",
     "tags",
     "vendors",
+    "admin_audit_logs",
   ];
   const clearedTables: string[] = [];
 
@@ -1558,6 +1693,15 @@ export async function wipeAllOldData(): Promise<{
     unassignedPaidOrders: [],
     orders: [],
   });
+
+  for (const fname of ["local-tags-store.json", "local-admin-store.json"]) {
+    try {
+      const fpath = path.join(process.cwd(), "src", "data", fname);
+      if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
+    } catch {
+      // ignore
+    }
+  }
 
   return { ok: true, clearedTables };
 }
