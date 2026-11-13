@@ -2430,8 +2430,7 @@ export default function ExecutiveAdminDashboardPage() {
                     إدخال يدوي لملصق مطبوع مفرد
                   </h2>
                   <p className="text-xs text-white/60">
-                    أدخل كود الملصق ورمز الخدش السري ليتم حساب SHA-256 وحفظه
-                    مشفراً فوراً بحالة LOCKED
+                    أدخل كود الملصق لإدراجه فوراً بحالة غير مفعل
                   </p>
                 </div>
               </div>
@@ -2450,25 +2449,6 @@ export default function ExecutiveAdminDashboardPage() {
                       setSingleTagCode(e.target.value.toUpperCase())
                     }
                     placeholder="LY-XXXX-XXXX"
-                    className="h-11 w-full rounded-xl border border-white/15 bg-[#07090E] px-3.5 font-mono text-sm font-black text-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold text-white/85">
-                    رمز الخدش السري (6 أرقام - يتم تشفيره بـ SHA-256)
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    dir="ltr"
-                    maxLength={8}
-                    required
-                    value={singleScratchPin}
-                    onChange={(e) =>
-                      setSingleScratchPin(e.target.value.replace(/\D/g, ""))
-                    }
-                    placeholder="482915"
                     className="h-11 w-full rounded-xl border border-white/15 bg-[#07090E] px-3.5 font-mono text-sm font-black text-white"
                   />
                 </div>

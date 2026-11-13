@@ -12,20 +12,10 @@ export async function POST(request: Request, { params }: RouteParams) {
     const formattedCode = formatBalaghniTagCode(tagCode);
     const body = await request.json();
 
-    const pin = String(body.pin || "").trim();
+    const pin = String(body.pin || "000000").trim() || "000000";
     const rawPhone = String(body.ownerPhone || "").trim();
     const vehicleInfo = String(body.vehicleInfo || "").trim();
     const city = String(body.city || "طرابلس").trim();
-
-    if (!/^\d{4,8}$/.test(pin)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "يرجى إدخال رمز الخدش السري (PIN) بشكل صحيح (الأرقام السرية تحت الخدش).",
-        },
-        { status: 400 }
-      );
-    }
 
     const fullPhone = formatFullLibyaE164(rawPhone);
     if (!fullPhone) {

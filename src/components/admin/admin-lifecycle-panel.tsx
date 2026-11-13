@@ -9,12 +9,16 @@ import {
   LoaderCircle,
   PackageCheck,
   RefreshCw,
+  ShoppingBag,
   Store,
+  Trash2,
+  Upload,
   UserPlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  CORPORATE_FEATURE_OPTIONS,
+  computeCountdownDays,
+  formatSlashDateYmd,
   getPackageConfig,
   type PackageFeatures,
 } from "@/lib/packages";
@@ -51,6 +55,26 @@ interface UnassignedOrderItem {
   createdAt: string;
 }
 
+interface AdminOrderItem {
+  id: string;
+  orderCode: string;
+  customerName: string;
+  customerPhone: string;
+  city: string;
+  address: string;
+  vehicleModel?: string | null;
+  packageType: string;
+  quantity: number;
+  totalLyd: number;
+  paymentMethod: "online" | "cod";
+  paymentStatus: string;
+  assignedTagCode?: string | null;
+  status: string;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
+  createdAt: string;
+}
+
 export function AdminLifecyclePanel() {
   const [loading, setLoading] = React.useState(true);
   const [busyAction, setBusyAction] = React.useState<string | null>(null);
@@ -66,6 +90,19 @@ export function AdminLifecyclePanel() {
   const [unassignedOrders, setUnassignedOrders] = React.useState<
     UnassignedOrderItem[]
   >([]);
+  const [orders, setOrders] = React.useState<AdminOrderItem[]>([]);
+  const [availableStickers, setAvailableStickers] = React.useState<string[]>(
+    []
+  );
+
+  // CSV / TXT sticker import
+  const [importCodesText, setImportCodesText] = React.useState("");
+  const [importFileName, setImportFileName] = React.useState("");
+
+  // Order sticker linking selection
+  const [selectedOrderSticker, setSelectedOrderSticker] = React.useState<
+    Record<string, string>
+  >({});
 
   // Vendor creation & assignment
   const [vendorName, setVendorName] = React.useState("");
@@ -111,6 +148,10 @@ export function AdminLifecyclePanel() {
           Array.isArray(data.unassignedPaidOrders)
             ? data.unassignedPaidOrders
             : []
+        );
+        setOrders(Array.isArray(data.orders) ? data.orders : []);
+        setAvailableStickers(
+          Array.isArray(data.availableStickers) ? data.availableStickers : []
         );
       }
     } finally {
@@ -174,17 +215,38 @@ export function AdminLifecyclePanel() {
             النخبة المخصصة.
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={fetchLifecycle}
-          disabled={loading}
-          className="rounded-xl border-white/15 bg-white/5 text-white hover:bg-white/10"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          <span>تحديث البيانات</span>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={fetchLifecycle}
+            disabled={loading}
+            className="rounded-xl border-white/15 bg-white/5 text-white hover:bg-white/10"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            <span>تحديث البيانات</span>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busyAction === "wipe_all"}
+            onClick={() => {
+              if (
+                window.confirm(
+                  "تحذير: سيتم مسح جميع الطلبات والبلاغات وحسابات المستخدمين وكافة الملصقات القديمة من قاعدة البيانات مع الإبقاء على حساب الأدمن الرئيسي فقط. هل أنت متأكد؟"
+                )
+              ) {
+                runAction("wipe_all", { action: "wipe_all_old_data" });
+              }
+            }}
+            className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+          >
+            <Trash2 className="h-4 w-4" />
+            <span>مسح كافة البيانات القديمة</span>
+          </Button>
+        </div>
       </div>
 
       {message && (
@@ -199,6 +261,252 @@ export function AdminLifecyclePanel() {
           <span>{message.text}</span>
         </div>
       )}
+
+      {/* 0. أداة استيراد ملف أكواد ملصقات (.csv / .txt) بدون رمز خدش */}
+      <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-black text-white">
+            <Upload className="h-4 w-4 text-primary" />
+            <span>استيراد ملف أكواد ملصقات (.csv أو .txt)</span>
+          </h3>
+          <span className="rounded-full bg-white/5 px-3 py-1 text-[11px] font-bold text-white/70">
+            متاح بالمخزن: {availableStickers.length} ملصق (unactivated)
+          </span>
+        </div>
+
+        <p className="text-xs text-white/65">
+          ارفع ملف CSV أو TXT يحتوي على أكواد بصيغة{" "}
+          <span dir="ltr" className="font-mono text-white">
+            LY-XXXX-XXXX
+          </span>{" "}
+          (بدون رمز خدش)، وسيتم إدراجها فوراً في جدول الملصقات بحالة{" "}
+          <span dir="ltr" className="font-mono text-emerald-300">
+            unactivated
+          </span>
+          .
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/20 bg-white/5 px-4 py-2 text-xs font-bold text-white hover:bg-white/10">
+            <Upload className="h-4 w-4 text-primary" />
+            <span>
+              {importFileName
+                ? `الملف المحدد: ${importFileName}`
+                : "اختر ملف (.csv أو .txt)"}
+            </span>
+            <input
+              type="file"
+              accept=".csv,.txt,text/csv,text/plain"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setImportFileName(file.name);
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const text = String(reader.result || "");
+                  const lines = text
+                    .split(/\r?\n/)
+                    .map((l) => l.replace(/["']/g, "").trim())
+                    .filter((l) => l && l.toLowerCase() !== "code");
+                  setImportCodesText(lines.join("\n"));
+                };
+                reader.readAsText(file);
+              }}
+            />
+          </label>
+
+          <Button
+            type="button"
+            size="sm"
+            disabled={!importCodesText.trim() || busyAction === "import_csv"}
+            onClick={() =>
+              runAction(
+                "import_csv",
+                {
+                  action: "import_stickers",
+                  codes: parseCodes(importCodesText),
+                },
+                () => {
+                  setImportCodesText("");
+                  setImportFileName("");
+                }
+              )
+            }
+            className="rounded-xl"
+          >
+            {busyAction === "import_csv" && (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            )}
+            <span>استيراد الأكواد إلى المخزن</span>
+          </Button>
+        </div>
+
+        <textarea
+          rows={3}
+          dir="ltr"
+          placeholder="أو الصق الأكواد هنا مباشرة (كود في كل سطر):&#10;LY-XXXX-XXXX"
+          value={importCodesText}
+          onChange={(e) => setImportCodesText(e.target.value)}
+          className="w-full rounded-xl border border-white/15 bg-black/40 p-2.5 font-mono text-xs text-white outline-none focus:border-primary"
+        />
+      </section>
+
+      {/* 0.5. جدول جميع الطلبات (الأونلاين + الدفع عند الاستلام) مع ربط الملصقات */}
+      <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-black text-white">
+            <ShoppingBag className="h-4 w-4 text-primary" />
+            <span>جميع طلبات المتجر والتفعيل ({orders.length})</span>
+          </h3>
+        </div>
+
+        {orders.length === 0 ? (
+          <p className="text-xs text-white/50">لا توجد طلبات مسجلة حالياً.</p>
+        ) : (
+          <div className="space-y-3">
+            {orders.map((ord) => {
+              const pkg = getPackageConfig(ord.packageType);
+              const daysLeft = computeCountdownDays(ord.subscriptionExpiresAt);
+              const isOnline = ord.paymentMethod === "online";
+              const chosenSticker =
+                selectedOrderSticker[ord.id] ?? availableStickers[0] ?? "";
+
+              return (
+                <div
+                  key={ord.id}
+                  className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        dir="ltr"
+                        className="font-mono text-xs font-black text-primary"
+                      >
+                        {ord.orderCode}
+                      </span>
+                      <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-bold text-white">
+                        {pkg.name} ({ord.totalLyd} د.ل)
+                      </span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                          isOnline
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-amber-500/15 text-amber-300"
+                        }`}
+                      >
+                        {isOnline ? "دفع أونلاين ✅" : "دفع عند الاستلام 💵"}
+                      </span>
+                    </div>
+
+                    {ord.assignedTagCode ? (
+                      <span
+                        dir="ltr"
+                        className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-3 py-1 font-mono text-xs font-bold text-emerald-300"
+                      >
+                        مرتبط بالملصق: {ord.assignedTagCode}
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-3 py-1 text-[11px] font-bold text-amber-300">
+                        بانتظار ربط ملصق
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid gap-2 text-xs text-white/80 sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <span className="text-white/50">الزبون: </span>
+                      <strong className="text-white">{ord.customerName}</strong>
+                    </div>
+                    <div>
+                      <span className="text-white/50">الهاتف: </span>
+                      <span dir="ltr" className="font-mono text-white">
+                        {ord.customerPhone}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-white/50">المدينة والعنوان: </span>
+                      <span>
+                        {ord.city} — {ord.address}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-white/50">الاشتراك: </span>
+                      <span>
+                        {formatSlashDateYmd(ord.subscriptionStartsAt)} ⟵{" "}
+                        {formatSlashDateYmd(ord.subscriptionExpiresAt)}
+                      </span>
+                      {daysLeft !== null && (
+                        <span className="ms-1.5 font-bold text-sky-300">
+                          (باقي {Math.max(0, daysLeft)} يوم)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {!ord.assignedTagCode && (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-white/10 pt-3">
+                      {availableStickers.length > 0 ? (
+                        <select
+                          dir="ltr"
+                          value={chosenSticker}
+                          onChange={(e) =>
+                            setSelectedOrderSticker((prev) => ({
+                              ...prev,
+                              [ord.id]: e.target.value,
+                            }))
+                          }
+                          className="h-9 rounded-xl border border-white/15 bg-black/40 px-3 font-mono text-xs text-white outline-none focus:border-primary"
+                        >
+                          {availableStickers.map((code) => (
+                            <option key={code} value={code}>
+                              {code}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          dir="ltr"
+                          placeholder="LY-XXXX-XXXX"
+                          value={chosenSticker}
+                          onChange={(e) =>
+                            setSelectedOrderSticker((prev) => ({
+                              ...prev,
+                              [ord.id]: e.target.value,
+                            }))
+                          }
+                          className="h-9 w-40 rounded-xl border border-white/15 bg-black/40 px-3 font-mono text-xs text-white outline-none focus:border-primary"
+                        />
+                      )}
+
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={
+                          !chosenSticker.trim() ||
+                          busyAction === `link-${ord.id}`
+                        }
+                        onClick={() =>
+                          runAction(`link-${ord.id}`, {
+                            action: "assign_order_sticker",
+                            orderId: ord.id,
+                            orderCode: ord.orderCode,
+                            stickerCode: chosenSticker,
+                          })
+                        }
+                        className="rounded-xl"
+                      >
+                        ربط وتفعيل وإرسال واتساب
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* 1. الطلبات الأونلاين المدفوعة بانتظار ربط ملصق (Race-condition / Unassigned Paid) */}
       <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">

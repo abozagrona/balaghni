@@ -86,6 +86,26 @@ export interface UnassignedPaidOrderRecord {
   createdAt: string;
 }
 
+export interface OrderRecord {
+  id: string;
+  orderCode: string;
+  customerName: string;
+  customerPhone: string;
+  city: string;
+  address: string;
+  vehicleModel?: string | null;
+  packageType: PackageType;
+  quantity: number;
+  totalLyd: number;
+  paymentMethod: "online" | "cod";
+  paymentStatus: string;
+  assignedTagCode?: string | null;
+  status: string;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
+  createdAt: string;
+}
+
 interface LocalLifecycleStore {
   stickers: Record<string, StickerRecord>;
   vendors: VendorRecord[];
@@ -93,6 +113,7 @@ interface LocalLifecycleStore {
   giftRedemptions: Record<string, { phone: string; stickerCode: string; redeemedAt: string }>;
   corporateLeads: CorporateLeadRecord[];
   unassignedPaidOrders: UnassignedPaidOrderRecord[];
+  orders: OrderRecord[];
 }
 
 const STORE_PATH = path.join(
@@ -115,6 +136,7 @@ function loadStore(): LocalLifecycleStore {
         unassignedPaidOrders: Array.isArray(parsed.unassignedPaidOrders)
           ? parsed.unassignedPaidOrders
           : [],
+        orders: Array.isArray(parsed.orders) ? parsed.orders : [],
       };
     }
   } catch {
@@ -127,6 +149,7 @@ function loadStore(): LocalLifecycleStore {
     giftRedemptions: {},
     corporateLeads: [],
     unassignedPaidOrders: [],
+    orders: [],
   };
 }
 
@@ -353,6 +376,34 @@ export async function activateStickerAtomic(params: {
           vendorId: params.vendorId,
           activationSource: params.activationSource,
         });
+        if (params.activationSource === "online" && !params.companyAccountId) {
+          await recordMarketplaceOrder({
+            orderCode: `ORD-${Date.now().toString(36).toUpperCase()}`,
+            packageType: pkg,
+            quantity: 1,
+            customerName: params.ownerName || "عميل تفعيل أونلاين",
+            customerPhone: params.ownerPhone,
+            city: "تفعيل مباشر (QR)",
+            address: `تفعيل مباشر عبر مسح الملصق ${code}`,
+            vehicleModel: params.vehicleInfo || null,
+            totalLyd: getPackagePriceLyd(pkg),
+            paymentMethod: "online",
+            paymentStatus: "paid",
+            assignedTagCode: code,
+            status: "completed",
+            subscriptionStartsAt: startsAt,
+            subscriptionExpiresAt: expiresAt,
+            skipAdminWhatsapp: true,
+          });
+          await sendWhatsappAlertMessage(
+            params.ownerPhone,
+            `✅ تم تفعيل ملصق «بَلِّغْنِي» (${code}) بنجاح!\nالباقة: ${pkg === "basic" ? "الباقة الأساسية (50 د.ل)" : "باقة نَبِّهْنِي (100 د.ل)"}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+          );
+          await sendWhatsappAlertMessage(
+            getAdminWhatsappNumber(),
+            `✅ تفعيل أونلاين مباشر لملصق (${code})\nالباقة: ${pkg}\nالهاتف: ${params.ownerPhone}\nالاسم: ${params.ownerName || "-"}`
+          );
+        }
         const rec = await getStickerLifecycle(code);
         return { ok: true, sticker: rec || undefined };
       }
@@ -1117,4 +1168,391 @@ export async function assignUnassignedPaidOrderToSticker(
   );
 
   return { ok: true };
+}
+
+export async function recordMarketplaceOrder(params: {
+  orderCode: string;
+  packageType: PackageType;
+  quantity: number;
+  customerName: string;
+  customerPhone: string;
+  city: string;
+  address: string;
+  vehicleModel?: string | null;
+  totalLyd: number;
+  paymentMethod: "online" | "cod";
+  paymentStatus: string;
+  assignedTagCode?: string | null;
+  status?: string;
+  subscriptionStartsAt: string;
+  subscriptionExpiresAt: string;
+  skipAdminWhatsapp?: boolean;
+}): Promise<{ ok: boolean; order: OrderRecord; supabaseSaved: boolean }> {
+  const nowIso = params.subscriptionStartsAt || new Date().toISOString();
+  const orderStatus =
+    params.status ||
+    (params.assignedTagCode ? "completed" : "pending_assignment");
+  let id = `ord_${Date.now().toString(36)}`;
+  let supabaseSaved = false;
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .insert({
+        order_code: params.orderCode,
+        tier: params.packageType,
+        quantity: params.quantity,
+        full_name: params.customerName,
+        phone: params.customerPhone,
+        city: params.city,
+        address: params.address,
+        vehicle_model: params.vehicleModel || null,
+        total_lyd: params.totalLyd,
+        payment_method: params.paymentMethod,
+        payment_status: params.paymentStatus,
+        assigned_tag_code: params.assignedTagCode || null,
+        status: orderStatus,
+        subscription_starts_at: params.subscriptionStartsAt,
+        subscription_expires_at: params.subscriptionExpiresAt,
+        created_at: nowIso,
+      })
+      .select("id")
+      .single();
+
+    if (!error && data?.id) {
+      id = String(data.id);
+      supabaseSaved = true;
+    } else if (error) {
+      // Fallback to base columns if extended columns are not yet present
+      const { data: baseData, error: baseErr } = await supabaseAdmin
+        .from("orders")
+        .insert({
+          order_code: params.orderCode,
+          tier: params.packageType,
+          quantity: params.quantity,
+          full_name: params.customerName,
+          phone: params.customerPhone,
+          city: params.city,
+          address: params.address,
+          vehicle_model: params.vehicleModel || null,
+          total_lyd: params.totalLyd,
+          status: orderStatus,
+          created_at: nowIso,
+        })
+        .select("id")
+        .single();
+      if (!baseErr && baseData?.id) {
+        id = String(baseData.id);
+        supabaseSaved = true;
+      }
+    }
+  } catch {
+    // local store fallback below
+  }
+
+  const order: OrderRecord = {
+    id,
+    orderCode: params.orderCode,
+    customerName: params.customerName,
+    customerPhone: params.customerPhone,
+    city: params.city,
+    address: params.address,
+    vehicleModel: params.vehicleModel || null,
+    packageType: params.packageType,
+    quantity: params.quantity,
+    totalLyd: params.totalLyd,
+    paymentMethod: params.paymentMethod,
+    paymentStatus: params.paymentStatus,
+    assignedTagCode: params.assignedTagCode || null,
+    status: orderStatus,
+    subscriptionStartsAt: params.subscriptionStartsAt,
+    subscriptionExpiresAt: params.subscriptionExpiresAt,
+    createdAt: nowIso,
+  };
+
+  const store = loadStore();
+  store.orders.unshift(order);
+  saveStore(store);
+
+  return { ok: true, order, supabaseSaved };
+}
+
+export async function listAllOrders(): Promise<OrderRecord[]> {
+  const store = loadStore();
+  const byCode = new Map<string, OrderRecord>();
+
+  for (const o of store.orders) {
+    byCode.set(o.orderCode || o.id, o);
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        const orderCode = String(row.order_code || row.id);
+        const existingLocal = byCode.get(orderCode);
+        const startsAt =
+          row.subscription_starts_at ||
+          existingLocal?.subscriptionStartsAt ||
+          row.created_at;
+        let expiresAt =
+          row.subscription_expires_at ||
+          existingLocal?.subscriptionExpiresAt ||
+          null;
+        if (!expiresAt && startsAt) {
+          expiresAt = addDaysIso(String(startsAt), 365);
+        }
+        const paymentMethod =
+          String(
+            row.payment_method || existingLocal?.paymentMethod || "cod"
+          ).toLowerCase() === "online"
+            ? "online"
+            : "cod";
+        const paymentStatus = String(
+          row.payment_status ||
+            existingLocal?.paymentStatus ||
+            (paymentMethod === "online" ? "paid" : "pending_cod")
+        );
+        byCode.set(orderCode, {
+          id: String(row.id),
+          orderCode,
+          customerName: String(row.full_name || existingLocal?.customerName || ""),
+          customerPhone: String(row.phone || existingLocal?.customerPhone || ""),
+          city: String(row.city || existingLocal?.city || ""),
+          address: String(row.address || existingLocal?.address || ""),
+          vehicleModel: row.vehicle_model || existingLocal?.vehicleModel || null,
+          packageType: normalizePackageType(row.tier || existingLocal?.packageType),
+          quantity: Number(row.quantity || existingLocal?.quantity || 1),
+          totalLyd: Number(row.total_lyd || existingLocal?.totalLyd || 100),
+          paymentMethod,
+          paymentStatus,
+          assignedTagCode:
+            row.assigned_tag_code || existingLocal?.assignedTagCode || null,
+          status: String(
+            row.status ||
+              existingLocal?.status ||
+              (row.assigned_tag_code ? "completed" : "pending_assignment")
+          ),
+          subscriptionStartsAt: startsAt ? String(startsAt) : null,
+          subscriptionExpiresAt: expiresAt ? String(expiresAt) : null,
+          createdAt: String(row.created_at || existingLocal?.createdAt || ""),
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return Array.from(byCode.values()).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
+}
+
+export async function listAvailableStickers(): Promise<string[]> {
+  const codes = new Set<string>();
+  const store = loadStore();
+  for (const s of Object.values(store.stickers)) {
+    if (s.status === "unactivated") codes.add(s.code);
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("stickers")
+      .select("code,status")
+      .eq("status", "unactivated")
+      .order("created_at", { ascending: false })
+      .limit(500);
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        if (row.code) codes.add(formatBalaghniTagCode(String(row.code)));
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return Array.from(codes);
+}
+
+export async function importStickerCodes(
+  rawCodes: string[]
+): Promise<{ ok: boolean; importedCount: number; codes: string[]; error?: string }> {
+  const cleaned = Array.from(
+    new Set(
+      rawCodes
+        .map((c) => formatBalaghniTagCode(c))
+        .filter((c) => /^LY-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c))
+    )
+  );
+  if (cleaned.length === 0) {
+    return {
+      ok: false,
+      importedCount: 0,
+      codes: [],
+      error: "لم يتم العثور على أي أكواد صالحة بصيغة LY-XXXX-XXXX في الملف.",
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const store = loadStore();
+
+  for (const code of cleaned) {
+    try {
+      await supabaseAdmin.from("stickers").upsert(
+        {
+          code,
+          status: "unactivated",
+          package_type: "nabbihni",
+          features: NABBIHNI_FEATURES,
+          created_at: nowIso,
+          updated_at: nowIso,
+        },
+        { onConflict: "code" }
+      );
+      await supabaseAdmin.from("tags").upsert(
+        {
+          tag_code: code,
+          status: "LOCKED",
+          type: "car",
+          package_type: "nabbihni",
+          features: NABBIHNI_FEATURES,
+          updated_at: nowIso,
+        },
+        { onConflict: "tag_code" }
+      );
+    } catch {
+      // ignore
+    }
+
+    store.stickers[code] = {
+      code,
+      status: "unactivated",
+      packageType: "nabbihni",
+      features: NABBIHNI_FEATURES,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+  }
+
+  saveStore(store);
+  return { ok: true, importedCount: cleaned.length, codes: cleaned };
+}
+
+export async function assignOrderToSticker(
+  orderIdOrCode: string,
+  stickerCode: string
+): Promise<{ ok: boolean; error?: string }> {
+  const code = formatBalaghniTagCode(stickerCode);
+  if (!code) {
+    return { ok: false, error: "يرجى تحديد كود ملصق صحيح." };
+  }
+
+  const orders = await listAllOrders();
+  const target = orders.find(
+    (o) => o.id === orderIdOrCode || o.orderCode === orderIdOrCode
+  );
+  if (!target) {
+    return { ok: false, error: "الطلب غير موجود." };
+  }
+
+  const res = await activateStickerAtomic({
+    code,
+    packageType: target.packageType,
+    ownerPhone: target.customerPhone,
+    ownerName: target.customerName,
+    vehicleInfo: target.vehicleModel || undefined,
+    activationSource:
+      target.paymentMethod === "online" ? "online" : "cod_delivered",
+    durationDays: 365,
+  });
+  if (!res.ok) {
+    return { ok: false, error: res.error || "تعذر تفعيل الملصق المختار." };
+  }
+
+  try {
+    await supabaseAdmin
+      .from("orders")
+      .update({
+        status: "completed",
+        assigned_tag_code: code,
+        payment_status: "paid",
+      })
+      .or(`id.eq.${target.id},order_code.eq.${target.orderCode}`);
+  } catch {
+    // ignore
+  }
+
+  const store = loadStore();
+  const idx = store.orders.findIndex(
+    (o) => o.id === target.id || o.orderCode === target.orderCode
+  );
+  if (idx >= 0) {
+    store.orders[idx].status = "completed";
+    store.orders[idx].assignedTagCode = code;
+    store.orders[idx].paymentStatus = "paid";
+    saveStore(store);
+  }
+
+  await sendWhatsappAlertMessage(
+    target.customerPhone,
+    `✅ مرحباً ${target.customerName}، تم ربط طلبك (${target.orderCode}) بملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${code}\nالباقة: ${target.packageType === "basic" ? "الباقة الأساسية (50 د.ل)" : "باقة نَبِّهْنِي (100 د.ل)"}\nرابط لوحة التحكم: https://www.balaghni.ly/login\nرابط صفحة الملصق: https://www.balaghni.ly/s/${code}`
+  );
+
+  return { ok: true };
+}
+
+export async function wipeAllOldData(): Promise<{
+  ok: boolean;
+  clearedTables: string[];
+}> {
+  const tables = [
+    "reports",
+    "vehicle_documents",
+    "maintenance_records",
+    "gift_redemptions",
+    "corporate_leads",
+    "vendor_settlements",
+    "orders",
+    "stickers",
+    "tags",
+    "vendors",
+  ];
+  const clearedTables: string[] = [];
+
+  for (const tbl of tables) {
+    try {
+      const { error } = await supabaseAdmin
+        .from(tbl)
+        .delete()
+        .neq("created_at", "1970-01-01T00:00:00Z");
+      if (!error) {
+        clearedTables.push(tbl);
+      } else {
+        // Fallback delete condition in case created_at isn't present or null
+        const pk = tbl === "stickers" ? "code" : tbl === "tags" ? "tag_code" : "id";
+        const { error: err2 } = await supabaseAdmin
+          .from(tbl)
+          .delete()
+          .neq(pk, "__never_match__");
+        if (!err2) clearedTables.push(tbl);
+      }
+    } catch {
+      // ignore missing tables
+    }
+  }
+
+  saveStore({
+    stickers: {},
+    vendors: [],
+    settlements: [],
+    giftRedemptions: {},
+    corporateLeads: [],
+    unassignedPaidOrders: [],
+    orders: [],
+  });
+
+  return { ok: true, clearedTables };
 }

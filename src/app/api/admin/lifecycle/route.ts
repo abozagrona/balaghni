@@ -1,18 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin, verifyAdminSessionToken } from "@/lib/supabase/client";
 import {
+  assignOrderToSticker,
   assignStickersToVendor,
   assignUnassignedPaidOrderToSticker,
   createCorporatePackageAccount,
   createVendor,
   getVendorInventory,
+  importStickerCodes,
+  listAllOrders,
+  listAvailableStickers,
   listCorporateLeads,
   listUnassignedPaidOrders,
   listVendors,
   markStickersGiftReady,
   settleVendorMonth,
+  wipeAllOldData,
 } from "@/lib/lifecycle-service";
 import type { PackageFeatures } from "@/lib/packages";
+
+function normalizeCodeArray(input: unknown): string[] {
+  if (Array.isArray(input)) {
+    return input.map((s) => String(s).trim()).filter(Boolean);
+  }
+  return String(input || "")
+    .split(/[\s,;،\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 function isAdminAuthorized(req: NextRequest): boolean {
   const authHeader = req.headers.get("authorization") || "";
@@ -31,10 +46,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const [vendors, corporateLeads, unassignedPaidOrders] = await Promise.all([
+  const [
+    vendors,
+    corporateLeads,
+    unassignedPaidOrders,
+    orders,
+    availableStickers,
+  ] = await Promise.all([
     listVendors(),
     listCorporateLeads(),
     listUnassignedPaidOrders(),
+    listAllOrders(),
+    listAvailableStickers(),
   ]);
 
   const vendorSummaries = await Promise.all(
@@ -49,6 +72,8 @@ export async function GET(req: NextRequest) {
     vendors: vendorSummaries,
     corporateLeads,
     unassignedPaidOrders,
+    orders,
+    availableStickers,
   });
 }
 
@@ -61,6 +86,44 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const action = String(body.action || "");
 
+    if (action === "import_stickers") {
+      const codes = normalizeCodeArray(body.codes);
+      const res = await importStickerCodes(codes);
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? `تم استيراد ${res.importedCount} ملصق جديد بحالة unactivated بنجاح.`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
+    }
+
+    if (action === "assign_order_sticker") {
+      const res = await assignOrderToSticker(
+        String(body.orderId || body.orderCode || ""),
+        String(body.stickerCode || body.code || "")
+      );
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? "تم ربط الملصق بالطلب وتفعيله وإرسال رسالة واتساب للزبون بنجاح."
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
+    }
+
+    if (action === "wipe_all_old_data") {
+      const res = await wipeAllOldData();
+      return NextResponse.json({
+        ...res,
+        message: `تم مسح كافة البيانات القديمة بنجاح (${res.clearedTables.join("، ")}) مع الإبقاء على حساب الأدمن الرئيسي فقط.`,
+      });
+    }
+
     if (action === "create_vendor") {
       const res = await createVendor({
         name: String(body.name || ""),
@@ -72,10 +135,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "assign_vendor_stickers") {
-      const codes = String(body.codes || "")
-        .split(/[\s,;\n]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const codes = normalizeCodeArray(body.codes);
       const res = await assignStickersToVendor(String(body.vendorId || ""), codes);
       return NextResponse.json(res);
     }
@@ -89,19 +149,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "mark_gift_ready") {
-      const codes = String(body.codes || "")
-        .split(/[\s,;\n]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const codes = normalizeCodeArray(body.codes);
       const res = await markStickersGiftReady(codes);
       return NextResponse.json(res);
     }
 
     if (action === "create_corporate_account") {
-      const codes = String(body.codes || "")
-        .split(/[\s,;\n]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const codes = normalizeCodeArray(body.codes);
       const features: PackageFeatures = {
         whatsapp: Boolean(body.features?.whatsapp ?? true),
         sms_fallback: Boolean(body.features?.sms_fallback),
@@ -112,7 +166,7 @@ export async function POST(req: NextRequest) {
       const res = await createCorporatePackageAccount({
         companyName: String(body.companyName || ""),
         city: String(body.city || "طرابلس"),
-        ownerPhone: String(body.ownerPhone || ""),
+        ownerPhone: String(body.phone || body.ownerPhone || ""),
         agreedAmountLyd: Number(body.agreedAmountLyd || 0),
         features,
         stickerCodes: codes,
@@ -122,8 +176,8 @@ export async function POST(req: NextRequest) {
 
     if (action === "assign_unassigned_paid") {
       const res = await assignUnassignedPaidOrderToSticker(
-        String(body.orderId || ""),
-        String(body.stickerCode || "")
+        String(body.orderId || body.orderRef || ""),
+        String(body.stickerCode || body.code || "")
       );
       return NextResponse.json(res, { status: res.ok ? 200 : 400 });
     }

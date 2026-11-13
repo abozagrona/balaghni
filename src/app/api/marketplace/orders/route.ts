@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/client";
+import { recordMarketplaceOrder } from "@/lib/lifecycle-service";
 import { sendWhatsappAlertMessage } from "@/lib/otp-service";
 import {
   getAdminWhatsappNumber,
@@ -28,36 +28,39 @@ export async function POST(req: NextRequest) {
     exp.setUTCDate(exp.getUTCDate() + 365);
     const expiresAt = exp.toISOString();
 
-    if (
-      process.env.NEXT_PUBLIC_SUPABASE_URL &&
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    ) {
-      await supabaseAdmin.from("orders").insert({
-        order_code: orderCode,
-        tier: pkgType,
-        quantity: Number(body.quantity || 1),
-        full_name: String(body.fullName || "").trim(),
-        phone: String(body.phone || "").trim(),
-        city: String(body.city || "طرابلس").trim(),
-        address: String(body.address || "").trim(),
-        vehicle_model: body.vehicleModel || null,
-        total_lyd: Number(body.totalLyd || pkgConfig.priceLyd || 100),
-        payment_method: paymentMethod,
-        payment_status: paymentStatus,
-        subscription_starts_at: startsAt,
-        subscription_expires_at: expiresAt,
-        created_at: startsAt,
-      });
-    }
+    const fullName = String(body.fullName || "").trim();
+    const phone = String(body.phone || "").trim();
+    const city = String(body.city || "طرابلس").trim();
+    const address = String(body.address || "").trim();
+    const quantity = Number(body.quantity || 1);
+    const totalLyd = Number(body.totalLyd || pkgConfig.priceLyd || 100);
+
+    await recordMarketplaceOrder({
+      orderCode,
+      packageType: pkgType,
+      quantity,
+      customerName: fullName,
+      customerPhone: phone,
+      city,
+      address,
+      vehicleModel: body.vehicleModel || null,
+      totalLyd,
+      paymentMethod,
+      paymentStatus,
+      assignedTagCode: null,
+      status: "pending_assignment",
+      subscriptionStartsAt: startsAt,
+      subscriptionExpiresAt: expiresAt,
+    });
 
     const adminPhone = getAdminWhatsappNumber();
     const paymentLabel =
       paymentMethod === "online"
-        ? "دفع أونلاين (مدفوع)"
-        : "دفع عند الاستلام (COD)";
+        ? "دفع أونلاين ✅ (مدفوع)"
+        : "دفع عند الاستلام 💵 (COD)";
     await sendWhatsappAlertMessage(
       adminPhone,
-      `🛒 طلب ملصق جديد (${orderCode})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: ${paymentLabel}\nالاسم: ${body.fullName}\nالهاتف: ${body.phone}\nالمدينة: ${body.city} - ${body.address}\nالكمية: ${body.quantity || 1}\nالإجمالي: ${body.totalLyd} د.ل\nتاريخ الانتهاء المبدئي: ${expiresAt.slice(0, 10)}`
+      `🛒 طلب ملصق جديد (${orderCode})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: ${paymentLabel}\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${quantity}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء المبدئي: ${expiresAt.slice(0, 10)}`
     );
 
     return NextResponse.json({

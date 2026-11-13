@@ -49,19 +49,11 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
   const formattedOwnerPhone =
     formatFullLibyaE164(ownerPhone) || `+218${ownerPhone.replace(/\D/g, "")}`;
 
-  // 1. عند الضغط على "تأكيد وتفعيل": التحقق أولاً من رمز الخدش السري (PIN) في الخادم قبل إرسال أي OTP
+  // 1. عند الضغط على "تأكيد وتفعيل": التحقق من الهاتف وبيانات المركبة ثم فتح نافذة التحقق عبر واتساب/SMS
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
     setError(null);
-
-    const cleanPin = pin.trim();
-    if (!/^\d{6}$/.test(cleanPin)) {
-      setError(
-        "رمز الخدش السري (PIN) غير صحيح. يرجى التأكد من الأرقام الستة تحت طبقة الخدش."
-      );
-      return;
-    }
 
     const fullPhone = formatFullLibyaE164(ownerPhone);
     if (!fullPhone) {
@@ -78,36 +70,7 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
       return;
     }
 
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `/api/tags/${encodeURIComponent(tagCode)}/verify-pin`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pin: cleanPin }),
-        }
-      );
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || !data.ok) {
-        setError(
-          data.error ||
-            "رمز الخدش السري (PIN) غير صحيح. يرجى التأكد من الأرقام الستة تحت طبقة الخدش."
-        );
-        setLoading(false);
-        return;
-      }
-
-      // الرمز صحيح بنسبة 100% -> ننتقل الآن فقط لفتح نافذة التحقق عبر واتساب/SMS
-      setLoading(false);
-      setOtpModalOpen(true);
-    } catch {
-      setError(
-        "تعذر الاتصال بالخادم للتحقق من رمز الخدش. يرجى المحاولة مجدداً."
-      );
-      setLoading(false);
-    }
+    setOtpModalOpen(true);
   };
 
   // 2. بعد تأكيد رمز الـ OTP بنجاح: يتم اعتماد الحفظ والتفعيل في قاعدة البيانات
@@ -175,42 +138,14 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
             ربط وتفعيل الملصق برقم هاتفك
           </h2>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            امسح طبقة الخدش الفضية على بطاقة الملصق وأدخل رمز الـ PIN السري
-            لتفعيل استلام التنبيهات على هاتفك.
+            أدخل رقم هاتفك الليبي وبيانات سيارتك لتفعيل استلام التنبيهات على
+            هاتفك فوراً.
           </p>
         </div>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* 1. رمز الخدش السري PIN */}
-        <div>
-          <label
-            htmlFor="activation-pin"
-            className="mb-1.5 flex items-center justify-between text-xs font-bold text-foreground sm:text-sm"
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <KeyRound className="h-4 w-4 text-primary" />
-              رمز الخدش السري (PIN)
-            </span>
-            <span className="text-[11px] font-normal text-muted-foreground">
-              مكون من 6 أرقام تحت طبقة الخدش
-            </span>
-          </label>
-          <input
-            id="activation-pin"
-            type="text"
-            inputMode="numeric"
-            dir="ltr"
-            maxLength={6}
-            required
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            placeholder="••••••"
-            className="h-12 w-full rounded-2xl border border-input bg-surface px-4 text-center font-mono text-xl font-black tracking-[0.35em] text-foreground placeholder:tracking-normal placeholder:text-placeholder focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
-
-        {/* 2. رقم الهاتف الليبي (+218) */}
+        {/* 1. رقم الهاتف الليبي (+218) */}
         <div>
           <label className="mb-1.5 flex items-center justify-between text-xs font-bold text-foreground sm:text-sm">
             <span>رقم هاتف المالك (لاستلام التنبيهات)</span>

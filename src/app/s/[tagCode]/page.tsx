@@ -189,14 +189,17 @@ export default async function PublicQrScanPage({
               تفعيل ملصق «بَلِّغْنِي» الجديد
             </h1>
             <p className="mt-1 text-xs leading-relaxed text-white/75 sm:text-sm">
-              هذا الملصق أصلي ومسجل في النظام ولكنه غير مرتبط بمركبة بعد. إذا
-              كنت صاحب الملصق، أدخل رمز الخدش السري لتفعيله فوراً.
+              هذا الملصق أصلي ومسجل في النظام ولكنه غير مرتبط بمركبة بعد. اختر
+              باقتك وأكمل التفعيل الفوري لربطه بسيارتك.
             </p>
           </div>
         </section>
 
         <main className="mx-auto w-full max-w-lg flex-1 px-4 py-5">
-          <TagActivationForm tagCode={tagRecord.tagCode} />
+          <StickerActivationClient
+            code={tagRecord.tagCode}
+            initialMode="unactivated"
+          />
         </main>
       </div>
     );
