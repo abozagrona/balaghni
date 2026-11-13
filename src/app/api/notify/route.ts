@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
     let tagCode = "";
     let reason = "blocking";
     let customNote = "";
+    let senderPhone = "";
     let location = "";
 
     const contentType = req.headers.get("content-type") || "";
@@ -25,6 +26,7 @@ export async function POST(req: NextRequest) {
       customNote = String(
         formData.get("custom_note") || formData.get("note") || ""
       );
+      senderPhone = String(formData.get("senderPhone") || "").trim();
       const lat = formData.get("locationLatitude");
       const lng = formData.get("locationLongitude");
       if (lat && lng) {
@@ -35,6 +37,7 @@ export async function POST(req: NextRequest) {
       tagCode = String(body.tag_code || body.tagCode || "");
       reason = String(body.reason || "blocking");
       customNote = String(body.custom_note || body.note || "");
+      senderPhone = String(body.senderPhone || "").trim();
       location = String(body.location || "");
     }
 
@@ -50,6 +53,7 @@ export async function POST(req: NextRequest) {
       tagCode: normalizedCode,
       reason,
       customNote,
+      senderPhone,
       location,
     });
 

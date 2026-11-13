@@ -96,12 +96,12 @@ export default function HomePage() {
                 <div>
                   <h1 className="home-hero-headline">
                     <span className="home-hero-headline__question">
-                      مسكّر على حد؟
+                      مْسَكِّر على حد؟
                     </span>
                     <span className="home-hero-headline__question home-hero-headline__question--secondary">
                       أو
                       <br />
-                      حد مسكّر عليك بسيارته؟
+                      حد مْسَكِّر عليك بسيارته؟
                     </span>
                     <span className="home-hero-headline__prefix">
                       في الحالتين..

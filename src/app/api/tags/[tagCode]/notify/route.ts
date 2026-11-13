@@ -17,6 +17,9 @@ export async function POST(
       : formData.get("custom_note")
       ? String(formData.get("custom_note"))
       : "";
+    const senderPhone = formData.get("senderPhone")
+      ? String(formData.get("senderPhone")).trim()
+      : "";
     const latitude = formData.get("locationLatitude")
       ? Number(formData.get("locationLatitude"))
       : null;
@@ -33,6 +36,7 @@ export async function POST(
       tagCode: normalizedCode,
       reason,
       customNote,
+      senderPhone,
       location,
     });
 

@@ -225,6 +225,51 @@ export async function sendOtpViaWhatsapp(
   }
 }
 
+export async function sendWhatsappAlertMessage(
+  phone: string,
+  message: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!GREEN_API_TOKEN || !GREEN_API_INSTANCE) {
+    return { ok: false, error: "Green-API credentials are not configured" };
+  }
+
+  try {
+    const cleanPhone = phone.replace(/[^\d]/g, "");
+    if (!cleanPhone) {
+      return { ok: false, error: "Invalid phone number" };
+    }
+
+    const baseUrl = (GREEN_API_URL || "https://7107.api.greenapi.com").replace(
+      /\/$/,
+      ""
+    );
+    const url = `${baseUrl}/waInstance${GREEN_API_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chatId: `${cleanPhone}@c.us`,
+        message,
+      }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
+    if (!res.ok) {
+      return { ok: false, error: `Green-API send error: ${res.status}` };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 
 // ============================================================================
 // 3. إرسال رمز التحقق كرسالة نصية SMS عبر منصة رسالة (Resala API)

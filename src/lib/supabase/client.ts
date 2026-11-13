@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { sendWhatsappAlertMessage } from "@/lib/otp-service";
 
 const rawSupabaseUrl = (
   process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
@@ -2461,6 +2462,7 @@ export async function sendZeroLeakNotification(params: {
   tagCode: string;
   reason: string;
   customNote?: string | null;
+  senderPhone?: string | null;
   location?: string | null;
   photoUrl?: string | null;
 }): Promise<{
@@ -2521,32 +2523,38 @@ export async function sendZeroLeakNotification(params: {
     string,
     {
       title: string;
+      description: string;
       badge: string;
       iconType: "blocking" | "lights" | "window" | "emergency";
     }
   > = {
     blocking: {
-      title: "السيارة تعيق الطريق",
+      title: "مْسَكِّر عليا بسيارتك",
+      description: "لو سمحت تجي تحول سيارتك بسرعة",
       badge: "تحريك المركبة",
       iconType: "blocking",
     },
     lights_on: {
-      title: "أضواء السيارة تعمل",
+      title: "ضي سيارتك والع",
+      description: "ناسي ضي سيارتك والع بتاريتك حتفضى",
       badge: "حماية البطارية",
       iconType: "lights",
     },
     car_open: {
-      title: "نافذة أو باب السيارة مفتوح",
+      title: "مرش/باب السيارة مفتوح",
+      description: "انزل سكر سيارتك",
       badge: "تنبيه أمان",
       iconType: "window",
     },
     hit: {
-      title: "اصطدمت بسيارتك عن غير قصد",
+      title: "خبطت سيارتك بالغلط",
+      description: "ياريت تتواصل معاي ونتفاهموا",
       badge: "تنبيه طارئ",
       iconType: "emergency",
     },
     other: {
-      title: "أمر آخر يخص السيارة",
+      title: "في مشكلة في سيارة",
+      description: "تنبيه عام لصاحب السيارة",
       badge: "تنبيه عام",
       iconType: "blocking",
     },
@@ -2554,16 +2562,33 @@ export async function sendZeroLeakNotification(params: {
 
   const meta = REASON_MAP[params.reason] || REASON_MAP.blocking;
   const noteText = String(params.customNote || "").trim();
+  const callerPhone = String(params.senderPhone || "").trim();
+  const reportMessage = noteText || meta.description;
 
   await addReportForTag({
     tagCode: normalizedCode,
     reasonTitle: meta.title,
     reasonBadge: meta.badge,
-    message: noteText || meta.title,
+    message: reportMessage,
     location: params.location || "",
     photoUrl: params.photoUrl || null,
     iconType: meta.iconType,
   });
+
+  if (tag.ownerPhone) {
+    const vehicleLabel = tag.vehicleInfo || tag.vehicleBrand || "سيارتك";
+    const lines = [
+      `🚨 تنبيه فوري من منصة بَلِّغْنِي (${normalizedCode})`,
+      `المركبة: ${vehicleLabel}`,
+      `السبب: ${meta.title}`,
+      `التفاصيل: ${meta.description}`,
+      ...(callerPhone ? [`رقم المبلِّغ للتواصل: ${callerPhone}`] : []),
+      ...(params.location ? [`الموقع التقريبي: ${params.location}`] : []),
+    ];
+    await sendWhatsappAlertMessage(tag.ownerPhone, lines.join("\n")).catch(
+      () => null
+    );
+  }
 
   adminStore.notifyCooldowns[normalizedCode] = new Date().toISOString();
   saveAdminStore(adminStore);

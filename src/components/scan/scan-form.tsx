@@ -49,31 +49,31 @@ export interface ScanReasonOption {
 const CAR_REASONS: ScanReasonOption[] = [
   {
     id: "blocking",
-    label: "السيارة تعيق الطريق",
-    subtitle: "يرجى تحريك السيارة في أقرب وقت",
+    label: "مْسَكِّر عليا بسيارتك",
+    subtitle: "لو سمحت تجي تحول سيارتك بسرعة",
     icon: CarFront,
   },
   {
     id: "lights_on",
-    label: "أضواء السيارة تعمل",
-    subtitle: "الأضواء مفتوحة وقد تنفد البطارية",
+    label: "ضي سيارتك والع",
+    subtitle: "ناسي ضي سيارتك والع بتاريتك حتفضى",
     icon: Lightbulb,
   },
   {
     id: "car_open",
-    label: "نافذة أو باب السيارة مفتوح",
-    subtitle: "يرجى تفقد السيارة وتأمينها",
+    label: "مرش/باب السيارة مفتوح",
+    subtitle: "انزل سكر سيارتك",
     icon: DoorOpen,
   },
   {
     id: "hit",
-    label: "اصطدمت بسيارتك عن غير قصد",
-    subtitle: "أرغب في التواصل معك لتسوية الأمر",
+    label: "خبطت سيارتك بالغلط",
+    subtitle: "ياريت تتواصل معاي ونتفاهموا",
     icon: AlertTriangle,
   },
   {
     id: "other",
-    label: "أمر آخر يخص السيارة",
+    label: "في مشكلة في سيارة",
     subtitle: "تنبيه عام لصاحب السيارة",
     icon: Ellipsis,
   },
@@ -108,7 +108,6 @@ export function ScanForm({
       ? initialReason
       : "blocking"
   );
-  const [note, setNote] = React.useState<string>("");
   const [senderPhone, setSenderPhone] = React.useState<string>("");
   const [imageFile, setImageFile] = React.useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(
@@ -138,7 +137,6 @@ export function ScanForm({
       if (CAR_REASONS.some((r) => r.id === draft.reason)) {
         setReason(draft.reason);
       }
-      setNote(draft.note);
       setSenderPhone(draft.senderPhone);
 
       if (draft.hasImage) {
@@ -160,11 +158,11 @@ export function ScanForm({
     if (isSuccess) return;
     saveScanDraft(tagCode, {
       reason,
-      note,
+      note: "",
       senderPhone,
       hasImage: Boolean(imageFile),
     });
-  }, [tagCode, reason, note, senderPhone, imageFile, isSuccess]);
+  }, [tagCode, reason, senderPhone, imageFile, isSuccess]);
 
   // إبلاغ الحاوية الأم بتقليص الترويسة أثناء الإرسال أو النجاح
   React.useEffect(() => {
@@ -263,7 +261,6 @@ export function ScanForm({
     e.preventDefault();
     if (isSending) return;
 
-    const trimmedNote = note.trim();
     const fullLibyaPhone = senderPhone.trim()
       ? formatFullLibyaE164(senderPhone)
       : null;
@@ -283,58 +280,7 @@ export function ScanForm({
     const fingerprint = getBrowserFingerprint();
 
     try {
-      // 1. فحص الملاحظة النصية (إن وجدت) عبر نقطة الفحص الرقابي
-      if (trimmedNote.length > 0) {
-        setSendingStage("checking_message");
-        setSendProgress(24);
-
-        const checkRes = await fetch(
-          `/api/tags/${encodeURIComponent(tagCode)}/check-note`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              reason,
-              note: trimmedNote,
-              fingerprint,
-            }),
-          }
-        );
-
-        const checkData = await checkRes.json().catch(() => ({}));
-        if (!checkRes.ok) {
-          setIsSending(false);
-          setSendProgress(0);
-          if (
-            checkData.code === "spam_note" ||
-            checkData.code === "spam_note_blocked"
-          ) {
-            setModerationState({
-              title:
-                checkData.code === "spam_note_blocked"
-                  ? "تم إيقاف الإرسال المؤقت"
-                  : "تنبيه بخصوص نص الملاحظة",
-              message:
-                checkData.message ||
-                "يرجى تعديل الكلمات المظللة باللون الأحمر لإرسال التنبيه لصاحب السيارة.",
-              flaggedNote: checkData.flaggedNote ?? trimmedNote,
-              flaggedSpans: Array.isArray(checkData.flaggedSpans)
-                ? checkData.flaggedSpans
-                : [],
-              attemptsRemaining:
-                typeof checkData.spamAttemptsRemaining === "number"
-                  ? checkData.spamAttemptsRemaining
-                  : null,
-              isBlocked: checkData.code === "spam_note_blocked",
-            });
-            return;
-          }
-          setErrorMessage(checkData.error || "تعذر التحقق من نص الرسالة.");
-          return;
-        }
-      }
-
-      // 2. تجهيز الصورة والموقع الجغرافي (بالتوازي)
+      // 1. تجهيز الصورة والموقع الجغرافي (بالتوازي)
       if (imageFile) {
         setSendingStage("checking_image");
         setSendProgress(48);
@@ -344,10 +290,6 @@ export function ScanForm({
       const formData = new FormData();
       formData.append("tag_code", tagCode);
       formData.append("reason", reason);
-      if (trimmedNote) {
-        formData.append("custom_note", trimmedNote);
-        formData.append("note", trimmedNote);
-      }
       if (fullLibyaPhone) formData.append("senderPhone", fullLibyaPhone);
       formData.append("fingerprint", fingerprint);
       if (imageFile) formData.append("image", imageFile);
@@ -521,7 +463,7 @@ export function ScanForm({
                 </span>
               </h2>
               <span className="rounded-full bg-secondary px-2.5 py-0.5 text-[11px] font-bold text-primary">
-                اختر سبباً
+                اختار السبب
               </span>
             </div>
 
@@ -580,31 +522,7 @@ export function ScanForm({
             </div>
           </section>
 
-          {/* 2. ملاحظة قصيرة اختيارية */}
-          <section className="rounded-3xl border border-border bg-card p-4 sm:p-5 shadow-card-soft">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <label
-                htmlFor="scan-note"
-                className="text-sm font-bold text-foreground"
-              >
-                ملاحظة إضافية لصاحب السيارة
-              </label>
-              <span className="text-xs font-medium text-muted-foreground">
-                اختياري ({note.length}/60)
-              </span>
-            </div>
-            <textarea
-              id="scan-note"
-              rows={2}
-              maxLength={60}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="مثال: أنا واقف جنب سيارتك أمام المصرف، أرجو الاستعجال..."
-              className="flex min-h-[76px] w-full resize-none rounded-2xl border border-input bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder:text-[var(--placeholder)] focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </section>
-
-          {/* 3. إرفاق صورة توضيحية (كاميرا مباشرة أو معرض) */}
+          {/* 2. إرفاق صورة توضيحية (كاميرا مباشرة أو معرض) */}
           <section className="rounded-3xl border border-border bg-card p-4 sm:p-5 shadow-card-soft">
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <span className="text-sm font-bold text-foreground">
@@ -670,21 +588,21 @@ export function ScanForm({
             )}
           </section>
 
-          {/* 4. رقم هاتف المبلِّغ (اختياري - مخصص لليبيا +218) */}
+          {/* 3. رقم هاتف المبلِّغ (اختياري - مخصص لليبيا +218) */}
           <section className="rounded-3xl border border-border bg-card p-4 sm:p-5 shadow-card-soft">
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <label
                 htmlFor="scanner-libya-phone"
                 className="text-sm font-bold text-foreground"
               >
-                رقم هاتفك (إذا أردت أن يتصل بك المالك)
+                رقم هاتفك كان تبي صاحب السيارة يتصل بيك
               </label>
               <span className="text-xs font-medium text-muted-foreground">
                 اختياري
               </span>
             </div>
             <p className="mb-3 text-xs text-muted-foreground">
-              أدخل رقمك فقط إذا كنت ترغب في أن يرد عليك صاحب السيارة مباشرة.
+              دخل رقمك لو تبي يرد عليك صاحب السيارة بسرعة
             </p>
             <LibyaPhoneInput
               id="scanner-libya-phone"
@@ -714,7 +632,7 @@ export function ScanForm({
                 className="w-full rounded-2xl text-base shadow-primary-glow-lg"
               >
                 <BellRing className="h-5 w-5" />
-                <span>أرسل التنبيه لصاحب السيارة الآن</span>
+                <span>ابعث البلاغ لصاحب السيارة توّا</span>
               </Button>
             </div>
           </div>
