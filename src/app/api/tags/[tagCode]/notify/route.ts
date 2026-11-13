@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendZeroLeakNotification } from "@/lib/supabase/client";
+import {
+  sendZeroLeakNotification,
+  uploadReportPhoto,
+} from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
 export async function POST(
@@ -20,24 +23,17 @@ export async function POST(
     const senderPhone = formData.get("senderPhone")
       ? String(formData.get("senderPhone")).trim()
       : "";
-    const latitude = formData.get("locationLatitude")
-      ? Number(formData.get("locationLatitude"))
-      : null;
-    const longitude = formData.get("locationLongitude")
-      ? Number(formData.get("locationLongitude"))
-      : null;
-
-    const location =
-      latitude && longitude
-        ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
-        : "";
+    const photoUrl = await uploadReportPhoto(
+      normalizedCode,
+      formData.get("image")
+    );
 
     const result = await sendZeroLeakNotification({
       tagCode: normalizedCode,
       reason,
       customNote,
       senderPhone,
-      location,
+      photoUrl,
     });
 
     if (!result.ok) {
@@ -58,6 +54,7 @@ export async function POST(
       ok: true,
       tagCode: normalizedCode,
       deliveredVia: result.deliveredChannels || "BOTH",
+      photoAttached: Boolean(photoUrl),
       timestamp: new Date().toISOString(),
     });
   } catch {

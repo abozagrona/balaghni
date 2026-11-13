@@ -259,7 +259,7 @@ export async function sendWhatsappAlertMessage(
             body: JSON.stringify({
               chatId,
               urlFile: trimmedPhoto,
-              fileName: "report.jpg",
+              fileName: "balaghni-report.jpg",
               caption: message,
             }),
             signal: fileController.signal,

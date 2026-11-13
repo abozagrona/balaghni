@@ -2458,6 +2458,64 @@ export async function verifyAdminActionPermission(
 }
 
 /**
+ * رفع صورة البلاغ المرفقة إلى Supabase Storage (bucket: report-photos كـ Public)
+ * وإرجاع رابط HTTPS العام المباشر لخوادم الواتساب ولوحة المالك
+ */
+export async function uploadReportPhoto(
+  tagCode: string,
+  imageEntry: FormDataEntryValue | null
+): Promise<string | null> {
+  if (!imageEntry || typeof imageEntry === "string") return null;
+  const file = imageEntry as File;
+  if (!file.size || file.size <= 0) return null;
+
+  const bucketName = "report-photos";
+  const normalizedCode = tagCode.toUpperCase().trim().replace(/[^A-Z0-9-]/g, "");
+  const extMatch = String(file.name || "").match(/\.([a-zA-Z0-9]{2,5})$/);
+  const ext = (extMatch?.[1] || "jpg").toLowerCase();
+  const objectPath = `${normalizedCode}/${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}.${ext}`;
+
+  try {
+    const { error: createErr } = await supabaseAdmin.storage.createBucket(
+      bucketName,
+      { public: true }
+    );
+    if (createErr && !/already exists/i.test(createErr.message || "")) {
+      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
+    } else if (createErr) {
+      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { error: uploadErr } = await supabaseAdmin.storage
+      .from(bucketName)
+      .upload(objectPath, buffer, {
+        contentType: file.type || "image/jpeg",
+        upsert: false,
+      });
+
+    if (uploadErr) {
+      console.warn(`[uploadReportPhoto] Upload failed:`, uploadErr.message);
+      return null;
+    }
+
+    const { data: pubData } = supabaseAdmin.storage
+      .from(bucketName)
+      .getPublicUrl(objectPath);
+
+    return pubData?.publicUrl || null;
+  } catch (err) {
+    console.warn(
+      `[uploadReportPhoto] Exception:`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return null;
+  }
+}
+
+/**
  * مسار الإشعارات المعزول ومكافحة الإزعاج (Zero-Leak & 5-Minute Cooldown)
  * يستعلم داخلياً عن هاتف المالك وقناة التنبيه دون كشف الرقم للواجهة الأمامية مطلقاً
  */
@@ -2599,7 +2657,6 @@ export async function sendZeroLeakNotification(params: {
     const whatsappLines = [
       `(منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}): ${var2}، ${var3}، رقم المبلّغ (${formattedCaller}) للتواصل السريع`,
       ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
-      ...(params.location ? [`الموقع التقريبي: ${params.location}`] : []),
     ];
 
     const waResult = await sendWhatsappAlertMessage(

@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendZeroLeakNotification } from "@/lib/supabase/client";
+import {
+  sendZeroLeakNotification,
+  uploadReportPhoto,
+} from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
 /**
  * مسار إرسال البلاغات الآمن والمعزول (Zero-Leak & Anti-Spam Cooldown API)
- * المتصفح يرسل فقط: tag_code, reason, custom_note
+ * المتصفح يرسل فقط: tag_code, reason, custom_note, senderPhone, image
  * السيرفر يستعلم داخلياً عن هاتف المالك ونوع باقته (SMS / WHATSAPP / BOTH) دون كشف الرقم نهائياً للواجهة الأمامية
  * حماية التبريد: منع إرسال أكثر من بلاغ لنفس الملصق إلا بعد مرور 5 دقائق
  */
@@ -14,7 +17,7 @@ export async function POST(req: NextRequest) {
     let reason = "blocking";
     let customNote = "";
     let senderPhone = "";
-    let location = "";
+    let imageEntry: FormDataEntryValue | null = null;
 
     const contentType = req.headers.get("content-type") || "";
     if (contentType.includes("multipart/form-data")) {
@@ -27,18 +30,13 @@ export async function POST(req: NextRequest) {
         formData.get("custom_note") || formData.get("note") || ""
       );
       senderPhone = String(formData.get("senderPhone") || "").trim();
-      const lat = formData.get("locationLatitude");
-      const lng = formData.get("locationLongitude");
-      if (lat && lng) {
-        location = `${Number(lat).toFixed(4)}, ${Number(lng).toFixed(4)}`;
-      }
+      imageEntry = formData.get("image");
     } else {
       const body = await req.json().catch(() => ({}));
       tagCode = String(body.tag_code || body.tagCode || "");
       reason = String(body.reason || "blocking");
       customNote = String(body.custom_note || body.note || "");
       senderPhone = String(body.senderPhone || "").trim();
-      location = String(body.location || "");
     }
 
     if (!tagCode.trim()) {
@@ -49,12 +47,14 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedCode = formatBalaghniTagCode(tagCode);
+    const photoUrl = await uploadReportPhoto(normalizedCode, imageEntry);
+
     const result = await sendZeroLeakNotification({
       tagCode: normalizedCode,
       reason,
       customNote,
       senderPhone,
-      location,
+      photoUrl,
     });
 
     if (!result.ok) {
@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       tag_code: normalizedCode,
       delivered_channel: result.deliveredChannels || "BOTH",
+      photo_attached: Boolean(photoUrl),
       timestamp: new Date().toISOString(),
     });
   } catch {

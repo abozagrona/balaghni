@@ -230,33 +230,6 @@ export function ScanForm({
     void deleteDraftImage(tagCode);
   };
 
-  const requestVisitorLocation = (): Promise<{
-    latitude: number;
-    longitude: number;
-    accuracyMeters: number | null;
-    capturedAt: string;
-  } | null> => {
-    if (typeof window === "undefined" || !("geolocation" in navigator)) {
-      return Promise.resolve(null);
-    }
-    return new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          resolve({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracyMeters: Number.isFinite(pos.coords.accuracy)
-              ? Math.round(pos.coords.accuracy)
-              : null,
-            capturedAt: new Date(pos.timestamp || Date.now()).toISOString(),
-          });
-        },
-        () => resolve(null),
-        { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
-      );
-    });
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSending) return;
@@ -280,32 +253,18 @@ export function ScanForm({
     const fingerprint = getBrowserFingerprint();
 
     try {
-      // 1. تجهيز الصورة والموقع الجغرافي (بالتوازي)
+      // 1. تجهيز الصورة المرفقة إن وُجدت
       if (imageFile) {
         setSendingStage("checking_image");
         setSendProgress(48);
       }
 
-      const locationPromise = requestVisitorLocation();
       const formData = new FormData();
       formData.append("tag_code", tagCode);
       formData.append("reason", reason);
       if (fullLibyaPhone) formData.append("senderPhone", fullLibyaPhone);
       formData.append("fingerprint", fingerprint);
       if (imageFile) formData.append("image", imageFile);
-
-      const location = await locationPromise;
-      if (location) {
-        formData.append("locationLatitude", String(location.latitude));
-        formData.append("locationLongitude", String(location.longitude));
-        if (location.accuracyMeters !== null) {
-          formData.append(
-            "locationAccuracyMeters",
-            String(location.accuracyMeters)
-          );
-        }
-        formData.append("locationCapturedAt", location.capturedAt);
-      }
 
       // 3. إرسال التنبيه الفوري لصاحب السيارة عبر المسار المعزول (/api/notify)
       setSendingStage("sending");
