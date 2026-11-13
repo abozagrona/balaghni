@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { supabaseAdmin } from "@/lib/supabase/client";
+import {
+  supabaseAdmin,
+  syncTagActivationToLocalStore,
+} from "@/lib/supabase/client";
 import { sendWhatsappAlertMessage } from "@/lib/otp-service";
 import {
   getAdminWhatsappNumber,
@@ -1360,19 +1363,17 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
 
 export async function listAvailableStickers(): Promise<string[]> {
   const codes = new Set<string>();
-  const store = loadStore();
-  for (const s of Object.values(store.stickers)) {
-    if (s.status === "unactivated") codes.add(s.code);
-  }
+
   try {
     const { data: tagRows, error: tagErr } = await supabaseAdmin
       .from("tags")
       .select("tag_code,status,owner_phone")
-      .eq("status", "LOCKED")
+      .order("created_at", { ascending: true })
       .limit(500);
     if (!tagErr && Array.isArray(tagRows)) {
       for (const row of tagRows) {
-        if (row.tag_code && !row.owner_phone) {
+        const st = String(row.status || "").trim().toUpperCase();
+        if (row.tag_code && (st === "LOCKED" || st === "UNACTIVATED")) {
           codes.add(formatBalaghniTagCode(String(row.tag_code)));
         }
       }
@@ -1380,21 +1381,33 @@ export async function listAvailableStickers(): Promise<string[]> {
   } catch {
     // ignore
   }
+
   try {
     const { data, error } = await supabaseAdmin
       .from("stickers")
       .select("code,status")
-      .eq("status", "unactivated")
-      .order("created_at", { ascending: false })
+      .order("created_at", { ascending: true })
       .limit(500);
     if (!error && Array.isArray(data)) {
       for (const row of data) {
-        if (row.code) codes.add(formatBalaghniTagCode(String(row.code)));
+        const st = String(row.status || "").trim().toUpperCase();
+        if (row.code && (st === "UNACTIVATED" || st === "LOCKED")) {
+          codes.add(formatBalaghniTagCode(String(row.code)));
+        }
       }
     }
   } catch {
     // ignore
   }
+
+  const store = loadStore();
+  for (const s of Object.values(store.stickers)) {
+    const st = String(s.status || "").trim().toUpperCase();
+    if (st === "UNACTIVATED" || st === "LOCKED") {
+      codes.add(formatBalaghniTagCode(s.code));
+    }
+  }
+
   return Array.from(codes);
 }
 
@@ -1419,53 +1432,30 @@ export async function pullAndActivateLockedTag(params: {
   const candidates = await listAvailableStickers();
   for (const candidateCode of candidates) {
     try {
-      // محاولة التحديث الذري في جدول tags بشرط status = 'LOCKED'
+      // التحديث الذري في جدول tags باستخدام الأعمدة الفعلية للجدول:
+      // status, owner_phone, vehicle_make_model, vehicle_city, notification_channel, activated_at
       let updated = false;
-      const { data: extRows, error: extErr } = await supabaseAdmin
+      const { data: tagRows, error: tagErr } = await supabaseAdmin
         .from("tags")
         .update({
           status: "ACTIVE",
           owner_phone: params.ownerPhone,
-          vehicle_info: vehicleLabel,
-          vehicle_brand: vehicleLabel,
-          city: params.city,
-          alert_channel: alertChannel,
-          package_type: pkg,
-          features,
-          activation_source: activationSource,
-          subscription_starts_at: params.startsAt,
-          subscription_expires_at: params.expiresAt,
+          vehicle_make_model: vehicleLabel,
+          vehicle_city: params.city,
+          notification_channel: alertChannel,
           activated_at: params.startsAt,
         })
         .eq("tag_code", candidateCode)
-        .eq("status", "LOCKED")
+        .in("status", ["LOCKED", "locked", "unactivated", "UNACTIVATED"])
         .select("tag_code");
 
-      if (!extErr && Array.isArray(extRows) && extRows.length > 0) {
+      if (!tagErr && Array.isArray(tagRows) && tagRows.length > 0) {
         updated = true;
-      } else if (extErr) {
-        const { data: baseRows, error: baseErr } = await supabaseAdmin
-          .from("tags")
-          .update({
-            status: "ACTIVE",
-            owner_phone: params.ownerPhone,
-            vehicle_info: vehicleLabel,
-            vehicle_brand: vehicleLabel,
-            city: params.city,
-            alert_channel: alertChannel,
-            activated_at: params.startsAt,
-          })
-          .eq("tag_code", candidateCode)
-          .eq("status", "LOCKED")
-          .select("tag_code");
-        if (!baseErr && Array.isArray(baseRows) && baseRows.length > 0) {
-          updated = true;
-        }
       }
 
       if (!updated) continue;
 
-      // مزامنة جدول stickers والمخزن المحلي
+      // مزامنة جدول stickers والمخازن المحلية
       try {
         await supabaseAdmin.from("stickers").upsert(
           {
@@ -1486,6 +1476,19 @@ export async function pullAndActivateLockedTag(params: {
       } catch {
         // ignore
       }
+
+      syncTagActivationToLocalStore({
+        tagCode: candidateCode,
+        ownerPhone: params.ownerPhone,
+        vehicleInfo: vehicleLabel,
+        city: params.city,
+        alertChannel,
+        packageType: pkg,
+        activationSource,
+        subscriptionStartsAt: params.startsAt,
+        subscriptionExpiresAt: params.expiresAt,
+        activatedAt: params.startsAt,
+      });
 
       const store = loadStore();
       store.stickers[candidateCode] = {

@@ -2744,6 +2744,43 @@ export async function sendZeroLeakNotification(params: {
   };
 }
 
+export function syncTagActivationToLocalStore(params: {
+  tagCode: string;
+  ownerPhone: string;
+  vehicleInfo: string;
+  city: string;
+  alertChannel: AlertChannel;
+  packageType?: string;
+  activationSource?: string;
+  subscriptionStartsAt?: string;
+  subscriptionExpiresAt?: string;
+  activatedAt?: string;
+}) {
+  const code = params.tagCode.trim().toUpperCase();
+  const map = loadSyncedStore();
+  const existing = map[code] || ({ tag_code: code } as StoredTagRow);
+  saveToSyncedStore({
+    ...existing,
+    tag_code: code,
+    status: "ACTIVE",
+    owner_phone: params.ownerPhone,
+    vehicle_info: params.vehicleInfo,
+    vehicle_make_model: params.vehicleInfo,
+    vehicle_brand: params.vehicleInfo,
+    city: params.city,
+    vehicle_city: params.city,
+    alert_channel: params.alertChannel,
+    notification_channel: params.alertChannel,
+    package_type: params.packageType || existing.package_type || null,
+    activation_source: params.activationSource || existing.activation_source || null,
+    subscription_starts_at:
+      params.subscriptionStartsAt || existing.subscription_starts_at || null,
+    subscription_expires_at:
+      params.subscriptionExpiresAt || existing.subscription_expires_at || null,
+    activated_at: params.activatedAt || existing.activated_at || new Date().toISOString(),
+  });
+}
+
 /**
  * جلب كافة بيانات لوحة الإدارة التنفيذية (الملصقات، البلاغات، سجل الرقابة من admin_audit_logs، وفريق المشرفين من admin_profiles)
  */
@@ -2765,6 +2802,38 @@ export async function getExecutiveAdminOverview(): Promise<{
             ...(localMap[code] || {}),
             ...row,
             tag_code: code,
+          };
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const { data: stickerRows, error: stickerErr } = await supabaseAdmin
+      .from("stickers")
+      .select(
+        "code,package_type,activation_source,subscription_starts_at,subscription_expires_at"
+      );
+    if (!stickerErr && Array.isArray(stickerRows)) {
+      for (const s of stickerRows as Array<Record<string, unknown>>) {
+        const code = String(s.code || "").toUpperCase();
+        if (code && localMap[code]) {
+          localMap[code] = {
+            ...localMap[code],
+            package_type: s.package_type
+              ? String(s.package_type)
+              : localMap[code].package_type,
+            activation_source: s.activation_source
+              ? String(s.activation_source)
+              : localMap[code].activation_source,
+            subscription_starts_at: s.subscription_starts_at
+              ? String(s.subscription_starts_at)
+              : localMap[code].subscription_starts_at,
+            subscription_expires_at: s.subscription_expires_at
+              ? String(s.subscription_expires_at)
+              : localMap[code].subscription_expires_at,
           };
         }
       }
