@@ -270,6 +270,73 @@ export async function sendWhatsappAlertMessage(
   }
 }
 
+export async function sendSmsAlertMessage(
+  phone: string,
+  message: string
+): Promise<{ ok: boolean; status?: number; response?: unknown; error?: string }> {
+  const smsKey =
+    process.env.RESALA_SMS_API_KEY?.trim() || RESALA_API_KEY;
+  if (!smsKey) {
+    return { ok: false, error: "RESALA_API_KEY is not configured" };
+  }
+
+  // تنسيق الرقم الليبي لصيغة Resala المطلوبة: 2189XXXXXXXX بدون علامة +
+  let digits = phone.replace(/[^\d]/g, "");
+  if (digits.startsWith("00218")) digits = digits.slice(2);
+  if (digits.startsWith("09") && digits.length === 10) {
+    digits = `218${digits.slice(1)}`;
+  } else if (digits.startsWith("9") && digits.length === 9) {
+    digits = `218${digits}`;
+  }
+
+  if (!/^2189[1-4]\d{7}$/.test(digits)) {
+    return { ok: false, error: `Invalid Libyan phone format for Resala: ${phone}` };
+  }
+
+  try {
+    const baseUrl = RESALA_ENDPOINT.replace(/\/pins.*$/, "").replace(/\/$/, "");
+    const url = `${baseUrl}/messages`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${smsKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        phone: digits,
+        message,
+      }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      console.log(`[Resala SMS] Sent to ${digits} (${res.status}):`, JSON.stringify(data));
+      return { ok: true, status: res.status, response: data };
+    }
+
+    const errMsg = String(data?.message || data?.error || `HTTP ${res.status}`);
+    console.warn(`[Resala SMS] Failed for ${digits} (${res.status}):`, JSON.stringify(data));
+    return {
+      ok: false,
+      status: res.status,
+      response: data,
+      error: errMsg,
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[Resala SMS] Exception for ${digits}:`, msg);
+    return {
+      ok: false,
+      error: msg,
+    };
+  }
+}
+
 
 // ============================================================================
 // 3. إرسال رمز التحقق كرسالة نصية SMS عبر منصة رسالة (Resala API)

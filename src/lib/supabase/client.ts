@@ -2,7 +2,10 @@ import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { sendWhatsappAlertMessage } from "@/lib/otp-service";
+import {
+  sendWhatsappAlertMessage,
+  sendSmsAlertMessage,
+} from "@/lib/otp-service";
 
 const rawSupabaseUrl = (
   process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
@@ -2575,9 +2578,11 @@ export async function sendZeroLeakNotification(params: {
     iconType: meta.iconType,
   });
 
+  let deliveredChannels: AlertChannel = tag.alertChannel || "BOTH";
+
   if (tag.ownerPhone) {
     const vehicleLabel = tag.vehicleInfo || tag.vehicleBrand || "سيارتك";
-    const lines = [
+    const whatsappLines = [
       `🚨 تنبيه فوري من منصة بَلِّغْنِي (${normalizedCode})`,
       `المركبة: ${vehicleLabel}`,
       `السبب: ${meta.title}`,
@@ -2585,9 +2590,38 @@ export async function sendZeroLeakNotification(params: {
       ...(callerPhone ? [`رقم المبلِّغ للتواصل: ${callerPhone}`] : []),
       ...(params.location ? [`الموقع التقريبي: ${params.location}`] : []),
     ];
-    await sendWhatsappAlertMessage(tag.ownerPhone, lines.join("\n")).catch(
-      () => null
+
+    const smsText = `بَلِّغْنِي (${vehicleLabel}): ${meta.title} - ${meta.description}${
+      callerPhone ? ` | للتواصل: ${callerPhone}` : ""
+    }`;
+
+    const [waResult, smsResult] = await Promise.allSettled([
+      sendWhatsappAlertMessage(tag.ownerPhone, whatsappLines.join("\n")),
+      sendSmsAlertMessage(tag.ownerPhone, smsText),
+    ]);
+
+    const waOk = waResult.status === "fulfilled" && waResult.value.ok;
+    const smsOk = smsResult.status === "fulfilled" && smsResult.value.ok;
+
+    console.log(
+      `[Dual Delivery ${normalizedCode}] WhatsApp=${
+        waOk
+          ? "OK"
+          : waResult.status === "fulfilled"
+          ? waResult.value.error
+          : waResult.reason
+      } | SMS=${
+        smsOk
+          ? "OK"
+          : smsResult.status === "fulfilled"
+          ? `${smsResult.value.status || ""} ${smsResult.value.error}`
+          : smsResult.reason
+      }`
     );
+
+    if (waOk && smsOk) deliveredChannels = "BOTH";
+    else if (waOk) deliveredChannels = "WHATSAPP";
+    else if (smsOk) deliveredChannels = "SMS";
   }
 
   adminStore.notifyCooldowns[normalizedCode] = new Date().toISOString();
@@ -2595,7 +2629,7 @@ export async function sendZeroLeakNotification(params: {
 
   return {
     ok: true,
-    deliveredChannels: tag.alertChannel || "BOTH",
+    deliveredChannels,
   };
 }
 
