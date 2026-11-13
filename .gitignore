@@ -37,3 +37,4 @@ exports/
 src/data/local-otp-store.json
 
 
+.env*
