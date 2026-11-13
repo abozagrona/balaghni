@@ -29,16 +29,18 @@ export const supabase = createClient(rawSupabaseUrl, normalizedAnonKey, {
   },
 });
 
-const rawServiceRoleKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-  process.env.SUPABASE_SECRET_KEY?.trim() ||
-  "";
-const isValidServiceJwt =
-  (rawServiceRoleKey.startsWith("eyJ") &&
-    rawServiceRoleKey.split(".").length === 3) ||
-  rawServiceRoleKey.startsWith("sb_secret_");
+const isValidKeyFormat = (k: string) =>
+  (k.startsWith("eyJ") && k.split(".").length === 3) ||
+  k.startsWith("sb_secret_");
 
-if (rawServiceRoleKey && !isValidServiceJwt) {
+const serviceCandidates = [
+  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "",
+  process.env.SUPABASE_SECRET_KEY?.trim() || "",
+];
+const validServiceKey = serviceCandidates.find(isValidKeyFormat) || "";
+const isValidServiceJwt = Boolean(validServiceKey);
+
+if (serviceCandidates.some(Boolean) && !isValidServiceJwt) {
   console.warn(
     "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو بصيغة غير صالحة."
   );
@@ -46,7 +48,7 @@ if (rawServiceRoleKey && !isValidServiceJwt) {
 
 export const supabaseAdmin = createClient(
   rawSupabaseUrl,
-  isValidServiceJwt ? rawServiceRoleKey : normalizedAnonKey,
+  isValidServiceJwt ? validServiceKey : normalizedAnonKey,
   {
     auth: {
       autoRefreshToken: false,

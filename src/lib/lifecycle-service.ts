@@ -1430,6 +1430,7 @@ export async function pullAndActivateLockedTag(params: {
     String(params.vehicleInfo || "").trim() || params.ownerName || "مركبة مسجلة";
 
   const candidates = await listAvailableStickers();
+  let lastError = "";
   for (const candidateCode of candidates) {
     try {
       // التحديث الذري في جدول tags باستخدام الأعمدة الفعلية للجدول:
@@ -1451,6 +1452,10 @@ export async function pullAndActivateLockedTag(params: {
 
       if (!tagErr && Array.isArray(tagRows) && tagRows.length > 0) {
         updated = true;
+      } else {
+        lastError = tagErr
+          ? `${tagErr.code || ""} ${tagErr.message}`
+          : `0 rows updated for ${candidateCode}`;
       }
 
       if (!updated) continue;
@@ -1508,14 +1513,17 @@ export async function pullAndActivateLockedTag(params: {
       saveStore(store);
 
       return { ok: true, stickerCode: candidateCode };
-    } catch {
-      // try next candidate
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
     }
   }
 
   return {
     ok: false,
-    error: "لا توجد ملصقات متاحة بحالة LOCKED في المخزن حالياً.",
+    error:
+      candidates.length === 0
+        ? "لا توجد ملصقات متاحة بحالة LOCKED في المخزن حالياً."
+        : `تعذر تفعيل الملصق (${candidates.length} متاح): ${lastError}`,
   };
 }
 
