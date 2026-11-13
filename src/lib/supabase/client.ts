@@ -2591,13 +2591,16 @@ export async function sendZeroLeakNotification(params: {
       ...(params.location ? [`الموقع التقريبي: ${params.location}`] : []),
     ];
 
-    const smsText = `بَلِّغْنِي (${vehicleLabel}): ${meta.title} - ${meta.description}${
-      callerPhone ? ` | للتواصل: ${callerPhone}` : ""
-    }`;
+    const smsVar1 = (tag.vehicleInfo || tag.vehicleBrand || normalizedCode)
+      .trim()
+      .slice(0, 30);
+    const smsVar2 = `${meta.title}${callerPhone ? ` - ${callerPhone}` : ""}`
+      .trim()
+      .slice(0, 70);
 
     const [waResult, smsResult] = await Promise.allSettled([
       sendWhatsappAlertMessage(tag.ownerPhone, whatsappLines.join("\n")),
-      sendSmsAlertMessage(tag.ownerPhone, smsText),
+      sendSmsAlertMessage(tag.ownerPhone, smsVar1, smsVar2),
     ]);
 
     const waOk = waResult.status === "fulfilled" && waResult.value.ok;

@@ -272,7 +272,8 @@ export async function sendWhatsappAlertMessage(
 
 export async function sendSmsAlertMessage(
   phone: string,
-  message: string
+  var1: string,
+  var2: string
 ): Promise<{ ok: boolean; status?: number; response?: unknown; error?: string }> {
   const smsKey =
     process.env.RESALA_SMS_API_KEY?.trim() || RESALA_API_KEY;
@@ -293,9 +294,19 @@ export async function sendSmsAlertMessage(
     return { ok: false, error: `Invalid Libyan phone format for Resala: ${phone}` };
   }
 
+  const templateId =
+    process.env.RESALA_SMS_TEMPLATE_ID?.trim() ||
+    "94f4d6a2-8cc1-4448-a267-6abf0b8bdd90";
+
+  // ضبط حدود الطول بدقة لتوافق متطلبات منصة رسالة
+  const safeVar1 = String(var1 || "").trim().slice(0, 30);
+  const safeVar2 = String(var2 || "").trim().slice(0, 70);
+
   try {
     const baseUrl = RESALA_ENDPOINT.replace(/\/pins.*$/, "").replace(/\/$/, "");
-    const url = `${baseUrl}/messages`;
+    const url = `${baseUrl}/messages/send-template?sms_template_id=${encodeURIComponent(
+      templateId
+    )}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
@@ -306,8 +317,13 @@ export async function sendSmsAlertMessage(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        phone: digits,
-        message,
+        records: [
+          {
+            phone: digits,
+            $1: safeVar1,
+            $2: safeVar2,
+          },
+        ],
       }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
@@ -315,12 +331,18 @@ export async function sendSmsAlertMessage(
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      console.log(`[Resala SMS] Sent to ${digits} (${res.status}):`, JSON.stringify(data));
+      console.log(
+        `[Resala Template SMS] Sent to ${digits} (${res.status}):`,
+        JSON.stringify(data)
+      );
       return { ok: true, status: res.status, response: data };
     }
 
     const errMsg = String(data?.message || data?.error || `HTTP ${res.status}`);
-    console.warn(`[Resala SMS] Failed for ${digits} (${res.status}):`, JSON.stringify(data));
+    console.warn(
+      `[Resala Template SMS] Failed for ${digits} (${res.status}):`,
+      JSON.stringify(data)
+    );
     return {
       ok: false,
       status: res.status,
@@ -329,7 +351,7 @@ export async function sendSmsAlertMessage(
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    console.warn(`[Resala SMS] Exception for ${digits}:`, msg);
+    console.warn(`[Resala Template SMS] Exception for ${digits}:`, msg);
     return {
       ok: false,
       error: msg,
