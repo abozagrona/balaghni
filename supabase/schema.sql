@@ -234,3 +234,94 @@ create policy "Allow access to admin_audit_logs"
   on public.admin_audit_logs for all
   using (true)
   with check (true);
+
+-- ============================================================================
+-- 10. جدول التجار والمناديب (vendors)
+-- ============================================================================
+create table if not exists public.vendors (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  phone text unique not null,
+  city text not null default 'طرابلس',
+  pin_hash text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+-- ============================================================================
+-- 11. جدول تسويات العهدة الشهرية للتجار (vendor_settlements)
+-- ============================================================================
+create table if not exists public.vendor_settlements (
+  id uuid primary key default gen_random_uuid(),
+  vendor_id uuid not null references public.vendors(id) on delete cascade,
+  period_month text not null,
+  stickers_sold_count integer not null default 0,
+  total_cash_collected numeric(10, 2) not null default 0,
+  status text not null default 'open' check (status in ('open', 'settled')),
+  settled_at timestamptz,
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+-- ============================================================================
+-- 12. جدول ضبط أرقام الهدايا الترويجية (gift_redemptions)
+-- ============================================================================
+create table if not exists public.gift_redemptions (
+  phone text primary key,
+  sticker_code text not null,
+  redeemed_at timestamptz not null default now()
+);
+
+-- ============================================================================
+-- 13. جدول طلبات باقة إيليت للشركات (corporate_leads)
+-- ============================================================================
+create table if not exists public.corporate_leads (
+  id uuid primary key default gen_random_uuid(),
+  company_name text not null,
+  city text not null,
+  fleet_count integer not null default 10,
+  selected_features jsonb not null default '[]'::jsonb,
+  contact_phone text,
+  agreed_amount_lyd numeric(10, 2),
+  status text not null default 'new',
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+-- ============================================================================
+-- 14. جدول دورة حياة الملصقات (stickers) - 4 حالات فقط بدون أي حجز زمني
+-- ============================================================================
+create table if not exists public.stickers (
+  code text primary key,
+  status text not null default 'unactivated' check (status in ('unactivated', 'gift_ready', 'active', 'expired')),
+  vendor_id uuid references public.vendors(id) on delete set null,
+  activation_source text check (activation_source in ('online', 'vendor_cash', 'cod_delivered', 'gift_promo')),
+  activated_by_vendor_id uuid references public.vendors(id) on delete set null,
+  package_type text default 'nabbihni',
+  features jsonb not null default '{"whatsapp":true,"sms_fallback":true,"nabbihni_reminders":true,"photo_attachments":true,"emergency_portal":true}'::jsonb,
+  owner_phone text,
+  owner_name text,
+  vehicle_info text,
+  company_account_id text,
+  subscription_starts_at timestamptz,
+  subscription_expires_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- ============================================================================
+-- 15. أعمدة الباقات والاشتراك في جدول tags و orders (بما فيها unassigned_paid)
+-- ============================================================================
+alter table public.tags add column if not exists package_type text default 'nabbihni';
+alter table public.tags add column if not exists features jsonb default '{"whatsapp":true,"sms_fallback":true,"nabbihni_reminders":true,"photo_attachments":true,"emergency_portal":true}'::jsonb;
+alter table public.tags add column if not exists subscription_starts_at timestamptz;
+alter table public.tags add column if not exists subscription_expires_at timestamptz;
+alter table public.tags add column if not exists vendor_id uuid;
+alter table public.tags add column if not exists activation_source text;
+alter table public.tags add column if not exists activated_by_vendor_id uuid;
+
+alter table public.orders add column if not exists payment_method text default 'cod';
+alter table public.orders add column if not exists payment_status text default 'pending';
+alter table public.orders add column if not exists assigned_tag_code text;
+alter table public.orders add column if not exists subscription_starts_at timestamptz;
+alter table public.orders add column if not exists subscription_expires_at timestamptz;

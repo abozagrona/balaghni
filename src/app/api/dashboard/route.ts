@@ -4,6 +4,7 @@ import {
   upsertVehicleDocumentForTag,
   addMaintenanceRecordForTag,
 } from "@/lib/supabase/client";
+import { getStickerLifecycle } from "@/lib/lifecycle-service";
 
 export async function GET(request: NextRequest) {
   const tagCode = request.nextUrl.searchParams.get("tag") || "";
@@ -14,7 +15,10 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const data = await getTagDashboardData(tagCode.trim());
+  const [data, lifecycle] = await Promise.all([
+    getTagDashboardData(tagCode.trim()),
+    getStickerLifecycle(tagCode.trim()),
+  ]);
   if (!data.ok || !data.tag) {
     return NextResponse.json(
       { ok: false, error: data.error || "الملصق غير موجود في قاعدة البيانات." },
@@ -28,6 +32,7 @@ export async function GET(request: NextRequest) {
     documents: data.documents,
     reports: data.reports,
     maintenance: data.maintenance,
+    lifecycle,
   });
 }
 

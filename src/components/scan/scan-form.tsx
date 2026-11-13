@@ -94,6 +94,7 @@ export interface ScanFormProps {
   tagCode: string;
   vehicleName: string;
   initialReason?: string;
+  photoAttachmentsEnabled?: boolean;
   onCompactStateChange?: (compact: boolean) => void;
 }
 
@@ -101,6 +102,7 @@ export function ScanForm({
   tagCode,
   vehicleName,
   initialReason,
+  photoAttachmentsEnabled = true,
   onCompactStateChange,
 }: ScanFormProps) {
   const [reason, setReason] = React.useState<string>(
@@ -482,70 +484,72 @@ export function ScanForm({
           </section>
 
           {/* 2. إرفاق صورة توضيحية (كاميرا مباشرة أو معرض) */}
-          <section className="rounded-3xl border border-border bg-card p-4 sm:p-5 shadow-card-soft">
-            <div className="mb-2.5 flex items-center justify-between gap-2">
-              <span className="text-sm font-bold text-foreground">
-                إرفاق صورة توضيحية
-              </span>
-              <span className="text-xs font-medium text-muted-foreground">
-                اختياري
-              </span>
-            </div>
-
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              capture="environment"
-              onChange={handlePhotoSelect}
-              className="hidden"
-            />
-            <input
-              ref={galleryInputRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={handlePhotoSelect}
-              className="hidden"
-            />
-
-            {imagePreviewUrl ? (
-              <div className="relative overflow-hidden rounded-2xl border border-border bg-muted/40">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={imagePreviewUrl}
-                  alt="معاينة الصورة المرفقة"
-                  className="max-h-52 w-full object-cover"
-                />
-                <button
-                  type="button"
-                  onClick={handleRemovePhoto}
-                  aria-label="حذف الصورة"
-                  className="absolute top-2.5 end-2.5 flex h-9 w-9 items-center justify-center rounded-full bg-balaghni-obsidian/80 text-white backdrop-blur transition hover:bg-primary"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+          {photoAttachmentsEnabled && (
+            <section className="rounded-3xl border border-border bg-card p-4 sm:p-5 shadow-card-soft">
+              <div className="mb-2.5 flex items-center justify-between gap-2">
+                <span className="text-sm font-bold text-foreground">
+                  إرفاق صورة توضيحية
+                </span>
+                <span className="text-xs font-medium text-muted-foreground">
+                  اختياري
+                </span>
               </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => cameraInputRef.current?.click()}
-                  className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-input bg-muted/40 px-3 py-4 text-xs font-bold text-foreground transition hover:border-primary hover:bg-secondary/50"
-                >
-                  <Camera className="h-5 w-5 text-primary" />
-                  <span>التقاط بالكاميرا</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => galleryInputRef.current?.click()}
-                  className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-input bg-muted/40 px-3 py-4 text-xs font-bold text-foreground transition hover:border-primary hover:bg-secondary/50"
-                >
-                  <ImagePlus className="h-5 w-5 text-primary" />
-                  <span>اختيار من المعرض</span>
-                </button>
-              </div>
-            )}
-          </section>
+
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                capture="environment"
+                onChange={handlePhotoSelect}
+                className="hidden"
+              />
+              <input
+                ref={galleryInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={handlePhotoSelect}
+                className="hidden"
+              />
+
+              {imagePreviewUrl ? (
+                <div className="relative overflow-hidden rounded-2xl border border-border bg-muted/40">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imagePreviewUrl}
+                    alt="معاينة الصورة المرفقة"
+                    className="max-h-52 w-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleRemovePhoto}
+                    aria-label="حذف الصورة"
+                    className="absolute top-2.5 end-2.5 flex h-9 w-9 items-center justify-center rounded-full bg-balaghni-obsidian/80 text-white backdrop-blur transition hover:bg-primary"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-input bg-muted/40 px-3 py-4 text-xs font-bold text-foreground transition hover:border-primary hover:bg-secondary/50"
+                  >
+                    <Camera className="h-5 w-5 text-primary" />
+                    <span>التقاط بالكاميرا</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => galleryInputRef.current?.click()}
+                    className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-input bg-muted/40 px-3 py-4 text-xs font-bold text-foreground transition hover:border-primary hover:bg-secondary/50"
+                  >
+                    <ImagePlus className="h-5 w-5 text-primary" />
+                    <span>اختيار من المعرض</span>
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
 
           {/* 3. رقم هاتف المبلِّغ (اختياري - مخصص لليبيا +218) */}
           <section className="rounded-3xl border border-border bg-card p-4 sm:p-5 shadow-card-soft">

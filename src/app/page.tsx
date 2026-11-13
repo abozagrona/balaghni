@@ -15,56 +15,8 @@ import { InteractiveScenariosSection } from "@/components/brand/interactive-scen
 import { PrivacyAndChannelsSection } from "@/components/brand/privacy-and-channels-section";
 import { FaqAccordionSection } from "@/components/brand/faq-accordion-section";
 import { SiteFooter } from "@/components/layout/site-footer";
+import { PricingSection } from "@/components/brand/pricing-section";
 import { Button } from "@/components/ui/button";
-
-const PRICING_TIERS = [
-  {
-    id: "standard",
-    name: "الباقة الأساسية",
-    priceLyd: "45",
-    oldPriceLyd: "75",
-    period: "سنوياً",
-    description: "مثالية للاستخدام اليومي داخل المدينة مع حماية كاملة لخصوصية رقمك.",
-    featured: false,
-    features: [
-      "ملصق «بَلِّغْنِي» الأصلي المقاوم للشمس والماء",
-      "استلام التنبيهات عبر واتساب أو SMS",
-      "إخفاء تام لرقم هاتفك عن الماسحين",
-      "كود تعريفي ليبي خاص (مثال: LY-123456)",
-    ],
-  },
-  {
-    id: "premium",
-    name: "باقة بريميوم",
-    badge: "الأكثر طلباً في ليبيا",
-    priceLyd: "75",
-    oldPriceLyd: "120",
-    period: "سنوياً",
-    description: "تغطية مزدوجة تضمن وصول التنبيه حتى عند انقطاع الإنترنت عن هاتفك.",
-    featured: true,
-    features: [
-      "استلام التنبيهات عبر SMS + واتساب معاً في نفس اللحظة",
-      "إرفاق صور توضيحية وموقع السيارة الجغرافي",
-      "حماية ذكية ضد الإزعاج والرسائل غير اللائقة",
-      "استبدال مجاني للملصق عند تغيير الزجاج",
-    ],
-  },
-  {
-    id: "elite",
-    name: "باقة إيليت للطوارئ",
-    priceLyd: "135",
-    oldPriceLyd: "210",
-    period: "سنوياً",
-    description: "أقصى درجات الأمان لك ولعائلتك على الطرق السريعة وداخل المدن.",
-    featured: false,
-    features: [
-      "جميع مزايا باقة بريميوم (SMS + واتساب معاً)",
-      "بوابة طوارئ لإبلاغ 3 من أفراد عائلتك عند الحوادث",
-      "أولوية قصوى في توصيل الإشعارات الفورية",
-      "ملصق إضافي مجاني للسيارة الثانية أو الخلفية",
-    ],
-  },
-];
 
 export default function HomePage() {
   return (
@@ -156,86 +108,7 @@ export default function HomePage() {
         <PrivacyAndChannelsSection />
 
         {/* 5. قسم الباقات والأسعار بالدينار الليبي (د.ل) */}
-        <section id="pricing" className="py-16 sm:py-24">
-          <div className="shell">
-            <div className="mx-auto max-w-2xl text-center">
-              <span className="rounded-full bg-secondary px-3.5 py-1 text-xs font-bold text-primary">
-                الباقات السنوية بالدينار الليبي
-              </span>
-              <h2 className="mt-3 text-2xl font-bold text-foreground sm:text-4xl">
-                اختر باقة «بَلِّغْنِي» المناسبة لسيارتك
-              </h2>
-              <p className="mt-2 text-sm text-muted-foreground sm:text-base">
-                توصيل لكافة المدن الليبية (طرابلس، بنغازي، مصراتة، الزاوية، سبها، وكافة المناطق) مع الدفع عند الاستلام.
-              </p>
-            </div>
-
-            <div className="mt-14 grid items-center gap-6 lg:grid-cols-3 lg:gap-8">
-              {PRICING_TIERS.map((tier) => (
-                <div
-                  key={tier.id}
-                  className={
-                    tier.featured
-                      ? "relative z-10 flex flex-col rounded-3xl border-[2.5px] border-primary bg-card p-7 shadow-primary-glow ring-4 ring-primary/15 transition-transform sm:p-8 lg:scale-105"
-                      : "relative flex flex-col rounded-3xl border border-border bg-card p-6 shadow-card-soft sm:p-7"
-                  }
-                >
-                  {tier.badge && (
-                    <span className="absolute -top-4 start-6 rounded-full bg-primary-gradient px-4 py-1 text-xs font-bold text-white shadow-md">
-                      {tier.badge}
-                    </span>
-                  )}
-
-                  <div>
-                    <h3 className="text-xl font-bold text-foreground">
-                      {tier.name}
-                    </h3>
-                    <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-                      {tier.description}
-                    </p>
-                  </div>
-
-                  <div className="my-6 flex items-baseline gap-2 border-y border-border py-4">
-                    <span className="font-mono text-4xl font-bold text-foreground">
-                      {tier.priceLyd}
-                    </span>
-                    <span className="text-base font-bold text-primary">
-                      د.ل
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      / {tier.period}
-                    </span>
-                    <span className="ms-auto font-mono text-sm text-muted-foreground line-through">
-                      {tier.oldPriceLyd} د.ل
-                    </span>
-                  </div>
-
-                  <ul className="mb-7 flex-1 space-y-3 text-sm">
-                    {tier.features.map((feat, i) => (
-                      <li key={i} className="flex items-start gap-2.5">
-                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
-                          <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
-                        </span>
-                        <span className="text-foreground/90">{feat}</span>
-                      </li>
-                    ))}
-                  </ul>
-
-                  <Button
-                    asChild
-                    variant={tier.featured ? "default" : "outline"}
-                    size="lg"
-                    className="w-full rounded-2xl"
-                  >
-                    <Link href={`/order?tier=${tier.id}`}>
-                      اطلب {tier.name}
-                    </Link>
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
+        <PricingSection />
 
         {/* 6. قسم الأسئلة الشائعة القابل للطي (Accordion) قبل الفوتر */}
         <FaqAccordionSection />

@@ -17,18 +17,12 @@ import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
 import { cn, formatFullLibyaE164 } from "@/lib/utils";
 
 const TIERS = [
-  { id: "standard", name: "الباقة الأساسية", price: 45, badge: "SMS أو واتساب" },
+  { id: "basic", name: "الباقة الأساسية", price: 50, badge: "واتساب فقط • 50 د.ل" },
   {
-    id: "premium",
-    name: "باقة بريميم",
-    price: 75,
-    badge: "الأكثر طلباً • SMS + واتساب",
-  },
-  {
-    id: "elite",
-    name: "باقة إيليت للطوارئ",
-    price: 135,
-    badge: "شاملة بوابة طوارئ العائلة",
+    id: "nabbihni",
+    name: "باقة نَبِّهْنِي",
+    price: 100,
+    badge: "الأكثر طلباً • SMS + واتساب + نَبِّهْنِي",
   },
 ];
 
@@ -50,7 +44,8 @@ const LIBYA_CITIES = [
 ];
 
 export default function OrderPage() {
-  const [selectedTier, setSelectedTier] = React.useState("premium");
+  const [selectedTier, setSelectedTier] = React.useState("nabbihni");
+  const [paymentMethod, setPaymentMethod] = React.useState<"cod" | "online">("cod");
   const [quantity, setQuantity] = React.useState(1);
   const [fullName, setFullName] = React.useState("");
   const [phoneDigits, setPhoneDigits] = React.useState("");
@@ -93,6 +88,7 @@ export default function OrderPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tier: selectedTier,
+          paymentMethod,
           quantity,
           fullName: fullName.trim(),
           phone: formattedPhone,
@@ -330,6 +326,33 @@ export default function OrderPage() {
                 </p>
               )}
 
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("cod")}
+                  className={cn(
+                    "rounded-2xl border p-3 text-xs font-bold transition-all",
+                    paymentMethod === "cod"
+                      ? "border-primary bg-secondary text-primary"
+                      : "border-border bg-white text-foreground"
+                  )}
+                >
+                  دفع عند الاستلام (COD)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("online")}
+                  className={cn(
+                    "rounded-2xl border p-3 text-xs font-bold transition-all",
+                    paymentMethod === "online"
+                      ? "border-primary bg-secondary text-primary"
+                      : "border-border bg-white text-foreground"
+                  )}
+                >
+                  دفع أونلاين فوري
+                </button>
+              </div>
+
               <Button
                 type="submit"
                 size="xl"
@@ -344,7 +367,13 @@ export default function OrderPage() {
                 ) : (
                   <>
                     <BellRing className="h-5 w-5" />
-                    <span>تأكيد الطلب ({totalLyd} د.ل — الدفع عند الاستلام)</span>
+                    <span>
+                      تأكيد الطلب ({totalLyd} د.ل —{" "}
+                      {paymentMethod === "online"
+                        ? "دفع أونلاين"
+                        : "الدفع عند الاستلام"}
+                      )
+                    </span>
                   </>
                 )}
               </Button>
@@ -383,11 +412,15 @@ export default function OrderPage() {
                 <div className="mt-5 grid grid-cols-2 gap-2.5 text-[11px] text-white/75">
                   <div className="flex items-center gap-1.5 rounded-xl bg-white/5 p-2.5">
                     <Truck className="h-4 w-4 text-primary-accent shrink-0" />
-                    <span>دفع عند الاستلام</span>
+                    <span>
+                      {paymentMethod === "online"
+                        ? "دفع أونلاين مؤمّن"
+                        : "دفع عند الاستلام"}
+                    </span>
                   </div>
                   <div className="flex items-center gap-1.5 rounded-xl bg-white/5 p-2.5">
                     <ShieldCheck className="h-4 w-4 text-primary-accent shrink-0" />
-                    <span>ضمان استبدال مجاني</span>
+                    <span>اشتراك فعّال 365 يوماً</span>
                   </div>
                 </div>
               </div>

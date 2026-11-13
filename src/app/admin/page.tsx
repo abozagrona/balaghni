@@ -28,8 +28,10 @@ import {
   Activity,
   Ban,
   Copy,
+  Store,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
+import { AdminLifecyclePanel } from "@/components/admin/admin-lifecycle-panel";
 import { Button } from "@/components/ui/button";
 import {
   arrayBufferToBase64Url,
@@ -168,7 +170,7 @@ export default function ExecutiveAdminDashboardPage() {
 
   // بيانات لوحة الإدارة التنفيذية
   const [activeTab, setActiveTab] = React.useState<
-    "tags" | "import" | "audit" | "team" | "danger"
+    "tags" | "lifecycle" | "import" | "audit" | "team" | "danger"
   >("tags");
   const [tags, setTags] = React.useState<AdminTagRecord[]>([]);
   const [auditLogs, setAuditLogs] = React.useState<AdminAuditLog[]>([]);
@@ -2071,6 +2073,20 @@ export default function ExecutiveAdminDashboardPage() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("lifecycle")}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
+              activeTab === "lifecycle"
+                ? "bg-primary text-white shadow-primary-glow"
+                : "text-white/70 hover:bg-white/5 hover:text-white"
+            )}
+          >
+            <Store className="h-4 w-4" />
+            <span>الباقات والتجار والهدايا والشركات</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("import")}
             className={cn(
               "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
@@ -2800,6 +2816,8 @@ export default function ExecutiveAdminDashboardPage() {
             </div>
           </section>
         )}
+
+        {activeTab === "lifecycle" && <AdminLifecyclePanel />}
 
         {/* ==================================================================== */}
         {/* التبويب 5: منطقة الطوارئ وتصفير النظام (Danger Zone) */}

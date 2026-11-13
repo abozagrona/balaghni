@@ -79,6 +79,11 @@ function getSubscriptionStageVars(
         statusLabel: "حيتم خلال أسبوعين",
         expiryDetail: `تاريخ الانتهاء ${slashExpiryDate}`,
       };
+    case 5:
+      return {
+        statusLabel: "حيتم خلال 5 أيام",
+        expiryDetail: `تاريخ الانتهاء ${slashExpiryDate}`,
+      };
     case 3:
       return {
         statusLabel: "حيتم خلال 3 أيام",
@@ -203,6 +208,8 @@ async function handleRemindersCron(request: NextRequest) {
       subExpiryIso: string | null;
       subDaysRemaining: number | null;
       subscriptionActive: boolean;
+      nabbihniEnabled: boolean;
+      isGiftPromo: boolean;
       raw: Record<string, unknown>;
     };
 
@@ -225,7 +232,17 @@ async function handleRemindersCron(request: NextRequest) {
         subDaysRemaining
       );
 
-      const target: TagTarget = {
+      const rawFeatures = (row.features || {}) as Record<string, unknown>;
+      const nabbihniEnabled =
+        typeof rawFeatures.nabbihni_reminders === "boolean"
+          ? rawFeatures.nabbihni_reminders
+          : String(row.package_type || "").toLowerCase() !== "basic";
+      const isGiftPromo = String(row.activation_source || "") === "gift_promo";
+
+      const target: TagTarget & {
+        nabbihniEnabled: boolean;
+        isGiftPromo: boolean;
+      } = {
         tagId: id,
         tagCode: code,
         ownerPhone: phone,
@@ -233,6 +250,8 @@ async function handleRemindersCron(request: NextRequest) {
         subExpiryIso,
         subDaysRemaining,
         subscriptionActive,
+        nabbihniEnabled,
+        isGiftPromo,
         raw: row,
       };
       tagByCode.set(code, target);
@@ -254,11 +273,18 @@ async function handleRemindersCron(request: NextRequest) {
 
     let suspendedDocumentsCount = 0;
 
-    // 1. إشعارات تجديد اشتراك ملصق بَلِّغْنِي (5 مراحل: 30، 14، 3، 0، -7 فقط)
-    //    WhatsApp أولاً ثم SMS (d10d86ca-4be1-4807-89d4-497cfdc0c145) عند فشل WhatsApp فقط
+    // 1. إشعارات تجديد اشتراك ملصق بَلِّغْنِي (5 مراحل للاشتراك السنوي + 5 و 0 أيام للهدايا الترويجية)
     for (const target of tagByCode.values()) {
       if (!target.subExpiryIso || target.subDaysRemaining === null) continue;
-      if (!SUBSCRIPTION_STAGE_DAYS.has(target.subDaysRemaining)) continue;
+      const isGiftMilestone =
+        target.isGiftPromo &&
+        (target.subDaysRemaining === 5 || target.subDaysRemaining === 0);
+      if (
+        !SUBSCRIPTION_STAGE_DAYS.has(target.subDaysRemaining) &&
+        !isGiftMilestone
+      ) {
+        continue;
+      }
 
       const stageKey = `sub_day_${target.subDaysRemaining}`;
       const lastSubStage = String(
@@ -328,8 +354,8 @@ async function handleRemindersCron(request: NextRequest) {
         (docTagId ? tagById.get(docTagId) : undefined);
       if (!target) continue;
 
-      // الربط الشرطي: إذا انتهى اشتراك الملصق أو كان غير نشط، علّق جميع تذكيرات «نَبِّهْنِي»
-      if (!target.subscriptionActive) {
+      // الربط الشرطي: إذا انتهى اشتراك الملصق أو كانت الباقة لا تشمل «نَبِّهْنِي»، علّق التذكير
+      if (!target.subscriptionActive || !target.nabbihniEnabled) {
         suspendedDocumentsCount += 1;
         continue;
       }

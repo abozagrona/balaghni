@@ -38,6 +38,20 @@ import {
   formatBalaghniTagCode,
 } from "@/lib/utils";
 import { clearOwnerSession } from "@/lib/auth-session";
+import {
+  computeCountdownDays,
+  formatSlashDateYmd,
+  getPackageConfig,
+  type PackageFeatures,
+} from "@/lib/packages";
+
+interface StickerLifecycleSummary {
+  status: "unactivated" | "gift_ready" | "active" | "expired";
+  packageType: string;
+  features: PackageFeatures;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
+}
 
 interface TagRecordData {
   tagCode: string;
@@ -132,6 +146,8 @@ function DashboardContent() {
 
   const [loading, setLoading] = React.useState(true);
   const [tagData, setTagData] = React.useState<TagRecordData | null>(null);
+  const [lifecycle, setLifecycle] =
+    React.useState<StickerLifecycleSummary | null>(null);
   const [docs, setDocs] = React.useState<VehicleDocumentItem[]>([]);
   const [reports, setReports] = React.useState<ReportAlertItem[]>([]);
   const [maintenanceList, setMaintenanceList] = React.useState<
@@ -222,6 +238,7 @@ function DashboardContent() {
         }
 
         setTagData(data.tag);
+        setLifecycle(data.lifecycle ?? null);
         setDocs(Array.isArray(data.documents) ? data.documents : []);
         setReports(Array.isArray(data.reports) ? data.reports : []);
         setMaintenanceList(
@@ -645,6 +662,36 @@ function DashboardContent() {
                   >
                     {tagData.tagCode}
                   </span>
+                  {lifecycle && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/35 bg-amber-400/15 px-3 py-1 text-xs font-bold text-amber-300">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {getPackageConfig(lifecycle.packageType).name}
+                    </span>
+                  )}
+                  {(() => {
+                    const daysLeft = computeCountdownDays(
+                      lifecycle?.subscriptionExpiresAt
+                    );
+                    if (daysLeft === null) return null;
+                    if (daysLeft <= 0 || lifecycle?.status === "expired") {
+                      return (
+                        <Link
+                          href={`/s/${encodeURIComponent(tagData.tagCode)}`}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-xs font-bold text-rose-200 hover:bg-rose-500/30"
+                        >
+                          <Clock className="h-3.5 w-3.5" />
+                          منتهي الصلاحية — اضغط للتجديد
+                        </Link>
+                      );
+                    }
+                    return (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-400/35 bg-sky-500/15 px-3 py-1 text-xs font-bold text-sky-200">
+                        <Clock className="h-3.5 w-3.5" />
+                        باقي {daysLeft} يوماً (ينتهي{" "}
+                        {formatSlashDateYmd(lifecycle?.subscriptionExpiresAt)})
+                      </span>
+                    );
+                  })()}
                 </div>
 
                 <h1 className="text-2xl font-black tracking-tight text-white sm:text-4xl">
@@ -654,6 +701,15 @@ function DashboardContent() {
                 <p className="max-w-xl text-xs leading-relaxed text-white/75 sm:text-sm">
                   تعرض هذه اللوحة البيانات الحقيقية المسجلة لملصق سيارتك فقط
                   بدون أي بيانات افتراضية.
+                  {lifecycle?.subscriptionStartsAt &&
+                    lifecycle?.subscriptionExpiresAt && (
+                      <span className="mt-1 block text-white/65">
+                        بداية الاشتراك:{" "}
+                        {formatSlashDateYmd(lifecycle.subscriptionStartsAt)} •
+                        تاريخ الانتهاء:{" "}
+                        {formatSlashDateYmd(lifecycle.subscriptionExpiresAt)}
+                      </span>
+                    )}
                 </p>
               </div>
 
@@ -861,6 +917,27 @@ function DashboardContent() {
             )}
           </section>
 
+          {lifecycle?.features?.nabbihni_reminders === false ? (
+            <section className="rounded-3xl border border-amber-500/30 bg-amber-500/5 p-6 text-center shadow-card-soft">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-600">
+                <Sparkles className="h-6 w-6" />
+              </div>
+              <h2 className="mt-3 text-lg font-black text-foreground">
+                خدمة «نَبِّهْنِي» وسجل الصيانة متوفرة في باقة نَبِّهْنِي
+              </h2>
+              <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-muted-foreground">
+                ملصقك مفعل حالياً على «الباقة الأساسية». قم بالترقية إلى باقة نَبِّهْنِي (100 د.ل/سنوياً) للحصول على تذكيرات التأمين والرخصة، سجل الصيانة، وطوارئ الطرقات.
+              </p>
+              <div className="mt-4">
+                <Button asChild size="sm" className="rounded-xl">
+                  <Link href={`/s/${encodeURIComponent(tagData.tagCode)}`}>
+                    ترقية الباقة الآن
+                  </Link>
+                </Button>
+              </div>
+            </section>
+          ) : (
+          <>
           {/* 3. خدمة «نبّهني» لمتابعة وثائق المركبة (جدول vehicle_documents) */}
           <section className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1376,6 +1453,8 @@ function DashboardContent() {
               </div>
             )}
           </section>
+          </>
+          )}
 
           {/* 5. قسم إعدادات الأمان والدخول السريع بالبصمة (Passkey) */}
           <section className="space-y-4">

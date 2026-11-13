@@ -2659,11 +2659,32 @@ export async function sendZeroLeakNotification(params: {
       ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
     ];
 
+    let smsFallbackEnabled = true;
+    let photoAttachmentsEnabled = true;
+    try {
+      const { data: stickerRow } = await supabaseAdmin
+        .from("stickers")
+        .select("features")
+        .eq("code", normalizedCode)
+        .maybeSingle();
+      if (stickerRow?.features && typeof stickerRow.features === "object") {
+        const f = stickerRow.features as Record<string, unknown>;
+        if (typeof f.sms_fallback === "boolean") smsFallbackEnabled = f.sms_fallback;
+        if (typeof f.photo_attachments === "boolean") {
+          photoAttachmentsEnabled = f.photo_attachments;
+        }
+      }
+    } catch {
+      // ignore if stickers table not migrated yet
+    }
+
+    const effectivePhotoUrl = photoAttachmentsEnabled ? params.photoUrl : null;
+
     const waResult = await sendWhatsappAlertMessage(
       tag.ownerPhone,
       whatsappLines.join("\n"),
-      params.photoUrl,
-      { verifyDelivery: true }
+      effectivePhotoUrl,
+      { verifyDelivery: smsFallbackEnabled }
     );
     const waOk = waResult.ok;
 
@@ -2671,7 +2692,7 @@ export async function sendZeroLeakNotification(params: {
     let smsStatus: number | undefined;
     let smsError: string | undefined;
 
-    if (!waOk) {
+    if (!waOk && smsFallbackEnabled) {
       const smsResult = await sendSmsAlertMessage(
         tag.ownerPhone,
         var1,
@@ -2688,7 +2709,13 @@ export async function sendZeroLeakNotification(params: {
       `[Report Delivery ${normalizedCode}] WhatsApp=${
         waOk ? "OK" : waResult.error
       } | SMS=${
-        !waOk ? (smsOk ? "OK" : `${smsStatus || ""} ${smsError || ""}`) : "SKIPPED (WA OK)"
+        !smsFallbackEnabled
+          ? "DISABLED BY PACKAGE"
+          : !waOk
+          ? smsOk
+            ? "OK"
+            : `${smsStatus || ""} ${smsError || ""}`
+          : "SKIPPED (WA OK)"
       }`
     );
 

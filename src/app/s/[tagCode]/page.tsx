@@ -15,8 +15,10 @@ import {
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { ScanForm } from "@/components/scan/scan-form";
 import { TagActivationForm } from "@/components/scan/tag-activation-form";
+import { StickerActivationClient } from "@/components/scan/sticker-activation-client";
 import { Button } from "@/components/ui/button";
 import { getVehicleTagByCode } from "@/lib/supabase/client";
+import { getStickerLifecycle } from "@/lib/lifecycle-service";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -46,7 +48,44 @@ export default async function PublicQrScanPage({
   const formattedCode = formatBalaghniTagCode(tagCode);
   const isActivationIntent = resolvedSearch.intent === "activate";
 
-  const tagRecord = await getVehicleTagByCode(formattedCode);
+  const [tagRecord, lifecycleSticker] = await Promise.all([
+    getVehicleTagByCode(formattedCode),
+    getStickerLifecycle(formattedCode),
+  ]);
+
+  if (
+    lifecycleSticker &&
+    (lifecycleSticker.status === "unactivated" ||
+      lifecycleSticker.status === "gift_ready" ||
+      lifecycleSticker.status === "expired")
+  ) {
+    return (
+      <div className="scan-shell flex min-h-dvh flex-col">
+        <header className="sticky top-0 z-20 border-b border-border bg-card/90 backdrop-blur-md">
+          <div className="mx-auto flex max-w-lg items-center justify-between px-4 py-2.5">
+            <Link href="/" aria-label="الصفحة الرئيسية لمنصة بَلِّغْنِي">
+              <BalaghniLogo size="sm" showTagline />
+            </Link>
+
+            <span
+              dir="ltr"
+              className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-secondary px-3 py-1 font-mono text-xs font-bold text-primary"
+            >
+              <QrCode className="h-3.5 w-3.5" />
+              <span>{formattedCode}</span>
+            </span>
+          </div>
+        </header>
+
+        <main className="mx-auto w-full max-w-lg flex-1 px-4 py-6">
+          <StickerActivationClient
+            code={formattedCode}
+            initialMode={lifecycleSticker.status}
+          />
+        </main>
+      </div>
+    );
+  }
 
   // الحالة 1: الكود غير موجود في قاعدة البيانات أو ملغى (REVOKED) -> عرض تنبيه أمني
   if (!tagRecord || tagRecord.status === "REVOKED") {
@@ -330,8 +369,9 @@ export default async function PublicQrScanPage({
 
       {/* المحتوى الرئيسي لنموذج الإبلاغ الفوري للزائر العادي */}
       <main className="mx-auto w-full max-w-lg flex-1 px-4 pt-4">
-        {/* شريط طوارئ الطرقات (يظهر إذا كان الملصق يدعم جهات اتصال الطوارئ) */}
-        {tagRecord.hasEmergencyContacts && (
+        {/* شريط طوارئ الطرقات (يظهر إذا كان الملصق يدعم جهات اتصال الطوارئ ومفعل في الباقة) */}
+        {tagRecord.hasEmergencyContacts &&
+          lifecycleSticker?.features?.emergency_portal !== false && (
           <section
             aria-labelledby="scan-emergency-banner"
             className="mb-4 rounded-2xl border border-primary/25 bg-secondary/80 p-3.5 shadow-sm"
@@ -369,6 +409,9 @@ export default async function PublicQrScanPage({
           tagCode={tagRecord.tagCode}
           vehicleName={vehicleFullName}
           initialReason={resolvedSearch.reason}
+          photoAttachmentsEnabled={
+            lifecycleSticker?.features?.photo_attachments !== false
+          }
         />
       </main>
     </div>
