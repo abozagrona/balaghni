@@ -31,6 +31,7 @@ interface VendorItem {
   totalCustodyCount?: number;
   activatedByVendorCount?: number;
   unsettledAmountLyd?: number;
+  totalCashCollectedLyd?: number;
 }
 
 interface CorporateLeadItem {
@@ -75,10 +76,28 @@ interface AdminOrderItem {
   createdAt: string;
 }
 
+interface GiftStickerRow {
+  code: string;
+  isLinked: boolean;
+  ownerPhone: string | null;
+  ownerName: string | null;
+  vehicleInfo: string | null;
+  subscriptionStartsAt: string | null;
+  subscriptionExpiresAt: string | null;
+  createdAt: string;
+}
+
+interface GiftSummaryState {
+  totalGifts: number;
+  linkedGifts: number;
+  unlinkedGifts: number;
+  items: GiftStickerRow[];
+}
+
 export function AdminLifecyclePanel({
   viewMode = "all",
 }: {
-  viewMode?: "all" | "orders";
+  viewMode?: "all" | "orders" | "partners" | "gifts";
 }) {
   const [loading, setLoading] = React.useState(true);
   const [busyAction, setBusyAction] = React.useState<string | null>(null);
@@ -98,6 +117,12 @@ export function AdminLifecyclePanel({
   const [availableStickers, setAvailableStickers] = React.useState<string[]>(
     []
   );
+  const [giftSummary, setGiftSummary] = React.useState<GiftSummaryState>({
+    totalGifts: 0,
+    linkedGifts: 0,
+    unlinkedGifts: 0,
+    items: [],
+  });
 
   // CSV / TXT sticker import
   const [importCodesText, setImportCodesText] = React.useState("");
@@ -117,6 +142,7 @@ export function AdminLifecyclePanel({
 
   // Gift batch
   const [giftCodesText, setGiftCodesText] = React.useState("");
+  const [giftFileName, setGiftFileName] = React.useState("");
 
   // Unassigned order assignment
   const [orderAssignCode, setOrderAssignCode] = React.useState<
@@ -157,6 +183,9 @@ export function AdminLifecyclePanel({
         setAvailableStickers(
           Array.isArray(data.availableStickers) ? data.availableStickers : []
         );
+        if (data.giftSummary) {
+          setGiftSummary(data.giftSummary);
+        }
       }
     } finally {
       setLoading(false);
@@ -212,11 +241,20 @@ export function AdminLifecyclePanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-black text-white">
-            إدارة الباقات، التجار، الهدايا، وطلبات الشركات
+            {viewMode === "gifts"
+              ? "ملصقات الهدايا (شهر مجاني) — حصري للمدير الرئيسي"
+              : viewMode === "partners"
+                ? "إدارة الباقات، المحلات/نقاط البيع، والشركات/الأساطيل"
+                : viewMode === "orders"
+                  ? "الطلبات الواردة وربط الملصقات"
+                  : "إدارة الباقات، المحلات، والشركات"}
           </h2>
           <p className="text-xs text-white/60">
-            تحكم كامل في دورة حياة الملصقات (4 حالات)، حسابات التجار، وباقة
-            النخبة المخصصة.
+            {viewMode === "gifts"
+              ? "استيراد وتفعيل مسبق لملصقات الهدايا (30 يوماً مجاناً) مع تتبع حالة الارتباط بالهاتف."
+              : viewMode === "partners"
+                ? "النموذج الديناميكي والملف المالي الشامل لكل محل وشركة (الملصقات المفعّلة وغير المفعّلة، المبيعات، المسدد، وصافي المديونية)."
+                : "تحكم كامل في الطلبات ودورة حياة الملصقات وحسابات التجار والشركات."}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -359,6 +397,7 @@ export function AdminLifecyclePanel({
       )}
 
       {/* 0.5. جدول جميع الطلبات (الأونلاين + الدفع عند الاستلام) مع ربط الملصقات */}
+      {(viewMode === "all" || viewMode === "orders") && (
       <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-2 text-sm font-black text-white">
@@ -513,8 +552,9 @@ export function AdminLifecyclePanel({
           </div>
         )}
       </section>
+      )}
 
-      {viewMode === "all" && (
+      {(viewMode === "all" || viewMode === "partners") && (
       <>
       {/* 1. الطلبات الأونلاين المدفوعة بانتظار ربط ملصق (Race-condition / Unassigned Paid) */}
       <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
@@ -748,10 +788,16 @@ export function AdminLifecyclePanel({
 
         {vendors.length > 0 && (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {vendors.map((v) => (
+            {vendors.map((v) => {
+              const activeCount = v.activatedByVendorCount ?? 0;
+              const inactiveCount = Math.max(0, (v.totalCustodyCount ?? 0) - activeCount);
+              const totalSalesLyd = v.totalCashCollectedLyd ?? v.unsettledAmountLyd ?? 0;
+              const debtLyd = v.unsettledAmountLyd ?? 0;
+              const paidLyd = Math.max(0, totalSalesLyd - debtLyd);
+              return (
               <div
                 key={v.id}
-                className="rounded-2xl border border-white/10 bg-black/30 p-3.5 space-y-2"
+                className="rounded-2xl border border-white/10 bg-black/30 p-3.5 space-y-2.5"
               >
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-black text-white">{v.name}</span>
@@ -759,13 +805,13 @@ export function AdminLifecyclePanel({
                     {v.phone}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-2 text-[11px] text-white/75">
-                  <span>في العهدة: {v.totalCustodyCount ?? 0}</span>
-                  <span>•</span>
-                  <span>مفعل كاش: {v.activatedByVendorCount ?? 0}</span>
-                  <span>•</span>
-                  <span className="font-bold text-amber-300">
-                    مستحق: {v.unsettledAmountLyd ?? 0} د.ل
+                <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-white/[0.03] p-2 text-[11px] text-white/80">
+                  <span>المفعّلة: <strong className="text-emerald-300">{activeCount}</strong></span>
+                  <span>غير المفعّلة: <strong className="text-slate-300">{inactiveCount}</strong></span>
+                  <span>المبيعات: <strong className="text-white">{totalSalesLyd} د.ل</strong></span>
+                  <span>المسدد: <strong className="text-sky-300">{paidLyd} د.ل</strong></span>
+                  <span className="col-span-2 font-bold text-amber-300">
+                    صافي المديونية: {debtLyd} د.ل
                   </span>
                 </div>
                 <Button
@@ -784,46 +830,10 @@ export function AdminLifecyclePanel({
                   تصفية حساب الشهر وتأكيد التسوية
                 </Button>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
-      </section>
-
-      {/* 3. باقة الهدايا الترويجية (30 يوم) */}
-      <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-3">
-        <h3 className="flex items-center gap-2 text-sm font-black text-white">
-          <Gift className="h-4 w-4 text-primary" />
-          <span>تحويل ملصقات إلى «جاهزة للإهداء الترويجي» (30 يوماً)</span>
-        </h3>
-        <textarea
-          rows={2}
-          dir="ltr"
-          placeholder="أدخل الأكواد مفصولة بفاصلة أو سطر جديد (BLG-2001, BLG-2002)"
-          value={giftCodesText}
-          onChange={(e) => setGiftCodesText(e.target.value)}
-          className="w-full rounded-xl border border-white/15 bg-black/40 p-2.5 font-mono text-xs text-white outline-none focus:border-primary"
-        />
-        <Button
-          type="button"
-          size="sm"
-          disabled={!giftCodesText.trim() || busyAction === "gift_batch"}
-          onClick={() =>
-            runAction(
-              "gift_batch",
-              {
-                action: "mark_gift_ready",
-                codes: parseCodes(giftCodesText),
-              },
-              () => setGiftCodesText("")
-            )
-          }
-          className="rounded-xl"
-        >
-          {busyAction === "gift_batch" && (
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-          )}
-          <span>تجهيز كملصقات هدايا (gift_ready)</span>
-        </Button>
       </section>
 
       {/* 4. باقة النخبة للشركات وطلبات التسعير */}
@@ -958,6 +968,189 @@ export function AdminLifecyclePanel({
         )}
       </section>
       </>
+      )}
+
+      {viewMode === "gifts" && (
+        <div className="space-y-5">
+          {/* 3 مربعات إحصائية لملصقات الهدايا */}
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-3xl border border-white/10 bg-[#10131C] p-5">
+              <p className="text-xs font-bold text-white/60">
+                إجمالي ملصقات الهدايا المستوردة
+              </p>
+              <p className="mt-2 font-mono text-3xl font-black text-white">
+                {giftSummary.totalGifts}
+              </p>
+            </div>
+            <div className="rounded-3xl border border-emerald-500/25 bg-emerald-500/10 p-5">
+              <p className="text-xs font-bold text-emerald-300">
+                مرتبطة برقم (تم مسحها وتفعيلها)
+              </p>
+              <p className="mt-2 font-mono text-3xl font-black text-emerald-400">
+                {giftSummary.linkedGifts}
+              </p>
+            </div>
+            <div className="rounded-3xl border border-amber-500/25 bg-amber-500/10 p-5">
+              <p className="text-xs font-bold text-amber-300">
+                غير مرتبطة برقم (جاهزة للتوزيع)
+              </p>
+              <p className="mt-2 font-mono text-3xl font-black text-amber-400">
+                {giftSummary.unlinkedGifts}
+              </p>
+            </div>
+          </div>
+
+          {/* أداة استيراد وتفعيل مسبق لملصقات الهدايا */}
+          <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-2 text-sm font-black text-white">
+                <Gift className="h-4 w-4 text-primary" />
+                <span>استيراد ملف أكواد الهدايا (CSV / Excel / نصي)</span>
+              </h3>
+              <span className="rounded-full bg-amber-500/15 px-3 py-1 text-[11px] font-bold text-amber-300">
+                تتحول تلقائياً إلى ACTIVE بدون رقم هاتف • لا تدخل مخزون الشراء
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3.5 py-2 text-xs font-bold text-white hover:bg-white/10">
+                <Upload className="h-3.5 w-3.5 text-primary" />
+                <span>
+                  {giftFileName
+                    ? `تم اختيار: ${giftFileName}`
+                    : "اختر ملف (.csv / .txt / .xls)"}
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,.txt,.tsv,.xls"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setGiftFileName(file.name);
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const raw = String(reader.result || "");
+                      const matches =
+                        raw.toUpperCase().match(/LY-[A-Z0-9]{4}-[A-Z0-9]{4}/g) ||
+                        [];
+                      const cleaned =
+                        matches.length > 0
+                          ? Array.from(new Set(matches)).join("\n")
+                          : raw;
+                      setGiftCodesText(cleaned);
+                    };
+                    reader.readAsText(file);
+                  }}
+                />
+              </label>
+
+              <Button
+                type="button"
+                size="sm"
+                disabled={!giftCodesText.trim() || busyAction === "import_gifts"}
+                onClick={() =>
+                  runAction(
+                    "import_gifts",
+                    {
+                      action: "import_gift_stickers",
+                      codes: parseCodes(giftCodesText),
+                    },
+                    () => {
+                      setGiftCodesText("");
+                      setGiftFileName("");
+                    }
+                  )
+                }
+                className="rounded-xl"
+              >
+                {busyAction === "import_gifts" && (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                )}
+                <span>استيراد وتفعيل مسبق كملصقات هدايا (30 يوماً)</span>
+              </Button>
+            </div>
+
+            <textarea
+              rows={3}
+              dir="ltr"
+              placeholder="أو الصق أكواد الهدايا هنا (LY-XXXX-XXXX) مفصولة بفاصلة أو سطر جديد..."
+              value={giftCodesText}
+              onChange={(e) => setGiftCodesText(e.target.value)}
+              className="w-full rounded-xl border border-white/15 bg-black/40 p-3 font-mono text-xs text-white outline-none focus:border-primary"
+            />
+          </section>
+
+          {/* جدول ملصقات الهدايا */}
+          <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
+            <h3 className="flex items-center gap-2 text-sm font-black text-white">
+              <Gift className="h-4 w-4 text-primary" />
+              <span>سجل ملصقات الهدايا ({giftSummary.items.length})</span>
+            </h3>
+
+            {giftSummary.items.length === 0 ? (
+              <p className="text-xs text-white/50">
+                لا توجد ملصقات هدايا مستوردة بعد.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[680px] text-right text-xs">
+                  <thead>
+                    <tr className="border-b border-white/10 text-white/60">
+                      <th className="px-3 py-2.5">كود الهدية</th>
+                      <th className="px-3 py-2.5">حالة الارتباط</th>
+                      <th className="px-3 py-2.5">رقم الهاتف</th>
+                      <th className="px-3 py-2.5">المركبة</th>
+                      <th className="px-3 py-2.5">بداية الشهر المجاني</th>
+                      <th className="px-3 py-2.5">انتهاء الشهر المجاني</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10">
+                    {giftSummary.items.map((item) => (
+                      <tr key={item.code} className="hover:bg-white/[0.02]">
+                        <td
+                          dir="ltr"
+                          className="px-3 py-2.5 font-mono font-bold text-white"
+                        >
+                          {item.code}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                              item.isLinked
+                                ? "bg-emerald-500/15 text-emerald-300"
+                                : "bg-amber-500/15 text-amber-300"
+                            }`}
+                          >
+                            {item.isLinked
+                              ? "مرتبط برقم"
+                              : "بانتظار المسح والربط"}
+                          </span>
+                        </td>
+                        <td dir="ltr" className="px-3 py-2.5 font-mono text-white/80">
+                          {item.ownerPhone || "—"}
+                        </td>
+                        <td className="px-3 py-2.5 text-white/80">
+                          {item.vehicleInfo || "—"}
+                        </td>
+                        <td dir="ltr" className="px-3 py-2.5 font-mono text-white/60">
+                          {item.subscriptionStartsAt
+                            ? item.subscriptionStartsAt.slice(0, 10)
+                            : "—"}
+                        </td>
+                        <td dir="ltr" className="px-3 py-2.5 font-mono text-white/60">
+                          {item.subscriptionExpiresAt
+                            ? item.subscriptionExpiresAt.slice(0, 10)
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
       )}
     </div>
   );

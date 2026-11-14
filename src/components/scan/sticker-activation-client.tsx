@@ -107,12 +107,9 @@ export function StickerActivationClient({
       {mode === "gift_ready" ? (
         <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-center">
           <Gift className="mx-auto h-8 w-8 text-amber-600" />
-          <h2 className="mt-2 text-lg font-black text-amber-950">
-            ملصق هدية ترويجي — 30 يوماً مجاناً!
+          <h2 className="mt-2 text-base font-black leading-relaxed text-amber-950">
+            مبروك! حصلت على ملصق بَلِّغْنِي هدية مع اشتراك مجاني لمدة 30 يوماً — أدخل بياناتك لتفعيل الحماية على سيارتك فوراً
           </h2>
-          <p className="mt-1 text-xs text-amber-800">
-            فعّل ملصقك الآن مجاناً بدون دفع واحصل على شهر كامل بمزايا باقة نَبِّهْنِي.
-          </p>
         </div>
       ) : mode === "expired" ? (
         <div className="mb-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-center">

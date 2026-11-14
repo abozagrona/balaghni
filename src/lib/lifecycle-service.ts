@@ -294,26 +294,34 @@ async function syncTagActivationRecord(params: {
   vendorId?: string | null;
   activationSource: ActivationSource;
 }) {
+  const alertChannel = params.packageType === "basic" ? "WHATSAPP" : "BOTH";
+  const vehicleLabel = params.vehicleInfo || "مركبة مفعلة";
   try {
     await supabaseAdmin
       .from("tags")
       .update({
         status: "ACTIVE",
         owner_phone: params.ownerPhone,
-        vehicle_make_model: params.vehicleInfo || "مركبة مفعلة",
+        vehicle_make_model: vehicleLabel,
+        notification_channel: alertChannel,
         activated_at: params.startsAt,
-        package_type: params.packageType,
-        features: params.features,
-        subscription_starts_at: params.startsAt,
-        subscription_expires_at: params.expiresAt,
-        vendor_id: params.vendorId || null,
-        activation_source: params.activationSource,
-        activated_by_vendor_id: params.vendorId || null,
       })
       .eq("tag_code", params.code);
   } catch {
     // ignore if remote tags columns differ
   }
+  syncTagActivationToLocalStore({
+    tagCode: params.code,
+    ownerPhone: params.ownerPhone,
+    vehicleInfo: vehicleLabel,
+    city: "طرابلس",
+    alertChannel,
+    packageType: params.packageType,
+    activationSource: params.activationSource,
+    subscriptionStartsAt: params.startsAt,
+    subscriptionExpiresAt: params.expiresAt,
+    activatedAt: params.startsAt,
+  });
 }
 
 export async function activateStickerAtomic(params: {
@@ -558,66 +566,43 @@ export async function redeemGiftSticker(params: {
     return { ok: false, error: "يرجى إدخال رقم هاتف ليبي صحيح." };
   }
 
-  const store = loadStore();
-
-  // فحص جدول gift_redemptions في Supabase والمخزن المحلي
-  let alreadyUsed = Boolean(store.giftRedemptions[cleanPhone]);
-  if (!alreadyUsed) {
-    try {
-      const { data } = await supabaseAdmin
-        .from("gift_redemptions")
-        .select("phone")
-        .eq("phone", cleanPhone)
-        .maybeSingle();
-      if (data?.phone) alreadyUsed = true;
-    } catch {
-      // ignore
-    }
-  }
-
-  if (alreadyUsed) {
+  const existing = await getStickerLifecycle(code);
+  if (
+    existing &&
+    existing.ownerPhone &&
+    existing.ownerPhone.trim() &&
+    existing.ownerPhone.trim() !== "-"
+  ) {
     return {
       ok: false,
       alreadyRedeemed: true,
-      error: "هذا الرقم استهلك الشهر الهدية مسبقاً، يرجى اختيار باقة للاشتراك",
+      error: "تم ربط ملصق الهدية هذا برقم هاتف مسبقاً.",
     };
   }
 
+  const store = loadStore();
   const nowIso = new Date().toISOString();
   const expiresAt = addDaysIso(nowIso, 30);
 
   try {
-    await supabaseAdmin.from("gift_redemptions").insert({
-      phone: cleanPhone,
-      sticker_code: code,
-      redeemed_at: nowIso,
-    });
-  } catch {
-    // ignore
-  }
-
-  store.giftRedemptions[cleanPhone] = {
-    phone: cleanPhone,
-    stickerCode: code,
-    redeemedAt: nowIso,
-  };
-
-  try {
     await supabaseAdmin
       .from("stickers")
-      .upsert({
-        code,
-        status: "active",
-        activation_source: "gift_promo",
-        package_type: "nabbihni",
-        features: NABBIHNI_FEATURES,
-        owner_phone: params.phone,
-        owner_name: params.ownerName || null,
-        vehicle_info: params.vehicleInfo || null,
-        subscription_starts_at: nowIso,
-        subscription_expires_at: expiresAt,
-        updated_at: nowIso,
-      });
+      .upsert(
+        {
+          code,
+          status: "active",
+          activation_source: "gift_promo",
+          package_type: "nabbihni",
+          features: NABBIHNI_FEATURES,
+          owner_phone: params.phone,
+          owner_name: params.ownerName || null,
+          vehicle_info: params.vehicleInfo || null,
+          subscription_starts_at: nowIso,
+          subscription_expires_at: expiresAt,
+          updated_at: nowIso,
+        },
+        { onConflict: "code" }
+      );
   } catch {
     // ignore
   }
@@ -633,7 +618,7 @@ export async function redeemGiftSticker(params: {
     vehicleInfo: params.vehicleInfo || null,
     subscriptionStartsAt: nowIso,
     subscriptionExpiresAt: expiresAt,
-    createdAt: nowIso,
+    createdAt: store.stickers[code]?.createdAt || nowIso,
     updatedAt: nowIso,
   };
   store.stickers[code] = rec;
@@ -652,7 +637,7 @@ export async function redeemGiftSticker(params: {
 
   await sendWhatsappAlertMessage(
     params.phone,
-    `🎁 مبروك! تم تفعيل ملصق الهدية (${code}) مجاناً لمدة 30 يوماً بكامل مزايا باقة نَبِّهْنِي.\nتنتهي الفترة التجريبية بتاريخ ${expiresAt.slice(0, 10)}.`
+    `🎁 مبروك! تم ربط وتفعيل ملصق الهدية (${code}) على سيارتك مجاناً لمدة 30 يوماً بكامل مزايا باقة نَبِّهْنِي.\nتنتهي الفترة المجانية بتاريخ ${expiresAt.slice(0, 10)}.`
   );
 
   return { ok: true, sticker: rec };
@@ -1031,41 +1016,204 @@ export async function settleVendorMonth(
   return { ok: true, settlement };
 }
 
-export async function markStickersGiftReady(
+export interface GiftStickerItem {
+  code: string;
+  isLinked: boolean;
+  ownerPhone: string | null;
+  ownerName: string | null;
+  vehicleInfo: string | null;
+  subscriptionStartsAt: string | null;
+  subscriptionExpiresAt: string | null;
+  createdAt: string;
+}
+
+export interface GiftStickersSummary {
+  totalGifts: number;
+  linkedGifts: number;
+  unlinkedGifts: number;
+  items: GiftStickerItem[];
+}
+
+export async function importGiftStickers(
   rawCodes: string[]
-): Promise<{ ok: boolean; updatedCount: number }> {
+): Promise<{ ok: boolean; importedCount: number; codes: string[]; error?: string }> {
   const codes = Array.from(
-    new Set(rawCodes.map((c) => formatBalaghniTagCode(c)).filter(Boolean))
+    new Set(
+      rawCodes
+        .map((c) => formatBalaghniTagCode(c))
+        .filter((c) => /^LY-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c))
+    )
   );
+  if (codes.length === 0) {
+    return {
+      ok: false,
+      importedCount: 0,
+      codes: [],
+      error: "لم يتم العثور على أكواد صالحة بصيغة LY-XXXX-XXXX.",
+    };
+  }
+
   const nowIso = new Date().toISOString();
   const store = loadStore();
 
   for (const code of codes) {
+    const pinHash = crypto
+      .createHash("sha256")
+      .update(String(crypto.randomInt(100000, 1000000)))
+      .digest("hex");
+
     try {
-      await supabaseAdmin.from("stickers").upsert({
-        code,
-        status: "gift_ready",
-        package_type: "nabbihni",
-        features: NABBIHNI_FEATURES,
-        updated_at: nowIso,
-      });
+      await supabaseAdmin.from("tags").upsert(
+        {
+          tag_code: code,
+          activation_pin_hash: pinHash,
+          status: "ACTIVE",
+          owner_phone: null,
+          vehicle_make_model: null,
+          vehicle_city: null,
+          notification_channel: "BOTH",
+          activated_at: nowIso,
+        },
+        { onConflict: "tag_code" }
+      );
     } catch {
       // ignore
     }
+
+    try {
+      await supabaseAdmin.from("stickers").upsert(
+        {
+          code,
+          status: "active",
+          activation_source: "gift_promo",
+          package_type: "nabbihni",
+          features: NABBIHNI_FEATURES,
+          owner_phone: null,
+          owner_name: null,
+          vehicle_info: null,
+          subscription_starts_at: null,
+          subscription_expires_at: null,
+          updated_at: nowIso,
+        },
+        { onConflict: "code" }
+      );
+    } catch {
+      // ignore
+    }
+
     store.stickers[code] = {
-      ...(store.stickers[code] || {
-        code,
-        createdAt: nowIso,
-      }),
       code,
-      status: "gift_ready",
+      status: "active",
+      activationSource: "gift_promo",
       packageType: "nabbihni",
       features: NABBIHNI_FEATURES,
+      ownerPhone: null,
+      ownerName: null,
+      vehicleInfo: null,
+      subscriptionStartsAt: null,
+      subscriptionExpiresAt: null,
+      createdAt: store.stickers[code]?.createdAt || nowIso,
       updatedAt: nowIso,
     };
   }
+
   saveStore(store);
-  return { ok: true, updatedCount: codes.length };
+  return { ok: true, importedCount: codes.length, codes };
+}
+
+export async function listGiftStickersSummary(): Promise<GiftStickersSummary> {
+  const byCode = new Map<string, GiftStickerItem>();
+  const store = loadStore();
+
+  for (const s of Object.values(store.stickers)) {
+    if (s.activationSource === "gift_promo" || s.status === "gift_ready") {
+      const hasPhone = Boolean(
+        s.ownerPhone && s.ownerPhone.trim() && s.ownerPhone.trim() !== "-"
+      );
+      byCode.set(s.code, {
+        code: s.code,
+        isLinked: hasPhone,
+        ownerPhone: hasPhone ? s.ownerPhone || null : null,
+        ownerName: s.ownerName || null,
+        vehicleInfo: s.vehicleInfo || null,
+        subscriptionStartsAt: s.subscriptionStartsAt || null,
+        subscriptionExpiresAt: s.subscriptionExpiresAt || null,
+        createdAt: s.createdAt,
+      });
+    }
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("stickers")
+      .select("*")
+      .eq("activation_source", "gift_promo")
+      .order("updated_at", { ascending: false })
+      .limit(500);
+    if (!error && Array.isArray(data)) {
+      for (const row of data as Array<Record<string, unknown>>) {
+        const code = formatBalaghniTagCode(String(row.code || ""));
+        if (!code) continue;
+        const rawPhone = row.owner_phone ? String(row.owner_phone).trim() : "";
+        const hasPhone = Boolean(rawPhone && rawPhone !== "-");
+        byCode.set(code, {
+          code,
+          isLinked: hasPhone,
+          ownerPhone: hasPhone ? rawPhone : null,
+          ownerName: row.owner_name ? String(row.owner_name) : null,
+          vehicleInfo: row.vehicle_info ? String(row.vehicle_info) : null,
+          subscriptionStartsAt: row.subscription_starts_at
+            ? String(row.subscription_starts_at)
+            : null,
+          subscriptionExpiresAt: row.subscription_expires_at
+            ? String(row.subscription_expires_at)
+            : null,
+          createdAt: String(row.created_at || row.updated_at || ""),
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const giftCodes = Array.from(byCode.keys());
+  if (giftCodes.length > 0) {
+    try {
+      const { data: tagRows, error: tagErr } = await supabaseAdmin
+        .from("tags")
+        .select("tag_code,owner_phone,vehicle_make_model,activated_at")
+        .in("tag_code", giftCodes);
+      if (!tagErr && Array.isArray(tagRows)) {
+        for (const row of tagRows as Array<Record<string, unknown>>) {
+          const code = formatBalaghniTagCode(String(row.tag_code || ""));
+          const existing = byCode.get(code);
+          if (!existing) continue;
+          const tagPhone = row.owner_phone ? String(row.owner_phone).trim() : "";
+          const hasTagPhone = Boolean(tagPhone && tagPhone !== "-");
+          if (hasTagPhone && !existing.isLinked) {
+            existing.isLinked = true;
+            existing.ownerPhone = tagPhone;
+            existing.vehicleInfo =
+              existing.vehicleInfo ||
+              (row.vehicle_make_model ? String(row.vehicle_make_model) : null);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const items = Array.from(byCode.values()).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
+  const linkedGifts = items.filter((i) => i.isLinked).length;
+  return {
+    totalGifts: items.length,
+    linkedGifts,
+    unlinkedGifts: items.length - linkedGifts,
+    items,
+  };
 }
 
 export async function createCorporatePackageAccount(params: {
@@ -1382,17 +1530,25 @@ export async function listAvailableStickers(): Promise<string[]> {
     // ignore
   }
 
+  const giftCodes = new Set<string>();
   try {
     const { data, error } = await supabaseAdmin
       .from("stickers")
-      .select("code,status")
+      .select("code,status,activation_source")
       .order("created_at", { ascending: true })
       .limit(500);
     if (!error && Array.isArray(data)) {
       for (const row of data) {
+        const formatted = row.code ? formatBalaghniTagCode(String(row.code)) : "";
+        if (!formatted) continue;
+        if (String(row.activation_source || "") === "gift_promo") {
+          giftCodes.add(formatted);
+          codes.delete(formatted);
+          continue;
+        }
         const st = String(row.status || "").trim().toUpperCase();
-        if (row.code && (st === "UNACTIVATED" || st === "LOCKED")) {
-          codes.add(formatBalaghniTagCode(String(row.code)));
+        if (st === "UNACTIVATED" || st === "LOCKED") {
+          codes.add(formatted);
         }
       }
     }
@@ -1402,13 +1558,18 @@ export async function listAvailableStickers(): Promise<string[]> {
 
   const store = loadStore();
   for (const s of Object.values(store.stickers)) {
+    const formatted = formatBalaghniTagCode(s.code);
+    if (s.activationSource === "gift_promo" || giftCodes.has(formatted)) {
+      codes.delete(formatted);
+      continue;
+    }
     const st = String(s.status || "").trim().toUpperCase();
     if (st === "UNACTIVATED" || st === "LOCKED") {
-      codes.add(formatBalaghniTagCode(s.code));
+      codes.add(formatted);
     }
   }
 
-  return Array.from(codes);
+  return Array.from(codes).filter((c) => !giftCodes.has(c));
 }
 
 export async function pullAndActivateLockedTag(params: {

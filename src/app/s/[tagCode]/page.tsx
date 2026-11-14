@@ -53,12 +53,26 @@ export default async function PublicQrScanPage({
     getStickerLifecycle(formattedCode),
   ]);
 
+  const isUnlinkedGift =
+    lifecycleSticker?.activationSource === "gift_promo" &&
+    (!lifecycleSticker.ownerPhone || lifecycleSticker.ownerPhone.trim() === "-") &&
+    (!tagRecord?.ownerPhone || tagRecord.ownerPhone.trim() === "-");
+
   if (
-    lifecycleSticker &&
-    (lifecycleSticker.status === "unactivated" ||
-      lifecycleSticker.status === "gift_ready" ||
-      lifecycleSticker.status === "expired")
+    isUnlinkedGift ||
+    (lifecycleSticker &&
+      (lifecycleSticker.status === "unactivated" ||
+        lifecycleSticker.status === "gift_ready" ||
+        lifecycleSticker.status === "expired"))
   ) {
+    const resolvedMode: "unactivated" | "gift_ready" | "expired" = isUnlinkedGift
+      ? "gift_ready"
+      : lifecycleSticker?.status === "expired"
+        ? "expired"
+        : lifecycleSticker?.status === "gift_ready"
+          ? "gift_ready"
+          : "unactivated";
+
     return (
       <div className="scan-shell flex min-h-dvh flex-col">
         <header className="sticky top-0 z-20 border-b border-border bg-card/90 backdrop-blur-md">
@@ -80,7 +94,7 @@ export default async function PublicQrScanPage({
         <main className="mx-auto w-full max-w-lg flex-1 px-4 py-6">
           <StickerActivationClient
             code={formattedCode}
-            initialMode={lifecycleSticker.status}
+            initialMode={resolvedMode}
           />
         </main>
       </div>

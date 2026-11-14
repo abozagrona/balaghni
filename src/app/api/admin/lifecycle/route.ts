@@ -7,13 +7,14 @@ import {
   createCorporatePackageAccount,
   createVendor,
   getVendorInventory,
+  importGiftStickers,
   importStickerCodes,
   listAllOrders,
   listAvailableStickers,
   listCorporateLeads,
+  listGiftStickersSummary,
   listUnassignedPaidOrders,
   listVendors,
-  markStickersGiftReady,
   settleVendorMonth,
   wipeAllOldData,
 } from "@/lib/lifecycle-service";
@@ -29,20 +30,27 @@ function normalizeCodeArray(input: unknown): string[] {
     .filter(Boolean);
 }
 
-function isAdminAuthorized(req: NextRequest): boolean {
+function getAdminAuth(req: NextRequest): {
+  authorized: boolean;
+  isSuperAdmin: boolean;
+} {
   const authHeader = req.headers.get("authorization") || "";
   const bearer = authHeader.toLowerCase().startsWith("bearer ")
     ? authHeader.slice(7).trim()
     : "";
   const cookie = req.cookies.get("balaghni_admin_session")?.value || "";
   const token = bearer || cookie;
-  if (!token) return false;
+  if (!token) return { authorized: false, isSuperAdmin: false };
   const check = verifyAdminSessionToken(token);
-  return check.valid;
+  return {
+    authorized: check.valid,
+    isSuperAdmin: check.valid && check.payload?.role === "SUPER_ADMIN",
+  };
 }
 
 export async function GET(req: NextRequest) {
-  if (!isAdminAuthorized(req)) {
+  const auth = getAdminAuth(req);
+  if (!auth.authorized) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
@@ -52,12 +60,14 @@ export async function GET(req: NextRequest) {
     unassignedPaidOrders,
     orders,
     availableStickers,
+    giftSummary,
   ] = await Promise.all([
     listVendors(),
     listCorporateLeads(),
     listUnassignedPaidOrders(),
     listAllOrders(),
     listAvailableStickers(),
+    auth.isSuperAdmin ? listGiftStickersSummary() : Promise.resolve(null),
   ]);
 
   const vendorSummaries = await Promise.all(
@@ -74,11 +84,13 @@ export async function GET(req: NextRequest) {
     unassignedPaidOrders,
     orders,
     availableStickers,
+    giftSummary,
   });
 }
 
 export async function POST(req: NextRequest) {
-  if (!isAdminAuthorized(req)) {
+  const auth = getAdminAuth(req);
+  if (!auth.authorized) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
@@ -148,10 +160,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(res);
     }
 
-    if (action === "mark_gift_ready") {
+    if (action === "import_gift_stickers") {
+      if (!auth.isSuperAdmin) {
+        return NextResponse.json(
+          { ok: false, error: "هذا القسم حصري لمدير النظام الرئيسي فقط." },
+          { status: 403 }
+        );
+      }
       const codes = normalizeCodeArray(body.codes);
-      const res = await markStickersGiftReady(codes);
-      return NextResponse.json(res);
+      const res = await importGiftStickers(codes);
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? `تم استيراد وتفعيل ${res.importedCount} ملصق هدية (شهر مجاني) بنجاح.`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
     }
 
     if (action === "create_corporate_account") {

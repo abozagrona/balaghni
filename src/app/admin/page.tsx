@@ -30,6 +30,7 @@ import {
   Copy,
   Store,
   ShoppingBag,
+  Gift,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { AdminLifecyclePanel } from "@/components/admin/admin-lifecycle-panel";
@@ -181,7 +182,7 @@ export default function ExecutiveAdminDashboardPage() {
 
   // بيانات لوحة الإدارة التنفيذية
   const [activeTab, setActiveTab] = React.useState<
-    "tags" | "orders" | "lifecycle" | "import" | "audit" | "team" | "danger"
+    "tags" | "orders" | "gifts" | "import" | "audit" | "team" | "danger"
   >("tags");
   const [tags, setTags] = React.useState<AdminTagRecord[]>([]);
   const [auditLogs, setAuditLogs] = React.useState<AdminAuditLog[]>([]);
@@ -2096,19 +2097,21 @@ export default function ExecutiveAdminDashboardPage() {
             <span>الطلبات الواردة</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveTab("lifecycle")}
-            className={cn(
-              "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
-              activeTab === "lifecycle"
-                ? "bg-primary text-white shadow-primary-glow"
-                : "text-white/70 hover:bg-white/5 hover:text-white"
-            )}
-          >
-            <Store className="h-4 w-4" />
-            <span>الباقات والتجار والهدايا والشركات</span>
-          </button>
+          {isSuperAdmin && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("gifts")}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
+                activeTab === "gifts"
+                  ? "bg-primary text-white shadow-primary-glow"
+                  : "text-amber-300/90 hover:bg-amber-500/15 hover:text-amber-200"
+              )}
+            >
+              <Gift className="h-4 w-4" />
+              <span>ملصقات الهدايا (شهر مجاني)</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -2849,9 +2852,17 @@ export default function ExecutiveAdminDashboardPage() {
           </section>
         )}
 
+        {activeTab === "team" && (
+          <div className="mt-6">
+            <AdminLifecyclePanel viewMode="partners" />
+          </div>
+        )}
+
         {activeTab === "orders" && <AdminLifecyclePanel viewMode="orders" />}
 
-        {activeTab === "lifecycle" && <AdminLifecyclePanel />}
+        {isSuperAdmin && activeTab === "gifts" && (
+          <AdminLifecyclePanel viewMode="gifts" />
+        )}
 
         {/* ==================================================================== */}
         {/* التبويب 5: منطقة الطوارئ وتصفير النظام (Danger Zone) */}
