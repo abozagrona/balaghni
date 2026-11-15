@@ -293,6 +293,12 @@ export default function ExecutiveAdminDashboardPage() {
       window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
       document.cookie =
         "balaghni_admin_session=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0;";
+      void fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ action: "logout" }),
+      }).catch(() => {});
     } catch {
       // ignore
     }
@@ -309,20 +315,17 @@ export default function ExecutiveAdminDashboardPage() {
 
   const isInitialLoadRef = React.useRef(true);
 
-  // ترويسات الصلاحية الإدارية المحمية (مفصولة عن الحالة لمنع إعادة توليد الدوال وحلقات التحديث)
+  // ترويسات الصلاحية الإدارية المحمية (تعتمد على رمز الجلسة الموقّع فقط)
   const getAdminHeaders = React.useCallback(() => {
     const s = adminSessionRef.current;
     return {
       "Content-Type": "application/json",
       ...(s?.sessionToken ? { Authorization: `Bearer ${s.sessionToken}` } : {}),
-      ...(s?.id ? { "x-admin-id": s.id } : {}),
     };
   }, []);
 
   const fetchAdminData = React.useCallback(
     async (idQuery?: string, isBackground = false) => {
-      // مؤشر التحميل يعمل لمرة واحدة فقط عند فتح الصفحة لأول مرة (Initial Mount)
-      // أي تحديث تالي يتم بسلاسة وصمت في الخلفية دون وميض أو إخفاء صفوف الجدول
       if (isInitialLoadRef.current && !isBackground) {
         setLoadingData(true);
       }
@@ -332,13 +335,24 @@ export default function ExecutiveAdminDashboardPage() {
           : "";
         const res = await fetch(`/api/admin${qs}`, {
           cache: "no-store",
+          credentials: "same-origin",
           headers: getAdminHeaders(),
         });
         const data = await res.json().catch(() => ({}));
         if (res.status === 401 || data.sessionExpired) {
-          handleAdminLogout(
-            "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
-          );
+          if (data.authStatus) {
+            setLockedUntilIso(data.authStatus.lockedUntilIso || null);
+            setRemainingAttempts(
+              typeof data.authStatus.remainingAttempts === "number"
+                ? data.authStatus.remainingAttempts
+                : 4
+            );
+          }
+          if (adminSessionRef.current) {
+            handleAdminLogout(
+              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+            );
+          }
           return;
         }
         if (res.ok && data.ok) {
@@ -577,28 +591,27 @@ export default function ExecutiveAdminDashboardPage() {
         ADMIN_SESSION_STORAGE_KEY,
         JSON.stringify(sessionObj)
       );
-      document.cookie = `balaghni_admin_session=${encodeURIComponent(
-        sessionObj.sessionToken || ""
-      )}; path=/; max-age=7200; SameSite=Lax`;
     } catch {
       // ignore
     }
   };
 
-  // 1. المصادقة الفورية بالبصمة الحيوية بنقرة واحدة (Zero-Phone 1-Tap Passkey Flow)
+  // 1. المصادقة بالبصمة الحيوية مع التحقق التشفيري من التحدي والتوقيع على الخادم
   const handlePasskeyAuth = async () => {
     if (authLoading || passkeyLoading || countdownSec > 0) return;
     setAuthError(null);
 
     setPasskeyLoading(true);
     try {
-      // الخطوة أ: جلب قائمة بجميع passkey_credential_id المسجلة والنشطة (بدون إرسال رقم هاتف)
+      // الخطوة أ: طلب تحدي WebAuthn موقّع من الخادم
       const lookupRes = await fetch("/api/admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           action: "auth",
           mode: "lookup_passkey",
+          identifier: identifierInput.trim() || undefined,
         }),
       });
       const lookupData = await lookupRes.json().catch(() => ({}));
@@ -612,14 +625,18 @@ export default function ExecutiveAdminDashboardPage() {
           ? [lookupData.passkeyCredentialId]
           : [];
 
-      // الخطوة ب: استدعاء navigator.credentials.get فوراً (مع allowCredentials: [] إذا كانت فارغة)
       if (typeof window === "undefined" || !navigator.credentials?.get) {
         setAuthError("المتصفح الحالي لا يدعم المصادقة بالبصمة الحيوية (WebAuthn).");
         return;
       }
 
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
+      const challenge = lookupData.challenge
+        ? base64UrlToUint8Array(String(lookupData.challenge))
+        : (() => {
+            const arr = new Uint8Array(32);
+            window.crypto.getRandomValues(arr);
+            return arr;
+          })();
 
       const allowCredentials =
         credIds.length > 0
@@ -656,15 +673,32 @@ export default function ExecutiveAdminDashboardPage() {
         return;
       }
 
-      // الخطوة ج: إرسال credential_id الناتج فقط إلى /api/admin
+      // الخطوة ج: إرسال التوقيع الرقمي والتحدي الموقّع للتحقق على الخادم
       const verifiedId = arrayBufferToBase64Url(assertion.rawId);
+      const assertionResp =
+        assertion.response as AuthenticatorAssertionResponse;
+      const clientDataJSON = assertionResp?.clientDataJSON
+        ? arrayBufferToBase64Url(assertionResp.clientDataJSON)
+        : "";
+      const authenticatorData = assertionResp?.authenticatorData
+        ? arrayBufferToBase64Url(assertionResp.authenticatorData)
+        : "";
+      const signature = assertionResp?.signature
+        ? arrayBufferToBase64Url(assertionResp.signature)
+        : "";
+
       const loginRes = await fetch("/api/admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           action: "auth",
           mode: "passkey_login",
           credential_id: verifiedId,
+          challengeToken: lookupData.challengeToken,
+          clientDataJSON,
+          authenticatorData,
+          signature,
         }),
       });
       const loginData = await loginRes.json().catch(() => ({}));
@@ -719,6 +753,7 @@ export default function ExecutiveAdminDashboardPage() {
       const res = await fetch("/api/admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           action: "auth",
           mode: "password_login",
@@ -764,8 +799,25 @@ export default function ExecutiveAdminDashboardPage() {
 
     setPasskeyEnrollLoading(true);
     try {
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
+      // طلب تحدي WebAuthn موقّع من الخادم قبل إنشاء المفتاح
+      const chRes = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          action: "auth",
+          mode: "lookup_passkey",
+        }),
+      });
+      const chData = await chRes.json().catch(() => ({}));
+
+      const challenge = chData.challenge
+        ? base64UrlToUint8Array(String(chData.challenge))
+        : (() => {
+            const arr = new Uint8Array(32);
+            window.crypto.getRandomValues(arr);
+            return arr;
+          })();
       const userIdentifier = adminSession.phone || adminSession.username;
 
       // استدعاء navigator.credentials.create بإعدادات حقيقية تجبر الجهاز على فتح قارئ البصمة/الوجه
@@ -811,19 +863,39 @@ export default function ExecutiveAdminDashboardPage() {
         return;
       }
 
-      // تحويل credential.rawId إلى نص Base64URL
       const credId = arrayBufferToBase64Url(credential.rawId);
+      const attestationResp =
+        credential.response as AuthenticatorAttestationResponse;
+      const clientDataJSON = attestationResp?.clientDataJSON
+        ? arrayBufferToBase64Url(attestationResp.clientDataJSON)
+        : "";
+      const spkiBuffer =
+        typeof attestationResp?.getPublicKey === "function"
+          ? attestationResp.getPublicKey()
+          : null;
+      const publicKeySpki = spkiBuffer
+        ? arrayBufferToBase64Url(spkiBuffer)
+        : "";
+      const publicKeyAlgorithm =
+        typeof attestationResp?.getPublicKeyAlgorithm === "function"
+          ? attestationResp.getPublicKeyAlgorithm()
+          : -7;
 
-      // إرسال المعرف إلى مسار /api/admin ليتم حفظه فعلياً في عمود passkey_credential_id داخل جدول public.admin_profiles
       const res = await fetch("/api/admin", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAdminHeaders(),
+        credentials: "same-origin",
         body: JSON.stringify({
           action: "auth",
           mode: "enroll_passkey",
           adminId: adminSession.id,
           identifier: userIdentifier,
           passkeyCredentialId: credId,
+          challengeToken: chData.challengeToken,
+          clientDataJSON,
+          publicKeySpki,
+          publicKeyAlgorithm,
+          sessionToken: adminSession.sessionToken,
         }),
       });
 
@@ -861,12 +933,14 @@ export default function ExecutiveAdminDashboardPage() {
     try {
       const res = await fetch("/api/admin", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAdminHeaders(),
+        credentials: "same-origin",
         body: JSON.stringify({
           action: "auth",
           mode: "unlink_passkey",
           adminId: adminSession.id,
           identifier: adminSession.phone || adminSession.username,
+          sessionToken: adminSession.sessionToken,
         }),
       });
       const data = await res.json().catch(() => ({}));

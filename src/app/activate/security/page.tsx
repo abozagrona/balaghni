@@ -23,10 +23,15 @@ import { saveOwnerSession } from "@/lib/auth-session";
 function generateRecoveryKeyShort(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const digits = "0123456789";
-  const pick = (pool: string, len: number) =>
-    Array.from({ length: len }, () =>
-      pool.charAt(Math.floor(Math.random() * pool.length))
+  const pick = (pool: string, len: number) => {
+    const randomBytes = new Uint32Array(len);
+    if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
+      window.crypto.getRandomValues(randomBytes);
+    }
+    return Array.from({ length: len }, (_, idx) =>
+      pool.charAt(randomBytes[idx] % pool.length)
     ).join("");
+  };
   return `BK-${pick(digits, 4)}-${pick(chars, 4)}`;
 }
 

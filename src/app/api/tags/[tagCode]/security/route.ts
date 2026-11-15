@@ -1,12 +1,20 @@
-import { NextResponse } from "next/server";
-import { saveOwnerSecuritySetup } from "@/lib/supabase/client";
+import { NextRequest, NextResponse } from "next/server";
+import {
+  saveOwnerSecuritySetup,
+  verifyAdminActionPermission,
+} from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
+import {
+  verifyOwnerSessionFromRequest,
+  createOwnerSessionToken,
+  attachOwnerSessionCookie,
+} from "@/lib/security-tokens";
 
 interface RouteParams {
   params: Promise<{ tagCode: string }>;
 }
 
-export async function POST(request: Request, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { tagCode } = await params;
     const formattedCode = formatBalaghniTagCode(tagCode);
@@ -41,14 +49,60 @@ export async function POST(request: Request, { params }: RouteParams) {
       );
     }
 
+    // التحقق من جلسة المالك أو جلسة المشرف قبل تعديل إعدادات الأمان
+    let authorizedOwnerPhone: string | undefined;
+    let isSuperAdmin = false;
+
+    const ownerSession = verifyOwnerSessionFromRequest(request);
+    if (
+      ownerSession.valid &&
+      ownerSession.payload &&
+      formatBalaghniTagCode(ownerSession.payload.tagCode) === formattedCode
+    ) {
+      authorizedOwnerPhone = ownerSession.payload.ownerPhone;
+    } else {
+      const authHeader = request.headers.get("authorization") || "";
+      const bearer = authHeader.toLowerCase().startsWith("bearer ")
+        ? authHeader.slice(7).trim()
+        : "";
+      const adminCookie =
+        request.cookies.get("balaghni_admin_session")?.value || "";
+      const adminToken = bearer || adminCookie;
+      if (adminToken) {
+        const adminCheck = await verifyAdminActionPermission(
+          adminToken,
+          "manage_tags"
+        );
+        if (
+          adminCheck.authorized &&
+          adminCheck.profile?.role === "SUPER_ADMIN"
+        ) {
+          isSuperAdmin = true;
+        }
+      }
+    }
+
+    if (!authorizedOwnerPhone && !isSuperAdmin) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "غير مصرح بتعديل إعدادات الأمان لهذا الملصق دون جلسة مالك موقّعة وفعالة.",
+        },
+        { status: 401 }
+      );
+    }
+
     const result = await saveOwnerSecuritySetup({
       tagCode: formattedCode,
       ownerPin,
       recoveryKey,
       passkeyCredentialId,
-      ownerPhone,
+      ownerPhone: isSuperAdmin ? ownerPhone : authorizedOwnerPhone,
       vehicleInfo,
       city,
+      authorizedOwnerPhone,
+      isSuperAdmin,
     });
 
     if (!result.ok || !result.record || result.record.status !== "ACTIVE") {
@@ -63,11 +117,21 @@ export async function POST(request: Request, { params }: RouteParams) {
       );
     }
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       ok: true,
       message: "تم تأمين حساب سيارتك وتفعيل الملصق بنجاح!",
       tag: result.record,
     });
+
+    if (!isSuperAdmin && result.record.ownerPhone) {
+      const token = createOwnerSessionToken({
+        tagCode: formattedCode,
+        ownerPhone: result.record.ownerPhone,
+      });
+      attachOwnerSessionCookie(response, token, formattedCode);
+    }
+
+    return response;
   } catch {
     return NextResponse.json(
       { ok: false, error: "حدث خطأ غير متوقع أثناء حفظ إعدادات الأمان." },
@@ -75,3 +139,4 @@ export async function POST(request: Request, { params }: RouteParams) {
     );
   }
 }
+

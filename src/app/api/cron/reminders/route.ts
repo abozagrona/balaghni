@@ -167,14 +167,32 @@ async function sendWhatsappWithSmsFallback(
 
 async function handleRemindersCron(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET?.trim();
-  if (cronSecret) {
-    const auth = request.headers.get("authorization") || "";
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json(
-        { ok: false, error: "Unauthorized" },
-        { status: 401 }
-      );
+  const auth = request.headers.get("authorization") || "";
+  const bearer = auth.toLowerCase().startsWith("bearer ")
+    ? auth.slice(7).trim()
+    : "";
+
+  let isAuthorized = false;
+  if (cronSecret && bearer === cronSecret) {
+    isAuthorized = true;
+  } else {
+    // السماح أيضاً لمدير النظام الرئيسي (SUPER_ADMIN) بتشغيل الفحص يدوياً من لوحة الإدارة عبر جلسته الموقّعة
+    const { verifyAdminActionPermission } = await import("@/lib/supabase/client");
+    const adminCookie = request.cookies.get("balaghni_admin_session")?.value || "";
+    const token = bearer || adminCookie;
+    if (token) {
+      const check = await verifyAdminActionPermission(token, "manage_tags");
+      if (check.authorized && check.profile?.role === "SUPER_ADMIN") {
+        isAuthorized = true;
+      }
     }
+  }
+
+  if (!isAuthorized) {
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized: CRON_SECRET or Super Admin session required." },
+      { status: 401 }
+    );
   }
 
   const forceAll = request.nextUrl.searchParams.get("force") === "true";

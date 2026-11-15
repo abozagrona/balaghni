@@ -1,10 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  supabase,
   getPasskeyCredentialByPhone,
   savePasskeyCredentialForTag,
   clearPasskeyCredentialForTag,
+  verifyAdminActionPermission,
 } from "@/lib/supabase/client";
+import { formatBalaghniTagCode } from "@/lib/utils";
+import {
+  createWebAuthnChallenge,
+  attachWebAuthnChallengeCookie,
+  verifyWebAuthnRegistration,
+  verifyOwnerSessionFromRequest,
+  extractRawCredentialId,
+} from "@/lib/security-tokens";
+import {
+  checkPasskeyRateLimit,
+  getClientIp,
+  recordPasskeyAttempt,
+} from "@/lib/rate-limiter";
 
 const PRODUCTION_ORIGINS = [
   "https://balaghni.ly",
@@ -59,6 +72,36 @@ function buildCorsHeaders(origin: string, isOriginAllowed: boolean) {
   };
 }
 
+async function authorizePasskeyTagMutation(
+  request: NextRequest,
+  targetTagCode: string
+): Promise<boolean> {
+  const formattedTarget = formatBalaghniTagCode(targetTagCode);
+  const ownerSession = verifyOwnerSessionFromRequest(request);
+  if (
+    ownerSession.valid &&
+    ownerSession.payload &&
+    formatBalaghniTagCode(ownerSession.payload.tagCode) === formattedTarget
+  ) {
+    return true;
+  }
+
+  const authHeader = request.headers.get("authorization") || "";
+  const bearer = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const adminCookie = request.cookies.get("balaghni_admin_session")?.value || "";
+  const adminToken = bearer || adminCookie;
+  if (adminToken) {
+    const adminCheck = await verifyAdminActionPermission(adminToken, "manage_tags");
+    if (adminCheck.authorized && adminCheck.profile) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export async function OPTIONS(request: NextRequest) {
   const { origin, isOriginAllowed } = resolveWebAuthnContext(request);
   if (!isOriginAllowed) {
@@ -81,48 +124,41 @@ export async function GET(request: NextRequest) {
   const { rpId, allowedOrigins, origin, isOriginAllowed } =
     resolveWebAuthnContext(request);
   const headers = buildCorsHeaders(origin, isOriginAllowed);
+  const clientIp = getClientIp(request);
+  const pkLimit = checkPasskeyRateLimit(clientIp);
+  if (!pkLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: pkLimit.reason },
+      { status: 429, headers }
+    );
+  }
+  recordPasskeyAttempt(clientIp);
+
   const phone = request.nextUrl.searchParams.get("phone") || "";
+  const tagCode = request.nextUrl.searchParams.get("tagCode") || "";
+
+  // إصدار تحدي WebAuthn موقّع دون كشف قوائم المعرفات المسجلة للعامة
+  const { challenge, challengeToken } = createWebAuthnChallenge(
+    rpId,
+    "owner",
+    tagCode ? formatBalaghniTagCode(tagCode) : undefined
+  );
 
   if (!phone.trim()) {
-    // جلب قائمة بجميع passkey_credential_id المسجلة لملصقات الزبائن (Zero-Typing Customer Passkey)
-    try {
-      const { data, error } = await supabase
-        .from("tags")
-        .select("passkey_credential_id")
-        .not("passkey_credential_id", "is", null);
-
-      const credIds: string[] = [];
-      if (!error && Array.isArray(data)) {
-        for (const row of data) {
-          const cid = String(row.passkey_credential_id || "").trim();
-          if (cid && !credIds.includes(cid)) {
-            credIds.push(cid);
-          }
-        }
-      }
-
-      return NextResponse.json(
-        {
-          ok: true,
-          rpId,
-          allowedOrigins,
-          passkeyCredentialIds: credIds,
-          credentialIds: credIds,
-        },
-        { headers }
-      );
-    } catch {
-      return NextResponse.json(
-        {
-          ok: true,
-          rpId,
-          allowedOrigins,
-          passkeyCredentialIds: [],
-          credentialIds: [],
-        },
-        { headers }
-      );
-    }
+    const res = NextResponse.json(
+      {
+        ok: true,
+        rpId,
+        allowedOrigins,
+        challenge,
+        challengeToken,
+        passkeyCredentialIds: [],
+        credentialIds: [],
+      },
+      { headers }
+    );
+    attachWebAuthnChallengeCookie(res, challengeToken);
+    return res;
   }
 
   const result = await getPasskeyCredentialByPhone(phone.trim());
@@ -134,28 +170,42 @@ export async function GET(request: NextRequest) {
         allowedOrigins,
         error:
           result.error ||
-          "لم يتم تفعيل البصمة لهذا الرقم بعد، يرجى الدخول بالـ PIN",
+          "لم يتم تفعيل البصمة لهذا الرقم بعد، يرجى الدخول عبر رمز التحقق.",
       },
       { status: 404, headers }
     );
   }
 
-  return NextResponse.json(
+  const res = NextResponse.json(
     {
       ok: true,
       rpId,
       allowedOrigins,
-      passkeyCredentialId: result.passkeyCredentialId,
+      challenge,
+      challengeToken,
+      passkeyCredentialId: extractRawCredentialId(result.passkeyCredentialId),
       tagCode: result.tagCode,
     },
     { headers }
   );
+  attachWebAuthnChallengeCookie(res, challengeToken);
+  return res;
 }
 
 export async function POST(request: NextRequest) {
   const { rpId, allowedOrigins, origin, isOriginAllowed } =
     resolveWebAuthnContext(request);
   const headers = buildCorsHeaders(origin, isOriginAllowed);
+
+  const clientIp = getClientIp(request);
+  const pkLimit = checkPasskeyRateLimit(clientIp);
+  if (!pkLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: pkLimit.reason },
+      { status: 429, headers }
+    );
+  }
+  recordPasskeyAttempt(clientIp);
 
   if (!isOriginAllowed) {
     return NextResponse.json(
@@ -166,7 +216,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const tagCode = String(body.tagCode || "").trim();
+    const tagCode = formatBalaghniTagCode(String(body.tagCode || "").trim());
     const passkeyCredentialId = String(body.passkeyCredentialId || "").trim();
     const ownerPhone = String(body.ownerPhone || "").trim();
 
@@ -177,9 +227,44 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // إلزام جلسة مالك موقّعة وفعالة لنفس الملصق قبل ربط مفتاح المرور
+    const isAuthorized = await authorizePasskeyTagMutation(request, tagCode);
+    if (!isAuthorized) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "غير مصرح بربط مفتاح المرور دون تسجيل الدخول بحساب مالك الملصق أولاً.",
+        },
+        { status: 401, headers }
+      );
+    }
+
+    const regVerify = verifyWebAuthnRegistration({
+      req: request,
+      challengeTokenFromBody: body.challengeToken,
+      expectedScope: "owner",
+      credentialId: passkeyCredentialId,
+      clientDataJSONBase64: String(body.clientDataJSON || ""),
+      publicKeySpkiBase64: String(body.publicKeySpki || ""),
+      publicKeyAlgorithm: Number(body.publicKeyAlgorithm || -7),
+    });
+
+    if (!regVerify.ok || !regVerify.encodedRecord) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            regVerify.error ||
+            "تعذر التحقق التشفيري من مفتاح المرور الجديد.",
+        },
+        { status: 400, headers }
+      );
+    }
+
     const result = await savePasskeyCredentialForTag({
       tagCode,
-      passkeyCredentialId,
+      passkeyCredentialId: regVerify.encodedRecord,
       ownerPhone: ownerPhone || undefined,
     });
 
@@ -195,7 +280,7 @@ export async function POST(request: NextRequest) {
         ok: true,
         rpId,
         allowedOrigins,
-        passkeyCredentialId,
+        passkeyCredentialId: regVerify.rawCredentialId,
       },
       { headers }
     );
@@ -221,14 +306,27 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const tagCode = String(
-      body.tagCode || request.nextUrl.searchParams.get("tagCode") || ""
-    ).trim();
+    const tagCode = formatBalaghniTagCode(
+      String(
+        body.tagCode || request.nextUrl.searchParams.get("tagCode") || ""
+      ).trim()
+    );
 
     if (!tagCode) {
       return NextResponse.json(
         { ok: false, error: "كود الملصق مطلوب." },
         { status: 400, headers }
+      );
+    }
+
+    const isAuthorized = await authorizePasskeyTagMutation(request, tagCode);
+    if (!isAuthorized) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "غير مصرح بإلغاء تفعيل البصمة دون جلسة مالك صالحة.",
+        },
+        { status: 401, headers }
       );
     }
 
@@ -255,3 +353,4 @@ export async function DELETE(request: NextRequest) {
     );
   }
 }
+

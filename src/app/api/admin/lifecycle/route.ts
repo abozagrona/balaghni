@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin, verifyAdminSessionToken } from "@/lib/supabase/client";
+import { supabaseAdmin, verifyAdminActionPermission } from "@/lib/supabase/client";
 import {
   assignOrderToSticker,
   assignStickersToVendor,
@@ -30,26 +30,33 @@ function normalizeCodeArray(input: unknown): string[] {
     .filter(Boolean);
 }
 
-function getAdminAuth(req: NextRequest): {
+async function getAdminAuth(
+  req: NextRequest,
+  bodySessionToken?: unknown
+): Promise<{
   authorized: boolean;
   isSuperAdmin: boolean;
-} {
+}> {
   const authHeader = req.headers.get("authorization") || "";
   const bearer = authHeader.toLowerCase().startsWith("bearer ")
     ? authHeader.slice(7).trim()
     : "";
+  const xAdminToken = req.headers.get("x-admin-token") || "";
   const cookie = req.cookies.get("balaghni_admin_session")?.value || "";
-  const token = bearer || cookie;
+  const bodyToken =
+    typeof bodySessionToken === "string" ? bodySessionToken.trim() : "";
+  const token = bearer || xAdminToken || bodyToken || cookie;
   if (!token) return { authorized: false, isSuperAdmin: false };
-  const check = verifyAdminSessionToken(token);
+  const check = await verifyAdminActionPermission(token, "status");
   return {
-    authorized: check.valid,
-    isSuperAdmin: check.valid && check.payload?.role === "SUPER_ADMIN",
+    authorized: check.authorized && Boolean(check.profile),
+    isSuperAdmin:
+      check.authorized && check.profile?.role === "SUPER_ADMIN",
   };
 }
 
 export async function GET(req: NextRequest) {
-  const auth = getAdminAuth(req);
+  const auth = await getAdminAuth(req);
   if (!auth.authorized) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
@@ -89,13 +96,13 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = getAdminAuth(req);
-  if (!auth.authorized) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
     const body = await req.json();
+    const auth = await getAdminAuth(req, body.sessionToken);
+    if (!auth.authorized) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
     const action = String(body.action || "");
 
     if (action === "import_stickers") {
@@ -129,6 +136,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "wipe_all_old_data") {
+      if (!auth.isSuperAdmin) {
+        return NextResponse.json(
+          { ok: false, error: "عملية مسح البيانات مقتصرة على مدير النظام الرئيسي فقط." },
+          { status: 403 }
+        );
+      }
       const res = await wipeAllOldData();
       return NextResponse.json({
         ...res,
@@ -141,7 +154,7 @@ export async function POST(req: NextRequest) {
         name: String(body.name || ""),
         phone: String(body.phone || ""),
         city: String(body.city || "طرابلس"),
-        pin: String(body.pin || "123456"),
+        pin: body.pin ? String(body.pin) : undefined,
       });
       return NextResponse.json(res);
     }

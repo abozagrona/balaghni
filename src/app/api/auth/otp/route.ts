@@ -11,6 +11,10 @@ import {
   recordOtpAttempt,
   getClientIp,
 } from "@/lib/rate-limiter";
+import {
+  createOtpProofToken,
+  attachOtpProofCookie,
+} from "@/lib/security-tokens";
 
 /**
  * إنشاء عميل Supabase معزول ونظيف خاص بمسار الـ OTP
@@ -143,11 +147,17 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      return NextResponse.json({
+      const verifiedPhone = result.phone || rawPhone;
+      const otpProofToken = createOtpProofToken(verifiedPhone);
+
+      const response = NextResponse.json({
         ok: true,
-        phone: result.phone,
+        phone: verifiedPhone,
+        otpProofToken,
         message: "تم التحقق من الرمز بنجاح!",
       });
+      attachOtpProofCookie(response, otpProofToken);
+      return response;
     }
 
     // 3. الاستعلام عن حالة جلسة الرمز الحالية

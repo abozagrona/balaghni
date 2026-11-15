@@ -7,19 +7,42 @@ import {
 } from "@/lib/lifecycle-service";
 import { normalizePackageType } from "@/lib/packages";
 import { formatFullLibyaE164 } from "@/lib/utils";
-
-const VENDOR_COOKIE = "balaghni_vendor_id";
+import {
+  createVendorSessionToken,
+  verifyVendorSessionFromRequest,
+  attachVendorSessionCookie,
+  clearVendorSessionCookie,
+} from "@/lib/security-tokens";
+import {
+  checkPinRateLimit,
+  recordPinFailure,
+  clearPinFailures,
+  getClientIp,
+} from "@/lib/rate-limiter";
 
 export async function GET(req: NextRequest) {
-  const vendorId = req.cookies.get(VENDOR_COOKIE)?.value || "";
-  if (!vendorId) {
-    return NextResponse.json({ ok: false, authenticated: false }, { status: 401 });
+  const sessionCheck = verifyVendorSessionFromRequest(req);
+  if (!sessionCheck.valid || !sessionCheck.payload) {
+    const res = NextResponse.json(
+      { ok: false, authenticated: false },
+      { status: 401 }
+    );
+    if (sessionCheck.expired) {
+      clearVendorSessionCookie(res);
+    }
+    return res;
   }
 
+  const vendorId = sessionCheck.payload.vendorId;
   const vendors = await listVendors();
   const vendor = vendors.find((v) => v.id === vendorId && v.isActive);
   if (!vendor) {
-    return NextResponse.json({ ok: false, authenticated: false }, { status: 401 });
+    const res = NextResponse.json(
+      { ok: false, authenticated: false },
+      { status: 401 }
+    );
+    clearVendorSessionCookie(res);
+    return res;
   }
 
   const inventory = await getVendorInventory(vendor.id);
@@ -43,22 +66,43 @@ export async function POST(req: NextRequest) {
 
     if (action === "logout") {
       const res = NextResponse.json({ ok: true });
-      res.cookies.delete(VENDOR_COOKIE);
+      clearVendorSessionCookie(res);
       return res;
     }
 
     if (action === "login") {
       const phone = String(body.phone || "").trim();
       const pin = String(body.pin || "").trim();
+
+      const ip = getClientIp(req);
+      const rateKey = `vendor_pin:${phone.replace(/[^\d]/g, "").slice(-9)}:${ip}`;
+      const rateLimit = checkPinRateLimit(rateKey);
+      if (!rateLimit.allowed) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: rateLimit.reason,
+            retryAfterSeconds: rateLimit.retryAfterSeconds,
+          },
+          { status: 429 }
+        );
+      }
+
       const auth = await authenticateVendor(phone, pin);
       if (!auth.ok || !auth.vendor) {
+        recordPinFailure(rateKey);
         return NextResponse.json(
           { ok: false, error: auth.error || "تعذر تسجيل الدخول." },
           { status: 401 }
         );
       }
 
+      clearPinFailures(rateKey);
       const inventory = await getVendorInventory(auth.vendor.id);
+      const vendorToken = createVendorSessionToken({
+        vendorId: auth.vendor.id,
+        vendorPhone: auth.vendor.phone,
+      });
       const res = NextResponse.json({
         ok: true,
         vendor: {
@@ -69,20 +113,25 @@ export async function POST(req: NextRequest) {
         },
         inventory,
       });
-      res.cookies.set(VENDOR_COOKIE, auth.vendor.id, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 30,
-      });
+      attachVendorSessionCookie(res, vendorToken);
       return res;
     }
 
     if (action === "activate_cash") {
-      const vendorId = req.cookies.get(VENDOR_COOKIE)?.value || "";
-      if (!vendorId) {
+      const sessionCheck = verifyVendorSessionFromRequest(req);
+      if (!sessionCheck.valid || !sessionCheck.payload) {
         return NextResponse.json(
           { ok: false, error: "يرجى تسجيل الدخول كـ تاجر أولاً." },
+          { status: 401 }
+        );
+      }
+
+      const vendorId = sessionCheck.payload.vendorId;
+      const vendors = await listVendors();
+      const vendor = vendors.find((v) => v.id === vendorId && v.isActive);
+      if (!vendor) {
+        return NextResponse.json(
+          { ok: false, error: "حساب التاجر غير نشط أو غير موجود." },
           { status: 401 }
         );
       }
@@ -130,3 +179,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

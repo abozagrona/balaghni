@@ -74,7 +74,7 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
   };
 
   // 2. بعد تأكيد رمز الـ OTP بنجاح: يتم اعتماد الحفظ والتفعيل في قاعدة البيانات
-  const handleOtpVerified = async (verifiedPhone: string) => {
+  const handleOtpVerified = async (verifiedPhone: string, otpProofToken?: string) => {
     setOtpModalOpen(false);
     setLoading(true);
     setError(null);
@@ -89,6 +89,8 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             pin: pin.trim(),
+            skipScratchPin: !pin.trim(),
+            otpProofToken: otpProofToken || "",
             ownerPhone: phoneToUse,
             vehicleInfo: vehicleInfo.trim(),
             city,
@@ -223,7 +225,7 @@ export function TagActivationForm({ tagCode }: TagActivationFormProps) {
         <Button
           type="submit"
           size="xl"
-          disabled={loading || pin.trim().length !== 6}
+          disabled={loading}
           className="w-full rounded-2xl"
         >
           {loading ? (

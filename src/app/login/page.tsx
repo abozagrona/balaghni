@@ -99,15 +99,17 @@ export default function OwnerLoginPage() {
     }
   };
 
-  // 2. إتمام الدخول فور التحقق من رمز الـ OTP
-  const handleOtpVerified = async (verifiedPhone: string) => {
+  // 2. إتمام الدخول فور التحقق من رمز الـ OTP (بإرفاق شهادة التحقق الموقّعة من الخادم)
+  const handleOtpVerified = async (verifiedPhone: string, otpProofToken?: string) => {
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           ownerPhone: verifiedPhone,
           otpVerified: true,
+          otpProofToken,
         }),
       });
 
@@ -137,15 +139,28 @@ export default function OwnerLoginPage() {
     }
   };
 
-  // 3. الدخول الفوري بالبصمة الحيوية دون اشتراط رقم الهاتف (Zero-Typing Customer Passkey)
+  // 3. الدخول بالبصمة الحيوية (Passkey) مع التحقق التشفيري من التحدي والتوقيع على الخادم
   const handlePasskeyLogin = async () => {
     if (passkeyLoading || loading) return;
     setError(null);
 
     setPasskeyLoading(true);
     try {
-      const lookupRes = await fetch("/api/auth/passkey");
+      const fullPhone = phoneDigits ? formatFullLibyaE164(phoneDigits) : null;
+      const lookupUrl = fullPhone
+        ? `/api/auth/passkey?phone=${encodeURIComponent(fullPhone)}`
+        : "/api/auth/passkey";
+      const lookupRes = await fetch(lookupUrl, { credentials: "same-origin" });
       const lookupData = await lookupRes.json().catch(() => ({}));
+
+      if (fullPhone && (!lookupRes.ok || !lookupData.ok)) {
+        setError(
+          lookupData.error ||
+            "لم يتم تفعيل البصمة لهذا الرقم بعد، يرجى الدخول عبر رمز التحقق."
+        );
+        setPasskeyLoading(false);
+        return;
+      }
 
       const credIds: string[] =
         Array.isArray(lookupData.passkeyCredentialIds)
@@ -166,8 +181,13 @@ export default function OwnerLoginPage() {
         return;
       }
 
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
+      const challengeBytes = lookupData.challenge
+        ? base64UrlToUint8Array(String(lookupData.challenge))
+        : (() => {
+            const arr = new Uint8Array(32);
+            window.crypto.getRandomValues(arr);
+            return arr;
+          })();
 
       const allowCredentials =
         credIds.length > 0
@@ -181,7 +201,7 @@ export default function OwnerLoginPage() {
       try {
         assertion = (await navigator.credentials.get({
           publicKey: {
-            challenge,
+            challenge: challengeBytes,
             rpId:
               lookupData.rpId ||
               window.location.hostname.replace(/^www\./, ""),
@@ -209,12 +229,28 @@ export default function OwnerLoginPage() {
       }
 
       const verifiedCredId = arrayBufferToBase64Url(assertion.rawId);
+      const assertionResp =
+        assertion.response as AuthenticatorAssertionResponse;
+      const clientDataJSON = assertionResp?.clientDataJSON
+        ? arrayBufferToBase64Url(assertionResp.clientDataJSON)
+        : "";
+      const authenticatorData = assertionResp?.authenticatorData
+        ? arrayBufferToBase64Url(assertionResp.authenticatorData)
+        : "";
+      const signature = assertionResp?.signature
+        ? arrayBufferToBase64Url(assertionResp.signature)
+        : "";
 
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           passkeyCredentialId: verifiedCredId,
+          challengeToken: lookupData.challengeToken,
+          clientDataJSON,
+          authenticatorData,
+          signature,
         }),
       });
 

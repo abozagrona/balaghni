@@ -12,8 +12,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
+import { SmartOtpModal } from "@/components/auth/smart-otp-modal";
 import { PACKAGES, type PackageType } from "@/lib/packages";
-import { cn } from "@/lib/utils";
+import { cn, formatFullLibyaE164 } from "@/lib/utils";
+import { saveOwnerSession } from "@/lib/auth-session";
 
 interface StickerActivationClientProps {
   code: string;
@@ -36,12 +38,30 @@ export function StickerActivationClient({
     null
   );
   const [successMsg, setSuccessMsg] = React.useState<string | null>(null);
+  const [otpModalOpen, setOtpModalOpen] = React.useState(false);
+  const [phoneForOtp, setPhoneForOtp] = React.useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setUnassignedOrderId(null);
+
+    const fullPhone = formatFullLibyaE164(phoneDigits);
+    if (!fullPhone) {
+      setError("يرجى إدخال رقم هاتف ليبي صحيح (091 / 092 / 093 / 094 / 095).");
+      return;
+    }
+
+    setPhoneForOtp(fullPhone);
+    setOtpModalOpen(true);
+  };
+
+  const handleOtpVerified = async (verifiedPhone: string, otpProofToken?: string) => {
+    setOtpModalOpen(false);
     setLoading(true);
+    setError(null);
+
+    const finalPhone = verifiedPhone || phoneForOtp;
 
     try {
       const res = await fetch(
@@ -52,7 +72,8 @@ export function StickerActivationClient({
           body: JSON.stringify({
             mode: mode === "gift_ready" ? "gift" : "online",
             packageType: selectedPkg,
-            phone: phoneDigits,
+            phone: finalPhone,
+            otpProofToken: otpProofToken || "",
             ownerName,
             vehicleInfo,
             allowExpiredRenewal: mode === "expired",
@@ -72,6 +93,14 @@ export function StickerActivationClient({
         setLoading(false);
         return;
       }
+
+      saveOwnerSession({
+        tagCode: code,
+        vehicleInfo: vehicleInfo.trim() || "مركبة مفعلة",
+        city: "طرابلس",
+        ownerPhone: finalPhone,
+        activatedAt: new Date().toISOString(),
+      });
 
       setSuccessMsg(
         mode === "gift_ready"
@@ -244,6 +273,15 @@ export function StickerActivationClient({
           </span>
         </Button>
       </form>
+
+      <SmartOtpModal
+        isOpen={otpModalOpen}
+        phone={phoneForOtp}
+        onClose={() => setOtpModalOpen(false)}
+        onVerified={handleOtpVerified}
+        title="التحقق من رقم الهاتف لتفعيل الملصق"
+        subtitle="أدخل رمز التحقق المرسل إلى رقمك لإتمام تفعيل الملصق وربطه بحسابك"
+      />
     </div>
   );
 }

@@ -5,6 +5,16 @@ import {
 } from "@/lib/lifecycle-service";
 import { normalizePackageType } from "@/lib/packages";
 import { formatBalaghniTagCode, formatFullLibyaE164 } from "@/lib/utils";
+import {
+  verifyAndConsumeOtpProof,
+  createOwnerSessionToken,
+  attachOwnerSessionCookie,
+} from "@/lib/security-tokens";
+import {
+  checkOrderRateLimit,
+  recordOrderAttempt,
+  getClientIp,
+} from "@/lib/rate-limiter";
 
 export async function POST(
   req: NextRequest,
@@ -30,6 +40,41 @@ export async function POST(
       );
     }
 
+    // 1. فحص حدود المعدل (Rate Limit) لمنع استنزاف التفعيلات
+    const ip = getClientIp(req);
+    const rateLimit = checkOrderRateLimit(formattedPhone, ip);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: rateLimit.reason,
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        { status: 429 }
+      );
+    }
+
+    // 2. إلزام التحقق الفعلي من رقم الهاتف عبر رمز التحقق (OTP Proof Token) الموقّع من الخادم
+    const otpProofCheck = verifyAndConsumeOtpProof(
+      req,
+      body.otpProofToken,
+      formattedPhone
+    );
+    if (!otpProofCheck.valid) {
+      return NextResponse.json(
+        {
+          ok: false,
+          requiresOtp: true,
+          error:
+            otpProofCheck.error ||
+            "يرجى تأكيد رقم هاتفك عبر رمز التحقق قبل تفعيل أو تجديد الملصق.",
+        },
+        { status: 401 }
+      );
+    }
+
+    recordOrderAttempt(formattedPhone, ip);
+
     const ownerName = String(body.ownerName || "").trim();
     const vehicleInfo = String(body.vehicleInfo || "").trim();
 
@@ -52,10 +97,16 @@ export async function POST(
         );
       }
 
-      return NextResponse.json({
+      const ownerToken = createOwnerSessionToken({
+        tagCode: normalizedCode,
+        ownerPhone: formattedPhone,
+      });
+      const response = NextResponse.json({
         ok: true,
         sticker: giftRes.sticker,
       });
+      attachOwnerSessionCookie(response, ownerToken, normalizedCode);
+      return response;
     }
 
     const packageType = normalizePackageType(body.packageType);
@@ -90,10 +141,16 @@ export async function POST(
       );
     }
 
-    return NextResponse.json({
+    const ownerToken = createOwnerSessionToken({
+      tagCode: normalizedCode,
+      ownerPhone: formattedPhone,
+    });
+    const response = NextResponse.json({
       ok: true,
       sticker: res.sticker,
     });
+    attachOwnerSessionCookie(response, ownerToken, normalizedCode);
+    return response;
   } catch {
     return NextResponse.json(
       { ok: false, error: "حدث خطأ غير متوقع أثناء تفعيل الملصق." },
@@ -101,3 +158,4 @@ export async function POST(
     );
   }
 }
+

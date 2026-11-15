@@ -34,6 +34,7 @@ import { SiteFooter } from "@/components/layout/site-footer";
 import { Button } from "@/components/ui/button";
 import {
   arrayBufferToBase64Url,
+  base64UrlToUint8Array,
   cn,
   formatBalaghniTagCode,
 } from "@/lib/utils";
@@ -235,11 +236,17 @@ function DashboardContent() {
       try {
         const res = await fetch(
           `/api/dashboard?tag=${encodeURIComponent(targetCode)}`,
-          { cache: "no-store" }
+          { cache: "no-store", credentials: "same-origin" }
         );
         const data = await res.json().catch(() => ({}));
 
         if (cancelled) return;
+
+        if (res.status === 401 || res.status === 403) {
+          clearOwnerSession();
+          window.location.href = "/login?expired=1";
+          return;
+        }
 
         if (!res.ok || !data.ok || !data.tag) {
           setTagData(null);
@@ -306,15 +313,19 @@ function DashboardContent() {
         !navigator.credentials?.create
       ) {
         setPasskeyError(
-          "متصفحك الحالي لا يدعم المصادقة بالبصمة (WebAuthn). يمكنك الاستمرار باستخدام رمز الـ PIN."
+          "متصفحك الحالي لا يدعم المصادقة بالبصمة (WebAuthn). يمكنك الاستمرار باستخدام رمز التحقق."
         );
         return;
       }
 
-      // جلب RP ID الموحد من الخادم (مع إزالة www. تلقائياً) لضمان التوافق على جميع المتصفحات والهواتف
-      const configRes = await fetch("/api/auth/passkey", {
-        cache: "no-store",
-      }).catch(() => null);
+      // جلب RP ID وتحدي WebAuthn الموقّع من الخادم
+      const configRes = await fetch(
+        `/api/auth/passkey?tagCode=${encodeURIComponent(tagData.tagCode)}`,
+        {
+          cache: "no-store",
+          credentials: "same-origin",
+        }
+      ).catch(() => null);
       const configData = configRes
         ? await configRes.json().catch(() => ({}))
         : {};
@@ -323,8 +334,13 @@ function DashboardContent() {
         window.location.hostname.replace(/^www\./, "");
 
       const phone = (tagData.ownerPhone || tagData.tagCode).trim();
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
+      const challenge = configData.challenge
+        ? base64UrlToUint8Array(String(configData.challenge))
+        : (() => {
+            const arr = new Uint8Array(32);
+            window.crypto.getRandomValues(arr);
+            return arr;
+          })();
 
       const credential = (await navigator.credentials.create({
         publicKey: {
@@ -354,13 +370,35 @@ function DashboardContent() {
       }
 
       const base64UrlCredId = arrayBufferToBase64Url(credential.rawId);
+      const attestationResp =
+        credential.response as AuthenticatorAttestationResponse;
+      const clientDataJSON = attestationResp?.clientDataJSON
+        ? arrayBufferToBase64Url(attestationResp.clientDataJSON)
+        : "";
+      const spkiBuffer =
+        typeof attestationResp?.getPublicKey === "function"
+          ? attestationResp.getPublicKey()
+          : null;
+      const publicKeySpki = spkiBuffer
+        ? arrayBufferToBase64Url(spkiBuffer)
+        : "";
+      const publicKeyAlgorithm =
+        typeof attestationResp?.getPublicKeyAlgorithm === "function"
+          ? attestationResp.getPublicKeyAlgorithm()
+          : -7;
+
       const saveRes = await fetch("/api/auth/passkey", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           tagCode: tagData.tagCode,
           passkeyCredentialId: base64UrlCredId,
           ownerPhone: tagData.ownerPhone || undefined,
+          challengeToken: configData.challengeToken,
+          clientDataJSON,
+          publicKeySpki,
+          publicKeyAlgorithm,
         }),
       });
 

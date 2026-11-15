@@ -6,6 +6,12 @@ import {
   sendWhatsappAlertMessage,
   sendSmsAlertMessage,
 } from "@/lib/otp-service";
+import {
+  signSecurityToken,
+  verifySecurityToken,
+  extractRawCredentialId,
+  type BaseTokenPayload,
+} from "@/lib/security-tokens";
 
 const rawSupabaseUrl = (
   process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
@@ -21,13 +27,6 @@ const normalizedAnonKey = rawSupabaseAnonKey.replace(
   /^Sb_publishable_/,
   "sb_publishable_"
 );
-
-export const supabase = createClient(rawSupabaseUrl, normalizedAnonKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
-});
 
 const isValidKeyFormat = (k: string) =>
   (k.startsWith("eyJ") && k.split(".").length === 3) ||
@@ -45,6 +44,19 @@ if (serviceCandidates.some(Boolean) && !isValidServiceJwt) {
     "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو بصيغة غير صالحة."
   );
 }
+
+// على الخادم (Server-Side) نستخدم مفتاح الخدمة (Service Role) لتجاوز قيود RLS العامة بأمان
+const defaultClientKey =
+  typeof window === "undefined" && isValidServiceJwt
+    ? validServiceKey
+    : normalizedAnonKey;
+
+export const supabase = createClient(rawSupabaseUrl, defaultClientKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
 
 export const supabaseAdmin = createClient(
   rawSupabaseUrl,
@@ -301,6 +313,9 @@ export async function getVehicleTagByCode(
 export async function verifyTagScratchPin(params: {
   tagCode: string;
   pin: string;
+  skipScratchPin?: boolean;
+  ownerPhone?: string;
+  allowRebind?: boolean;
 }): Promise<{ ok: boolean; error?: string; targetRow?: StoredTagRow }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
   const inputPinHash = hashSha256(params.pin.trim());
@@ -314,7 +329,7 @@ export async function verifyTagScratchPin(params: {
 
   let targetRow: StoredTagRow | null = null;
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("tags")
       .select("*")
       .eq("tag_code", normalizedCode)
@@ -340,11 +355,21 @@ export async function verifyTagScratchPin(params: {
   }
 
   const currentStatus = normalizeStatus(targetRow.status);
+  const existingPhone = String(targetRow.owner_phone || "").trim();
+  const hasExistingOwner = Boolean(existingPhone && existingPhone !== "-");
+
   if (currentStatus === "ACTIVE") {
-    return {
-      ok: false,
-      error: "هذا الملصق مفعّل مسبقاً ومرتبط بمركبة أخرى.",
-    };
+    if (
+      !params.allowRebind &&
+      (!hasExistingOwner ||
+        !params.ownerPhone ||
+        existingPhone !== params.ownerPhone.trim())
+    ) {
+      return {
+        ok: false,
+        error: "هذا الملصق مفعّل مسبقاً ومرتبط بمالك آخر ولا يمكن إعادة ربطه.",
+      };
+    }
   }
   if (currentStatus === "REVOKED") {
     return {
@@ -354,6 +379,7 @@ export async function verifyTagScratchPin(params: {
   }
 
   if (
+    !params.skipScratchPin &&
     String(targetRow.activation_pin_hash || "").toLowerCase() !== inputPinHash
   ) {
     return {
@@ -367,7 +393,7 @@ export async function verifyTagScratchPin(params: {
 }
 
 /**
- * الخطوة 1: تفعيل الملصق عبر رمز الخدش السري (PIN) وتحديث حالته إلى ACTIVE وربطه برقم الهاتف ونوع السيارة
+ * الخطوة 1: تفعيل الملصق وتحديث حالته إلى ACTIVE وربطه برقم الهاتف الموثق ونوع السيارة
  */
 export async function activateVehicleTag(params: {
   tagCode: string;
@@ -375,6 +401,8 @@ export async function activateVehicleTag(params: {
   ownerPhone: string;
   vehicleInfo: string;
   city?: string;
+  skipScratchPin?: boolean;
+  allowRebind?: boolean;
 }): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
   const nowIso = new Date().toISOString();
@@ -382,6 +410,9 @@ export async function activateVehicleTag(params: {
   const pinCheck = await verifyTagScratchPin({
     tagCode: normalizedCode,
     pin: params.pin,
+    skipScratchPin: params.skipScratchPin,
+    ownerPhone: params.ownerPhone,
+    allowRebind: params.allowRebind,
   });
   if (!pinCheck.ok || !pinCheck.targetRow) {
     return { ok: false, error: pinCheck.error };
@@ -429,6 +460,7 @@ export async function activateVehicleTag(params: {
 
 /**
  * الخطوة 2: حفظ إعدادات أمان المالك (owner_pin_hash, emergency_recovery_hash) وضمان تفعيل الملصق (ACTIVE) في جدول tags
+ * مع منع تعديل إعدادات الأمان أو تغيير رقم المالك لأي ملصق مفعل مسبقاً إلا لمالكه الفعلي أو المشرف العام
  */
 export async function saveOwnerSecuritySetup(params: {
   tagCode: string;
@@ -438,6 +470,8 @@ export async function saveOwnerSecuritySetup(params: {
   ownerPhone?: string;
   vehicleInfo?: string;
   city?: string;
+  authorizedOwnerPhone?: string | null;
+  isSuperAdmin?: boolean;
 }): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
   const ownerPinHash = hashSha256(params.ownerPin);
@@ -468,6 +502,35 @@ export async function saveOwnerSecuritySetup(params: {
       ok: false,
       error: "لم يتم العثور على الملصق المطلوب تأمينه في قاعدة البيانات.",
     };
+  }
+
+  const currentStatus = normalizeStatus(targetRow.status);
+  const existingOwnerPhone = String(targetRow.owner_phone || "").trim();
+  const hasExistingOwner = Boolean(
+    existingOwnerPhone && existingOwnerPhone !== "-"
+  );
+
+  // منع إعادة ربط أو تعديل إعدادات الأمان لأي ملصق مفعل مسبقاً إلا من قِبل مالكه الفعلي أو المشرف العام
+  if (currentStatus === "ACTIVE" && hasExistingOwner && !params.isSuperAdmin) {
+    const callerPhone = String(params.authorizedOwnerPhone || "").trim();
+    if (!callerPhone || callerPhone !== existingOwnerPhone) {
+      return {
+        ok: false,
+        error:
+          "غير مصرح لك بتعديل إعدادات الأمان أو تغيير ملكية هذا الملصق المفعّل مسبقاً.",
+      };
+    }
+    if (
+      params.ownerPhone &&
+      params.ownerPhone.trim() &&
+      params.ownerPhone.trim() !== existingOwnerPhone
+    ) {
+      return {
+        ok: false,
+        error:
+          "لا يمكن تغيير رقم هاتف المالك لملصق مفعّل مسبقاً إلى مالك آخر إلا عبر المشرف العام.",
+      };
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -536,7 +599,7 @@ export async function checkOwnerPhoneExists(rawPhone: string): Promise<boolean> 
     if (row.owner_phone === normalizedPhone) return true;
   }
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("tags")
       .select("tag_code")
       .eq("owner_phone", normalizedPhone)
@@ -556,16 +619,23 @@ export async function verifyOwnerLogin(params: {
   pin?: string;
   passkeyCredentialId?: string;
   otpVerified?: boolean;
-}): Promise<{ ok: boolean; error?: string; record?: VehicleTagRecord }> {
-  // أ) التحقق الفوري عبر البصمة الحيوية (Zero-Typing Customer Passkey) دون اشتراط رقم الهاتف
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  record?: VehicleTagRecord;
+  storedPasskeyRecord?: string | null;
+}> {
+  // أ) التحقق الفوري عبر البصمة الحيوية (Zero-Typing Customer Passkey)
   if (params.passkeyCredentialId) {
     const credId = params.passkeyCredentialId.trim();
     let matchedPasskeyRow: StoredTagRow | null = null;
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from("tags")
         .select("*")
-        .eq("passkey_credential_id", credId);
+        .or(
+          `passkey_credential_id.eq.${credId},passkey_credential_id.ilike.v2:${credId}:%`
+        );
 
       if (!error && Array.isArray(data) && data.length > 0) {
         matchedPasskeyRow = data[0] as StoredTagRow;
@@ -577,7 +647,11 @@ export async function verifyOwnerLogin(params: {
     if (!matchedPasskeyRow) {
       const localMap = loadSyncedStore();
       for (const row of Object.values(localMap)) {
-        if (row.passkey_credential_id === credId) {
+        const extracted = extractRawCredentialId(row.passkey_credential_id);
+        if (
+          row.passkey_credential_id === credId ||
+          (extracted && extracted === credId)
+        ) {
           matchedPasskeyRow = row;
           break;
         }
@@ -587,13 +661,14 @@ export async function verifyOwnerLogin(params: {
     if (!matchedPasskeyRow) {
       return {
         ok: false,
-        error: "لم يتم العثور على سيارة مرتبطة بهذه البصمة، يرجى الدخول برمز الـ PIN.",
+        error: "لم يتم العثور على سيارة مرتبطة بهذه البصمة، يرجى الدخول برقم هاتفك.",
       };
     }
 
     return {
       ok: true,
       record: mapRowToRecord(matchedPasskeyRow),
+      storedPasskeyRecord: matchedPasskeyRow.passkey_credential_id || null,
     };
   }
 
@@ -1642,6 +1717,7 @@ export async function verifyAdminAuthentication(params: {
   adminProfile?: AdminProfileRecord | null;
   passkeyCredentialId?: string | null;
   passkeyCredentialIds?: string[];
+  storedPasskeyRecord?: string | null;
   sessionToken?: string;
 }> {
   const store = loadAdminStore();
@@ -1698,7 +1774,7 @@ export async function verifyAdminAuthentication(params: {
 
     let profileRow: RawAdminProfileRow | null = null;
     if (params.adminId) {
-      const { data } = await supabase
+      const { data } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
         .eq("id", params.adminId)
@@ -1734,7 +1810,7 @@ export async function verifyAdminAuthentication(params: {
       false // إلغاء إلزام تغيير كلمة المرور بعد تغييرها بنجاح
     );
 
-    const { data: updatedRows } = await supabase
+    const { data: updatedRows } = await supabaseAdmin
       .from("admin_profiles")
       .update({
         pin_hash: newHash,
@@ -1774,7 +1850,7 @@ export async function verifyAdminAuthentication(params: {
 
     let profileRow: RawAdminProfileRow | null = null;
     if (params.adminId) {
-      const { data } = await supabase
+      const { data } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
         .eq("id", params.adminId)
@@ -1789,7 +1865,7 @@ export async function verifyAdminAuthentication(params: {
       return { ok: false, error: "لم يتم العثور على حساب المشرف في النظام." };
     }
 
-    const { data: updatedRows, error: updateErr } = await supabase
+    const { data: updatedRows, error: updateErr } = await supabaseAdmin
       .from("admin_profiles")
       .update({ passkey_credential_id: credId })
       .eq("id", profileRow.id)
@@ -1814,7 +1890,7 @@ export async function verifyAdminAuthentication(params: {
 
     return {
       ok: true,
-      passkeyCredentialId: credId,
+      passkeyCredentialId: extractRawCredentialId(credId) || credId,
       adminProfile: mapAdminProfileRow(finalRow, store),
     };
   }
@@ -1823,7 +1899,7 @@ export async function verifyAdminAuthentication(params: {
   if (params.mode === "unlink_passkey") {
     let profileRow: RawAdminProfileRow | null = null;
     if (params.adminId) {
-      const { data } = await supabase
+      const { data } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
         .eq("id", params.adminId)
@@ -1838,7 +1914,7 @@ export async function verifyAdminAuthentication(params: {
       return { ok: false, error: "لم يتم العثور على حساب المشرف." };
     }
 
-    const { data: updatedRows, error: updateErr } = await supabase
+    const { data: updatedRows, error: updateErr } = await supabaseAdmin
       .from("admin_profiles")
       .update({ passkey_credential_id: null })
       .eq("id", profileRow.id)
@@ -1869,63 +1945,14 @@ export async function verifyAdminAuthentication(params: {
   }
 
   // ============================================================================
-  // 1. استعلام معرّفات البصمة المسجلة (Zero-Typing 1-Tap Passkey Lookup)
+  // 1. طلب تحدي البصمة دون كشف المعرّفات المسجلة للعامة
   // ============================================================================
   if (params.mode === "lookup_passkey") {
-    // أ) إذا تم تحديد رقم هاتف المشرف
-    if (identifierRaw) {
-      const byPhone = await findAdminProfileByPhone(identifierRaw);
-      if (!byPhone || !byPhone.is_active) {
-        return {
-          ok: false,
-          error: "رقم الهاتف غير مسجل أو الحساب غير مفعل.",
-        };
-      }
-      if (!byPhone.passkey_credential_id) {
-        return {
-          ok: false,
-          error:
-            "لم يتم ربط بصمة (Passkey) بهذا الحساب بعد. يرجى تسجيل الدخول بكلمة المرور أولاً لتفعيل البصمة.",
-        };
-      }
-      return {
-        ok: true,
-        passkeyCredentialId: byPhone.passkey_credential_id,
-        passkeyCredentialIds: [byPhone.passkey_credential_id],
-        adminProfile: mapAdminProfileRow(byPhone, store),
-      };
-    }
-
-    // ب) الدخول الفوري دون كتابة رقم الهاتف نهائياً: استرجاع كافة البصمات النشطة من جدول admin_profiles
-    try {
-      const { data, error } = await supabase
-        .from("admin_profiles")
-        .select("passkey_credential_id")
-        .not("passkey_credential_id", "is", null)
-        .eq("is_active", true);
-
-      const credIds: string[] = [];
-      if (!error && Array.isArray(data)) {
-        for (const row of data) {
-          const cid = String(row.passkey_credential_id || "").trim();
-          if (cid && !credIds.includes(cid)) {
-            credIds.push(cid);
-          }
-        }
-      }
-
-      return {
-        ok: true,
-        passkeyCredentialIds: credIds,
-        passkeyCredentialId: credIds[0] || null,
-      };
-    } catch {
-      return {
-        ok: true,
-        passkeyCredentialIds: [],
-        passkeyCredentialId: null,
-      };
-    }
+    return {
+      ok: true,
+      passkeyCredentialIds: [],
+      passkeyCredentialId: null,
+    };
   }
 
   // ============================================================================
@@ -1941,12 +1968,14 @@ export async function verifyAdminAuthentication(params: {
 
     let profileRow: RawAdminProfileRow | null = null;
 
-    // أ) البحث العكسي المباشر في Supabase عن الحساب المطابق للمعرّف
+    // أ) البحث العكسي المباشر في Supabase عن الحساب المطابق للمعرّف (يدعم صيغة v2 المشفرة)
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
-        .eq("passkey_credential_id", credId)
+        .or(
+          `passkey_credential_id.eq.${credId},passkey_credential_id.ilike.v2:${credId}:%`
+        )
         .eq("is_active", true);
 
       if (!error && Array.isArray(data) && data.length > 0) {
@@ -1959,9 +1988,10 @@ export async function verifyAdminAuthentication(params: {
     // ب) البحث التكميلي برقم الهاتف إذا تم تمريره
     if (!profileRow && identifierRaw) {
       const byPhone = await findAdminProfileByPhone(identifierRaw);
+      const rawStoredId = extractRawCredentialId(byPhone?.passkey_credential_id);
       if (
         byPhone &&
-        byPhone.passkey_credential_id === credId &&
+        (byPhone.passkey_credential_id === credId || rawStoredId === credId) &&
         byPhone.is_active
       ) {
         profileRow = byPhone;
@@ -1990,7 +2020,7 @@ export async function verifyAdminAuthentication(params: {
     saveAdminStore(store);
 
     try {
-      await supabase
+      await supabaseAdmin
         .from("admin_profiles")
         .update({ last_login: nowIso })
         .eq("id", profileRow.id);
@@ -2002,7 +2032,7 @@ export async function verifyAdminAuthentication(params: {
       adminId: profileRow.id,
       adminName: profileRow.full_name || profileRow.phone,
       actionType: "ADMIN_LOGIN",
-      actionDetails: `تسجيل دخول مؤسسي ناجح بنقرة واحدة بالبصمة الحيوية (Zero-Typing Passkey Login) للمشرف (${profileRow.full_name || profileRow.phone})`,
+      actionDetails: `تسجيل دخول مؤسسي ناجح بالبصمة الحيوية الموثقة (WebAuthn Passkey Login) للمشرف (${profileRow.full_name || profileRow.phone})`,
     });
 
     const mappedProfile = mapAdminProfileRow(
@@ -2016,6 +2046,7 @@ export async function verifyAdminAuthentication(params: {
       ok: true,
       remainingAttempts: 4,
       adminProfile: mappedProfile,
+      storedPasskeyRecord: profileRow.passkey_credential_id || null,
       sessionToken,
     };
   }
@@ -2138,7 +2169,7 @@ export const ADMIN_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان ك�
 export const ADMIN_COOKIE_MAX_AGE_SECONDS = 2 * 60 * 60; // 7200 ثانية
 
 /**
- * توليد رمز جلسة إدارية مشفر وموثق زمنياً
+ * توليد رمز جلسة إدارية موقّع تشفيرياً (HMAC-SHA256) وموثق زمنياً
  */
 export function createAdminSessionToken(profile: {
   id: string;
@@ -2150,23 +2181,31 @@ export function createAdminSessionToken(profile: {
 }): string {
   const now = Date.now();
   const sessionCreatedAt = profile.sessionCreatedAt || now;
-  return Buffer.from(
-    JSON.stringify({
-      id: profile.id,
-      phone: profile.phone,
-      fullName: profile.fullName,
-      role: profile.role,
-      permissions: profile.permissions,
-      iat: sessionCreatedAt,
-      sessionCreatedAt,
-      lastActivityAt: now,
-      exp: sessionCreatedAt + ADMIN_ABSOLUTE_TIMEOUT_MS,
-    })
-  ).toString("base64");
+  const payload: BaseTokenPayload & {
+    id: string;
+    phone: string;
+    fullName: string;
+    role: string;
+    permissions: AdminPermission[];
+    sessionCreatedAt: number;
+    lastActivityAt: number;
+  } = {
+    purpose: "admin_session",
+    id: profile.id,
+    phone: profile.phone,
+    fullName: profile.fullName,
+    role: profile.role,
+    permissions: profile.permissions,
+    iat: sessionCreatedAt,
+    sessionCreatedAt,
+    lastActivityAt: now,
+    exp: sessionCreatedAt + ADMIN_ABSOLUTE_TIMEOUT_MS,
+  };
+  return signSecurityToken(payload);
 }
 
 /**
- * فحص صلاحية وتوقيت جلسة المدير (مهلة خمول 15 دقيقة / حد أقصى ساعتان)
+ * فحص التوقيع التشفيري وصلاحية وتوقيت جلسة المدير (مهلة خمول 15 دقيقة / حد أقصى ساعتان)
  */
 export function verifyAdminSessionToken(token?: string): {
   valid: boolean;
@@ -2187,69 +2226,80 @@ export function verifyAdminSessionToken(token?: string): {
     return { valid: false, error: "لا توجد جلسة إدارية نشطة." };
   }
 
-  try {
-    const jsonStr = Buffer.from(raw, "base64").toString("utf-8");
-    if (jsonStr.startsWith("{") && jsonStr.endsWith("}")) {
-      const parsed = JSON.parse(jsonStr);
-      if (parsed && typeof parsed === "object") {
-        const now = Date.now();
-        const createdAt = Number(parsed.sessionCreatedAt || parsed.iat || 0);
-        const lastActive = Number(parsed.lastActivityAt || createdAt || 0);
-
-        // 1. فحص الحد الأقصى لعمر الجلسة (ساعتان من لحظة تسجيل الدخول)
-        if (
-          (createdAt > 0 && now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS) ||
-          (typeof parsed.exp === "number" && now >= parsed.exp)
-        ) {
-          return {
-            valid: false,
-            expired: true,
-            error:
-              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
-          };
-        }
-
-        // 2. فحص مهلة الخمول (15 دقيقة من عدم النشاط)
-        if (lastActive > 0 && now - lastActive >= ADMIN_IDLE_TIMEOUT_MS) {
-          return {
-            valid: false,
-            expired: true,
-            error:
-              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
-          };
-        }
-
-        return {
-          valid: true,
-          payload: {
-            id: parsed.id,
-            phone: parsed.phone,
-            fullName: parsed.fullName,
-            role: parsed.role,
-            permissions: parsed.permissions,
-            sessionCreatedAt: createdAt,
-            lastActivityAt: lastActive,
-          },
-        };
-      }
+  const verified = verifySecurityToken<
+    BaseTokenPayload & {
+      id?: string;
+      phone?: string;
+      fullName?: string;
+      role?: string;
+      permissions?: AdminPermission[];
+      sessionCreatedAt?: number;
+      lastActivityAt?: number;
     }
-  } catch {
-    // ليس JSON Base64 صالحاً
+  >(raw, "admin_session");
+
+  if (!verified.valid || !verified.payload) {
+    const isExpired = verified.reason === "expired";
+    return {
+      valid: false,
+      expired: isExpired,
+      error: isExpired
+        ? "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        : "رمز الجلسة الإدارية غير صالح أو غير موقّع.",
+    };
   }
 
-  return { valid: false, error: "رمز الجلسة غير صالح." };
+  const parsed = verified.payload;
+  const now = Date.now();
+  const createdAt = Number(parsed.sessionCreatedAt || parsed.iat || 0);
+  const lastActive = Number(parsed.lastActivityAt || createdAt || 0);
+
+  if (
+    (createdAt > 0 && now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS) ||
+    (typeof parsed.exp === "number" && now >= parsed.exp)
+  ) {
+    return {
+      valid: false,
+      expired: true,
+      error:
+        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+    };
+  }
+
+  if (lastActive > 0 && now - lastActive >= ADMIN_IDLE_TIMEOUT_MS) {
+    return {
+      valid: false,
+      expired: true,
+      error:
+        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+    };
+  }
+
+  return {
+    valid: true,
+    payload: {
+      id: parsed.id,
+      phone: parsed.phone,
+      fullName: parsed.fullName,
+      role: parsed.role,
+      permissions: parsed.permissions,
+      sessionCreatedAt: createdAt,
+      lastActivityAt: lastActive,
+    },
+  };
 }
 
 /**
  * التحقق الأمني الصارم من صلاحية المشرف لتعديل وحفظ التعديلات المرئية المباشرة (can_live_edit أو SUPER_ADMIN)
+ * يعتمد حصراً على الجلسة الموقعة ويرفض معرف المشرف الخام أو رقم الهاتف غير الموقع
  */
-export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Promise<{
+export async function verifyAdminLiveEditPermission(authToken?: string): Promise<{
   authorized: boolean;
   expired?: boolean;
   profile?: AdminProfileRecord | null;
   error?: string;
 }> {
-  const token = String(authTokenOrId || "").trim();
+  const token = String(authToken || "").trim();
   if (!token) {
     return {
       authorized: false,
@@ -2257,37 +2307,25 @@ export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Pro
     };
   }
 
-  let adminId: string | null = null;
-  let adminPhone: string | null = null;
-
-  // فحص صلاحية رمز الجلسة والمهل الزمنية
   const sessionCheck = verifyAdminSessionToken(token);
-  if (sessionCheck.expired) {
+  if (!sessionCheck.valid || !sessionCheck.payload) {
     return {
       authorized: false,
-      expired: true,
+      expired: sessionCheck.expired,
       error:
         sessionCheck.error ||
-        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+        "انتهت جلسة المدير أو أن رمز الجلسة غير موقّع، يرجى تسجيل الدخول مجدداً.",
     };
   }
 
-  if (sessionCheck.valid && sessionCheck.payload) {
-    if (sessionCheck.payload.id) adminId = sessionCheck.payload.id;
-    if (sessionCheck.payload.phone) adminPhone = sessionCheck.payload.phone;
-  }
-
-  if (!adminId && token.includes("-") && token.length >= 32) {
-    adminId = token;
-  } else if (!adminId && !adminPhone) {
-    adminPhone = token;
-  }
+  const adminId = sessionCheck.payload.id || null;
+  const adminPhone = sessionCheck.payload.phone || null;
 
   let profileRow: RawAdminProfileRow | null = null;
 
   if (adminId) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
         .eq("id", adminId)
@@ -2353,9 +2391,10 @@ export async function verifyAdminLiveEditPermission(authTokenOrId?: string): Pro
 
 /**
  * التحقق الأمني الصارم من صلاحية المشرف لتنفيذ العمليات الإدارية الحساسة من جهة الخادم
+ * يرفض تمرير adminId أو الهاتف الخام ويشترط رمز جلسة موقعاً وصالحاً
  */
 export async function verifyAdminActionPermission(
-  authTokenOrId?: string,
+  authToken?: string,
   action?: string
 ): Promise<{
   authorized: boolean;
@@ -2363,7 +2402,7 @@ export async function verifyAdminActionPermission(
   profile?: AdminProfileRecord | null;
   error?: string;
 }> {
-  const token = String(authTokenOrId || "").trim();
+  const token = String(authToken || "").trim();
   if (!token) {
     return {
       authorized: false,
@@ -2371,37 +2410,25 @@ export async function verifyAdminActionPermission(
     };
   }
 
-  let adminId: string | null = null;
-  let adminPhone: string | null = null;
-
-  // فحص صلاحية رمز الجلسة والمهل الزمنية (15 دقيقة خمول / ساعتان حد أقصى)
   const sessionCheck = verifyAdminSessionToken(token);
-  if (sessionCheck.expired) {
+  if (!sessionCheck.valid || !sessionCheck.payload) {
     return {
       authorized: false,
-      expired: true,
+      expired: sessionCheck.expired,
       error:
         sessionCheck.error ||
-        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+        "انتهت جلسة المدير أو أن رمز الجلسة غير موقّع، يرجى تسجيل الدخول مجدداً.",
     };
   }
 
-  if (sessionCheck.valid && sessionCheck.payload) {
-    if (sessionCheck.payload.id) adminId = sessionCheck.payload.id;
-    if (sessionCheck.payload.phone) adminPhone = sessionCheck.payload.phone;
-  }
-
-  if (!adminId && token.includes("-") && token.length >= 32) {
-    adminId = token;
-  } else if (!adminId && !adminPhone) {
-    adminPhone = token;
-  }
+  const adminId = sessionCheck.payload.id || null;
+  const adminPhone = sessionCheck.payload.phone || null;
 
   let profileRow: RawAdminProfileRow | null = null;
 
   if (adminId) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from("admin_profiles")
         .select("*")
         .eq("id", adminId)
@@ -2486,83 +2513,61 @@ export async function verifyAdminActionPermission(
   };
 }
 
-/**
- * رفع صورة البلاغ المرفقة إلى Supabase Storage (bucket: report-photos كـ Public)
- * وإرجاع رابط HTTPS العام المباشر لخوادم الواتساب ولوحة المالك
- */
-export async function uploadReportPhoto(
-  tagCode: string,
-  imageEntry: FormDataEntryValue | null
-): Promise<string | null> {
-  if (!imageEntry || typeof imageEntry === "string") return null;
-  const file = imageEntry as File;
-  if (!file.size || file.size <= 0) return null;
+export const MAX_REPORT_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 
-  const bucketName = "report-photos";
-  const normalizedCode = tagCode.toUpperCase().trim().replace(/[^A-Z0-9-]/g, "");
-  const extMatch = String(file.name || "").match(/\.([a-zA-Z0-9]{2,5})$/);
-  const ext = (extMatch?.[1] || "jpg").toLowerCase();
-  const objectPath = `${normalizedCode}/${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}.${ext}`;
+function detectActualImageType(buffer: Buffer): {
+  ext: "jpg" | "png" | "webp";
+  mime: "image/jpeg" | "image/png" | "image/webp";
+} | null {
+  if (!buffer || buffer.length < 12) return null;
 
-  try {
-    const { error: createErr } = await supabaseAdmin.storage.createBucket(
-      bucketName,
-      { public: true }
-    );
-    if (createErr && !/already exists/i.test(createErr.message || "")) {
-      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
-    } else if (createErr) {
-      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const { error: uploadErr } = await supabaseAdmin.storage
-      .from(bucketName)
-      .upload(objectPath, buffer, {
-        contentType: file.type || "image/jpeg",
-        upsert: false,
-      });
-
-    if (uploadErr) {
-      console.warn(`[uploadReportPhoto] Upload failed:`, uploadErr.message);
-      return null;
-    }
-
-    const { data: pubData } = supabaseAdmin.storage
-      .from(bucketName)
-      .getPublicUrl(objectPath);
-
-    return pubData?.publicUrl || null;
-  } catch (err) {
-    console.warn(
-      `[uploadReportPhoto] Exception:`,
-      err instanceof Error ? err.message : String(err)
-    );
-    return null;
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { ext: "jpg", mime: "image/jpeg" };
   }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return { ext: "png", mime: "image/png" };
+  }
+
+  // WebP: RIFF....WEBP
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return { ext: "webp", mime: "image/webp" };
+  }
+
+  return null;
 }
 
 /**
- * مسار الإشعارات المعزول ومكافحة الإزعاج (Zero-Leak & 5-Minute Cooldown)
- * يستعلم داخلياً عن هاتف المالك وقناة التنبيه دون كشف الرقم للواجهة الأمامية مطلقاً
+ * فحص صلاحية الملصق وفترة التبريد (5 دقائق) من قاعدة البيانات مباشرة قبل رفع الصور أو إرسال الإشعارات
  */
-export async function sendZeroLeakNotification(params: {
-  tagCode: string;
-  reason: string;
-  customNote?: string | null;
-  senderPhone?: string | null;
-  location?: string | null;
-  photoUrl?: string | null;
-}): Promise<{
+export async function validateScanTargetAndCooldown(tagCode: string): Promise<{
   ok: boolean;
+  tag?: VehicleTagRecord;
   cooldownActive?: boolean;
   waitSeconds?: number;
   error?: string;
-  deliveredChannels?: AlertChannel;
 }> {
-  const normalizedCode = params.tagCode.toUpperCase().trim();
+  const normalizedCode = tagCode.toUpperCase().trim();
   const tag = await getVehicleTagByCode(normalizedCode);
 
   if (!tag) {
@@ -2586,28 +2591,172 @@ export async function sendZeroLeakNotification(params: {
     };
   }
 
+  const cooldownMs = 5 * 60 * 1000;
+  let latestCreatedAtIso: string | null = null;
+
+  // 1. الفحص المباشر من قاعدة البيانات (جدول reports في Supabase) لمنع التجاوز في بيئة Serverless
+  try {
+    const { data: tagRow } = await supabaseAdmin
+      .from("tags")
+      .select("id")
+      .eq("tag_code", normalizedCode)
+      .maybeSingle();
+
+    if (tagRow?.id) {
+      const { data: recentRows } = await supabaseAdmin
+        .from("reports")
+        .select("created_at")
+        .eq("tag_id", tagRow.id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (Array.isArray(recentRows) && recentRows[0]?.created_at) {
+        latestCreatedAtIso = String(recentRows[0].created_at);
+      }
+    }
+  } catch {
+    // ignore and check fallback
+  }
+
+  // 2. دمج الفحص مع السجل المحلي الاحتياطي
   const adminStore = loadAdminStore();
   const dashStore = loadDashboardStore();
   const existingReports = dashStore.reports[normalizedCode] || [];
-
-  const lastCooldownIso =
+  const localLastIso =
     adminStore.notifyCooldowns[normalizedCode] ||
     (existingReports.length > 0 ? existingReports[0].createdAt : null);
 
-  if (lastCooldownIso) {
-    const elapsedMs = Date.now() - new Date(lastCooldownIso).getTime();
-    const cooldownMs = 5 * 60 * 1000;
+  if (localLastIso) {
+    if (
+      !latestCreatedAtIso ||
+      new Date(localLastIso).getTime() > new Date(latestCreatedAtIso).getTime()
+    ) {
+      latestCreatedAtIso = localLastIso;
+    }
+  }
+
+  if (latestCreatedAtIso) {
+    const elapsedMs = Date.now() - new Date(latestCreatedAtIso).getTime();
     if (elapsedMs >= 0 && elapsedMs < cooldownMs) {
       const waitSeconds = Math.ceil((cooldownMs - elapsedMs) / 1000);
       return {
         ok: false,
+        tag,
         cooldownActive: true,
         waitSeconds,
-        error:
-          "تم إرسال بلاغ لصاحب السيارة بالفعل، يرجى الانتظار بضع دقائق",
+        error: "تم إرسال بلاغ لصاحب السيارة بالفعل، يرجى الانتظار بضع دقائق",
       };
     }
   }
+
+  return { ok: true, tag };
+}
+
+/**
+ * رفع صورة البلاغ المرفقة إلى Supabase Storage (bucket: report-photos)
+ * بعد التحقق من أن الحجم لا يتجاوز 5 ميجابايت وفحص البصمة الحقيقية للصورة (Magic Bytes)
+ */
+export async function uploadReportPhoto(
+  tagCode: string,
+  imageEntry: FormDataEntryValue | null
+): Promise<{ url: string | null; error?: string }> {
+  if (!imageEntry || typeof imageEntry === "string") return { url: null };
+  const file = imageEntry as File;
+  if (!file.size || file.size <= 0) return { url: null };
+
+  if (file.size > MAX_REPORT_PHOTO_BYTES) {
+    return {
+      url: null,
+      error: "حجم الصورة المرفقة يتجاوز الحد الأقصى المسموح به (5 ميجابايت).",
+    };
+  }
+
+  const bucketName = "report-photos";
+  const normalizedCode = tagCode.toUpperCase().trim().replace(/[^A-Z0-9-]/g, "");
+
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const detected = detectActualImageType(buffer);
+    if (!detected) {
+      return {
+        url: null,
+        error: "صيغة الملف المرفوع غير مدعومة. يُسمح فقط بصور حقيقية (JPEG, PNG, WebP).",
+      };
+    }
+
+    const randomHex = crypto.randomBytes(6).toString("hex");
+    const objectPath = `${normalizedCode}/${Date.now()}-${randomHex}.${detected.ext}`;
+
+    const { error: createErr } = await supabaseAdmin.storage.createBucket(
+      bucketName,
+      { public: true }
+    );
+    if (createErr && !/already exists/i.test(createErr.message || "")) {
+      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
+    } else if (createErr) {
+      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
+    }
+
+    const { error: uploadErr } = await supabaseAdmin.storage
+      .from(bucketName)
+      .upload(objectPath, buffer, {
+        contentType: detected.mime,
+        upsert: false,
+      });
+
+    if (uploadErr) {
+      console.warn(`[uploadReportPhoto] Upload failed:`, uploadErr.message);
+      return { url: null };
+    }
+
+    const { data: pubData } = supabaseAdmin.storage
+      .from(bucketName)
+      .getPublicUrl(objectPath);
+
+    return { url: pubData?.publicUrl || null };
+  } catch (err) {
+    console.warn(
+      `[uploadReportPhoto] Exception:`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return { url: null };
+  }
+}
+
+/**
+ * مسار الإشعارات المعزول ومكافحة الإزعاج (Zero-Leak & Database-Backed 5-Minute Cooldown)
+ * يستعلم داخلياً عن هاتف المالك وقناة التنبيه دون كشف الرقم للواجهة الأمامية مطلقاً
+ */
+export async function sendZeroLeakNotification(params: {
+  tagCode: string;
+  reason: string;
+  customNote?: string | null;
+  senderPhone?: string | null;
+  location?: string | null;
+  photoUrl?: string | null;
+}): Promise<{
+  ok: boolean;
+  cooldownActive?: boolean;
+  waitSeconds?: number;
+  error?: string;
+  deliveredChannels?: AlertChannel;
+}> {
+  const normalizedCode = params.tagCode.toUpperCase().trim();
+  const targetValidation = await validateScanTargetAndCooldown(normalizedCode);
+
+  if (!targetValidation.ok || !targetValidation.tag) {
+    return {
+      ok: false,
+      cooldownActive: targetValidation.cooldownActive,
+      waitSeconds: targetValidation.waitSeconds,
+      error: targetValidation.error || "تعذر إرسال البلاغ.",
+    };
+  }
+
+  const tag = targetValidation.tag;
+  const adminStore = loadAdminStore();
+  const dashStore = loadDashboardStore();
+  const existingReports = dashStore.reports[normalizedCode] || [];
 
   const REASON_MAP: Record<
     string,
@@ -3544,7 +3693,7 @@ function normalizeSubAdminRole(raw?: string | null): "OPERATOR" | "SUPPORT" {
 }
 
 function generateRandomAdminPassword(): string {
-  return String(Math.floor(10000000 + Math.random() * 90000000));
+  return String(crypto.randomInt(10000000, 100000000));
 }
 
 /**

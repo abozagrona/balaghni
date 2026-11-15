@@ -6,22 +6,108 @@ import {
   addMaintenanceRecordForTag,
   supabaseAdmin,
   syncTagActivationToLocalStore,
+  verifyAdminActionPermission,
 } from "@/lib/supabase/client";
 import { getStickerLifecycle } from "@/lib/lifecycle-service";
 import { formatBalaghniTagCode } from "@/lib/utils";
+import {
+  verifyOwnerSessionFromRequest,
+  attachOwnerSessionCookie,
+  createOwnerSessionToken,
+} from "@/lib/security-tokens";
+
+async function authorizeDashboardTagAccess(
+  request: NextRequest,
+  requestedTagCode: string
+): Promise<{
+  authorized: boolean;
+  isSuperAdmin: boolean;
+  ownerPhone?: string;
+  expired?: boolean;
+}> {
+  const formattedTarget = formatBalaghniTagCode(requestedTagCode);
+
+  // 1. التحقق من جلسة المالك الموقّعة
+  const ownerSession = verifyOwnerSessionFromRequest(request);
+  if (ownerSession.valid && ownerSession.payload) {
+    const sessionTag = formatBalaghniTagCode(ownerSession.payload.tagCode);
+    if (sessionTag === formattedTarget) {
+      return {
+        authorized: true,
+        isSuperAdmin: false,
+        ownerPhone: ownerSession.payload.ownerPhone,
+      };
+    }
+
+    // السماح للمالك الذي يمتلك أكثر من ملصق مسجل بنفس رقم هاتفه بالوصول لملصقاته
+    const sessionPhoneDigits = ownerSession.payload.ownerPhone
+      .replace(/[^\d]/g, "")
+      .slice(-9);
+    if (sessionPhoneDigits) {
+      const targetData = await getTagDashboardData(formattedTarget);
+      const targetPhoneDigits = String(targetData.tag?.ownerPhone || "")
+        .replace(/[^\d]/g, "")
+        .slice(-9);
+      if (targetPhoneDigits && targetPhoneDigits === sessionPhoneDigits) {
+        return {
+          authorized: true,
+          isSuperAdmin: false,
+          ownerPhone: ownerSession.payload.ownerPhone,
+        };
+      }
+    }
+  }
+
+  // 2. التحقق من جلسة المشرف الموقّعة (للسماح للمدير بمراجعة الملصق عند الحاجة)
+  const authHeader = request.headers.get("authorization") || "";
+  const bearer = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const adminCookie = request.cookies.get("balaghni_admin_session")?.value || "";
+  const adminToken = bearer || adminCookie;
+  if (adminToken) {
+    const adminCheck = await verifyAdminActionPermission(adminToken, "manage_tags");
+    if (adminCheck.authorized && adminCheck.profile) {
+      return {
+        authorized: true,
+        isSuperAdmin: adminCheck.profile.role === "SUPER_ADMIN",
+      };
+    }
+  }
+
+  return {
+    authorized: false,
+    isSuperAdmin: false,
+    expired: ownerSession.expired,
+  };
+}
 
 export async function GET(request: NextRequest) {
-  const tagCode = request.nextUrl.searchParams.get("tag") || "";
-  if (!tagCode.trim()) {
+  const rawTag = request.nextUrl.searchParams.get("tag") || "";
+  const tagCode = formatBalaghniTagCode(rawTag.trim());
+  if (!tagCode) {
     return NextResponse.json(
       { ok: false, error: "يرجى تحديد كود الملصق." },
       { status: 400 }
     );
   }
 
+  const auth = await authorizeDashboardTagAccess(request, tagCode);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      {
+        ok: false,
+        sessionExpired: Boolean(auth.expired),
+        error:
+          "غير مصرح لك بالوصول لبيانات هذه المركبة. يرجى تسجيل الدخول بحساب مالك الملصق أولاً.",
+      },
+      { status: 401 }
+    );
+  }
+
   const [data, lifecycle] = await Promise.all([
-    getTagDashboardData(tagCode.trim()),
-    getStickerLifecycle(tagCode.trim()),
+    getTagDashboardData(tagCode),
+    getStickerLifecycle(tagCode),
   ]);
   if (!data.ok || !data.tag) {
     return NextResponse.json(
@@ -50,6 +136,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { ok: false, error: "كود الملصق مطلوب." },
         { status: 400 }
+      );
+    }
+
+    const auth = await authorizeDashboardTagAccess(request, tagCode);
+    if (!auth.authorized) {
+      return NextResponse.json(
+        {
+          ok: false,
+          sessionExpired: Boolean(auth.expired),
+          error:
+            "غير مصرح لك بتعديل بيانات هذه المركبة. يرجى تسجيل الدخول بحساب المالك أولاً.",
+        },
+        { status: 401 }
       );
     }
 
@@ -122,11 +221,22 @@ export async function POST(request: NextRequest) {
         getStickerLifecycle(tagCode),
       ]);
 
-      return NextResponse.json({
+      const response = NextResponse.json({
         ok: true,
         tag: updatedData.tag,
         lifecycle: updatedLifecycle,
       });
+
+      // تحديث كوكي جلسة المالك في حال تغير رقم الهاتف
+      if (ownerPhone && !auth.isSuperAdmin) {
+        const newToken = createOwnerSessionToken({
+          tagCode,
+          ownerPhone,
+        });
+        attachOwnerSessionCookie(response, newToken, tagCode);
+      }
+
+      return response;
     }
 
     if (action === "upsert_document") {
@@ -192,3 +302,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+

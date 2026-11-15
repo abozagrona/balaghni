@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import crypto from "node:crypto";
+import { supabaseAdmin } from "@/lib/supabase/client";
 import { sendSmsAlertMessage } from "@/lib/otp-service";
 
 export const dynamic = "force-dynamic";
@@ -18,17 +19,36 @@ function normalizeLibyanPhone(raw: string): string {
 }
 
 function getServiceSupabase() {
-  const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
-    "https://bcmpbfwrtdoxoqebixai.supabase.co";
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJjbXBiZndydGRveG9xZWJpeGFpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0NDA4MjQsImV4cCI6MjA5MTAxNjgyNH0.s1c3sD3t2-F8w8wB2a-x-0C_4f7e-4j-5k6l7m8n9o0";
+  return supabaseAdmin;
+}
 
-  return createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+function verifyMetaWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null
+): boolean {
+  const appSecret = (
+    process.env.WHATSAPP_APP_SECRET ||
+    process.env.META_APP_SECRET ||
+    ""
+  ).trim();
+
+  // إذا كان سر تطبيق Meta مضبوطاً في البيئة، نفرض التحقق التشفيري الصارم من التوقيع
+  if (!appSecret) {
+    return true;
+  }
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) {
+    return false;
+  }
+
+  const expectedSig = `sha256=${crypto
+    .createHmac("sha256", appSecret)
+    .update(rawBody, "utf8")
+    .digest("hex")}`;
+
+  const a = Buffer.from(signatureHeader, "utf8");
+  const b = Buffer.from(expectedSig, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function buildPhoneCandidates(rawPhone: string): string[] {
@@ -257,7 +277,18 @@ async function findLatestReportForPhone(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const rawBody = await req.text().catch(() => "");
+    const signatureHeader = req.headers.get("x-hub-signature-256");
+
+    if (!verifyMetaWebhookSignature(rawBody, signatureHeader)) {
+      console.warn("[WhatsApp Webhook] تم رفض الطلب بسبب فشل توقيع X-Hub-Signature-256");
+      return NextResponse.json(
+        { ok: false, error: "Invalid webhook signature" },
+        { status: 401 }
+      );
+    }
+
+    const body = rawBody ? JSON.parse(rawBody) : {};
     const { statuses, messages } = extractEventsFromPayload(body);
     const supabase = getServiceSupabase();
 
@@ -287,32 +318,43 @@ export async function POST(req: NextRequest) {
       }
 
       // في حال فشل تسليم إشعار الواتساب (failed): التحويل التلقائي إلى SMS كخطة بديلة
-      if (st.status === "failed" && st.recipientPhone) {
-        const reasonTitle = String(
-          report?.reason_title || "تنبيه عاجل بخصوص مركبتك"
-        );
-        const messageDesc = String(
-          report?.message || "يرجى التوجه لمركبتك ومراجعة البلاغ الوارد عبر منصة بَلِّغْنِي."
-        );
+      // شرط أمني: لا يتم إرسال SMS بديل إلا إذا كان هناك بلاغ حقيقي حديث (خلال آخر 24 ساعة) لم يُرسل له SMS مسبقاً
+      if (st.status === "failed" && st.recipientPhone && report?.id) {
+        const reportCreatedMs = report.created_at
+          ? new Date(String(report.created_at)).getTime()
+          : 0;
+        const isRecentReport =
+          reportCreatedMs > 0 && Date.now() - reportCreatedMs <= 24 * 60 * 60 * 1000;
+        const alreadySentSms = String(report.reason_badge || "").includes("SMS");
 
-        console.warn(
-          `[WhatsApp Webhook] فشل تسليم رسالة واتساب (${st.messageId}) إلى ${st.recipientPhone}. جاري التوجيه التلقائي عبر SMS (Resala)...`
-        );
+        if (isRecentReport && !alreadySentSms) {
+          const reasonTitle = String(
+            report?.reason_title || "تنبيه عاجل بخصوص مركبتك"
+          );
+          const messageDesc = String(
+            report?.message ||
+              "يرجى التوجه لمركبتك ومراجعة البلاغ الوارد عبر منصة بَلِّغْنِي."
+          );
 
-        const smsFallback = await sendSmsAlertMessage(
-          st.recipientPhone,
-          vehicleLabel || tagCode || "مركبتك",
-          reasonTitle,
-          messageDesc
-        );
+          console.warn(
+            `[WhatsApp Webhook] فشل تسليم رسالة واتساب (${st.messageId}) إلى ${st.recipientPhone}. جاري التوجيه التلقائي عبر SMS (Resala)...`
+          );
 
-        if (report?.id && smsFallback.ok) {
-          await supabase
-            .from("reports")
-            .update({
-              reason_badge: "تم الإشعار عبر SMS (بديل تلقائي)",
-            })
-            .eq("id", report.id);
+          const smsFallback = await sendSmsAlertMessage(
+            st.recipientPhone,
+            vehicleLabel || tagCode || "مركبتك",
+            reasonTitle,
+            messageDesc
+          );
+
+          if (smsFallback.ok) {
+            await supabase
+              .from("reports")
+              .update({
+                reason_badge: "تم الإشعار عبر SMS (بديل تلقائي)",
+              })
+              .eq("id", report.id);
+          }
         }
       }
     }

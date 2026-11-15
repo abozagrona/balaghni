@@ -20,7 +20,7 @@ interface SmartOtpModalProps {
   isOpen: boolean;
   phone: string; // أي صيغة للرقم الليبي
   onClose: () => void;
-  onVerified: (verifiedPhone: string) => void | Promise<void>;
+  onVerified: (verifiedPhone: string, otpProofToken?: string) => void | Promise<void>;
   title?: string;
   subtitle?: string;
   autoSendOnOpen?: boolean;
@@ -87,7 +87,7 @@ export function SmartOtpModal({
     try {
       const res = await fetch("/api/auth/otp", {
         method: "POST",
-        credentials: "omit",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "send",
@@ -174,7 +174,7 @@ export function SmartOtpModal({
     try {
       const res = await fetch("/api/auth/otp", {
         method: "POST",
-        credentials: "omit",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "verify",
@@ -193,7 +193,7 @@ export function SmartOtpModal({
 
       setSuccess(true);
       setTimeout(async () => {
-        await onVerified(data.phone || phone);
+        await onVerified(data.phone || phone, data.otpProofToken);
         onClose();
       }, 700);
     } catch {

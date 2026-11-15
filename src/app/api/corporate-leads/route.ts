@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createCorporateLead } from "@/lib/lifecycle-service";
-import { getAdminWhatsappNumber } from "@/lib/packages";
+import {
+  checkOrderRateLimit,
+  recordOrderAttempt,
+  getClientIp,
+} from "@/lib/rate-limiter";
 
 export async function POST(req: NextRequest) {
   try {
@@ -27,6 +31,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const ip = getClientIp(req);
+    const rateKeyPhone = contactPhone || companyName;
+    const rateLimit = checkOrderRateLimit(rateKeyPhone, ip);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: rateLimit.reason,
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        { status: 429 }
+      );
+    }
+    recordOrderAttempt(rateKeyPhone, ip);
+
     const res = await createCorporateLead({
       companyName,
       city,
@@ -38,7 +57,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       lead: res.lead,
-      adminWhatsappNumber: getAdminWhatsappNumber(),
     });
   } catch {
     return NextResponse.json(
@@ -47,3 +65,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

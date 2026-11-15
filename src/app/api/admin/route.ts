@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  supabase,
-  supabaseAdmin,
   verifyAdminAuthentication,
   verifyAdminActionPermission,
   verifyAdminSessionToken,
-  createAdminSessionToken,
-  ADMIN_COOKIE_MAX_AGE_SECONDS,
   getExecutiveAdminOverview,
   adminManageTagLifecycle,
   adminImportPrintedTags,
@@ -17,47 +13,109 @@ import {
   type AlertChannel,
   type AdminPermission,
 } from "@/lib/supabase/client";
+import {
+  attachAdminSessionCookie,
+  clearAdminSessionCookie,
+  createWebAuthnChallenge,
+  attachWebAuthnChallengeCookie,
+  verifyWebAuthnRegistration,
+  verifyWebAuthnAssertion,
+  encodePasskeyCredentialRecord,
+  extractRawCredentialId,
+} from "@/lib/security-tokens";
+
+function extractAdminCandidateToken(req: NextRequest, bodySessionToken?: unknown): string {
+  const authHeader = req.headers.get("authorization") || "";
+  const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const xAdminToken = req.headers.get("x-admin-token") || "";
+  const cookieToken = req.cookies.get("balaghni_admin_session")?.value || "";
+  const bodyToken = typeof bodySessionToken === "string" ? bodySessionToken.trim() : "";
+  return bearerToken || xAdminToken || bodyToken || cookieToken;
+}
 
 export async function GET(req: NextRequest) {
   try {
-    // التحقق الصارم من حالة الجلسة وانتهاء الصلاحية من جهة الخادم
-    const authHeader = req.headers.get("authorization") || "";
-    const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
-      ? authHeader.slice(7).trim()
-      : "";
-    const cookieToken =
-      req.cookies.get("balaghni_admin_session")?.value || "";
-    const candidateToken = bearerToken || cookieToken;
-
-    if (candidateToken) {
-      const sessionCheck = verifyAdminSessionToken(candidateToken);
-      if (sessionCheck.expired) {
-        const res = NextResponse.json(
-          {
-            ok: false,
-            sessionExpired: true,
-            error: "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
-          },
-          { status: 401 }
-        );
-        res.cookies.set("balaghni_admin_session", "", {
-          path: "/",
-          maxAge: 0,
-          expires: new Date(0),
-        });
-        return res;
-      }
-    }
-
     const identifier = req.nextUrl.searchParams.get("identifier") || "";
     const authStatus = await verifyAdminAuthentication({
       mode: "status",
       identifier,
     });
+
+    const mode = req.nextUrl.searchParams.get("mode") || "";
+    const candidateToken = extractAdminCandidateToken(req);
+
+    // إذا لم تتوفر جلسة إدارية، لا نرجع أي بيانات حساسة (ملصقات، هواتف ملاك، سجلات تدقيق)؛
+    // نكتفي بإرجاع حالة قفل المحاولات عند فحص identifier أو رفض الطلب بـ 401.
+    if (!candidateToken) {
+      if (identifier.trim() || mode === "status") {
+        return NextResponse.json({
+          ok: true,
+          authenticated: false,
+          authStatus: {
+            lockedUntilIso: authStatus.lockedUntilIso,
+            remainingAttempts: authStatus.remainingAttempts,
+          },
+        });
+      }
+      return NextResponse.json(
+        {
+          ok: false,
+          authenticated: false,
+          error: "يجب تسجيل الدخول بحساب مشرف صالح للوصول إلى بيانات الإدارة.",
+          authStatus: {
+            lockedUntilIso: authStatus.lockedUntilIso,
+            remainingAttempts: authStatus.remainingAttempts,
+          },
+        },
+        { status: 401 }
+      );
+    }
+
+    const sessionCheck = verifyAdminSessionToken(candidateToken);
+    if (!sessionCheck.valid || !sessionCheck.payload) {
+      const res = NextResponse.json(
+        {
+          ok: false,
+          authenticated: false,
+          sessionExpired: Boolean(sessionCheck.expired),
+          error: sessionCheck.expired
+            ? "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+            : "جلسة المشرف غير صالحة، يرجى تسجيل الدخول.",
+          authStatus: {
+            lockedUntilIso: authStatus.lockedUntilIso,
+            remainingAttempts: authStatus.remainingAttempts,
+          },
+        },
+        { status: 401 }
+      );
+      clearAdminSessionCookie(res);
+      return res;
+    }
+
+    // تحقق إضافي من أن حساب المشرف لا يزال نشطاً في قاعدة البيانات
+    const activeCheck = await verifyAdminActionPermission(candidateToken, "status");
+    if (!activeCheck.authorized || !activeCheck.profile) {
+      const res = NextResponse.json(
+        {
+          ok: false,
+          authenticated: false,
+          sessionExpired: true,
+          error: activeCheck.error || "تم إيقاف جلسة المشرف أو إلغاء تنشيط الحساب.",
+        },
+        { status: 401 }
+      );
+      clearAdminSessionCookie(res);
+      return res;
+    }
+
     const overview = await getExecutiveAdminOverview();
 
     return NextResponse.json({
       ok: true,
+      authenticated: true,
+      adminProfile: activeCheck.profile,
       authStatus: {
         lockedUntilIso: authStatus.lockedUntilIso,
         remainingAttempts: authStatus.remainingAttempts,
@@ -76,45 +134,44 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || "").trim();
-    const adminName = String(body.adminName || "مدير النظام الرئيسي").trim();
     const adminId = body.adminId ? String(body.adminId).trim() : null;
 
-    // أ) جلب قائمة بجميع passkey_credential_id المسجلة والنشطة في جدول admin_profiles (بدون اشتراط رقم هاتف)
-    if (
-      (action === "auth" && body.mode === "lookup_passkey" && !body.identifier) ||
-      (body.mode === "lookup_passkey" && !body.identifier)
-    ) {
-      const { data, error } = await supabaseAdmin
-        .from("admin_profiles")
-        .select("passkey_credential_id")
-        .not("passkey_credential_id", "is", null)
-        .eq("is_active", true);
-
-      const credIds: string[] = [];
-      if (!error && Array.isArray(data)) {
-        for (const row of data) {
-          const cid = String(row.passkey_credential_id || "").trim();
-          if (cid && !credIds.includes(cid)) {
-            credIds.push(cid);
-          }
-        }
-      }
-
-      return NextResponse.json({
-        ok: true,
-        passkeyCredentialIds: credIds,
-        credentialIds: credIds,
-      });
+    if (action === "logout" || (action === "auth" && body.mode === "logout")) {
+      const res = NextResponse.json({ ok: true });
+      clearAdminSessionCookie(res);
+      return res;
     }
 
-    // د) البحث عن المشرف عبر معرّف البصمة فقط (دون اشتراط وجود phone في الطلب نهائياً) وفتح الجلسة فوراً
+    // أ) إصدار تحدي WebAuthn موقّع للتحقق من بصمة المشرف دون كشف قائمة المعرفات للعامة
+    if (
+      (action === "auth" && body.mode === "lookup_passkey") ||
+      body.mode === "lookup_passkey"
+    ) {
+      const hostHeader = req.headers.get("host") || "localhost";
+      const rpId = hostHeader.split(":")[0] || "localhost";
+      const { challenge, challengeToken } = createWebAuthnChallenge(rpId, "admin");
+      const res = NextResponse.json({
+        ok: true,
+        rpId,
+        challenge,
+        challengeToken,
+        passkeyCredentialIds: [],
+        credentialIds: [],
+      });
+      attachWebAuthnChallengeCookie(res, challengeToken);
+      return res;
+    }
+
+    // ب) تسجيل الدخول بمفتاح المرور (Passkey) مع التحقق التشفيري الكامل من التوقيع على الخادم
     if (
       (action === "auth" && body.mode === "passkey_login") ||
-      Boolean(body.credential_id && !body.password)
+      Boolean(body.credential_id && !body.password && action !== "auth")
     ) {
-      const credentialId = String(
-        body.credential_id || body.credentialId || body.passkeyCredentialId || ""
-      ).trim();
+      const credentialId = extractRawCredentialId(
+        String(
+          body.credential_id || body.credentialId || body.passkeyCredentialId || ""
+        )
+      );
 
       if (!credentialId) {
         return NextResponse.json(
@@ -123,98 +180,61 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const { data: adminProfile, error } = await supabaseAdmin
-        .from("admin_profiles")
-        .select("*")
-        .eq("passkey_credential_id", credentialId)
-        .eq("is_active", true)
-        .single();
+      const authRes = await verifyAdminAuthentication({
+        mode: "passkey_login",
+        identifier: body.identifier,
+        passkeyCredentialId: credentialId,
+      });
 
-      if (error || !adminProfile) {
+      if (!authRes.ok || !authRes.adminProfile || !authRes.sessionToken) {
         return NextResponse.json(
           {
             ok: false,
-            error: "لم يتم العثور على حساب مشرف نشط مطابق لهذه البصمة.",
+            error:
+              authRes.error ||
+              "لم يتم العثور على حساب مشرف نشط مطابق لهذه البصمة.",
           },
           { status: 401 }
         );
       }
 
-      const nowIso = new Date().toISOString();
-      try {
-        await supabaseAdmin
-          .from("admin_profiles")
-          .update({ last_login: nowIso })
-          .eq("id", adminProfile.id);
-      } catch {
-        // ignore
-      }
+      // التحقق التشفيري الإلزامي من التحدي والتوقيع الرقمي لمفتاح المرور
+      const storedRecord =
+        authRes.storedPasskeyRecord || authRes.adminProfile.passkeyCredentialId || "";
+      const assertionVerification = verifyWebAuthnAssertion({
+        req,
+        challengeTokenFromBody: body.challengeToken,
+        expectedScope: "admin",
+        credentialId,
+        storedCredentialRecord: storedRecord,
+        clientDataJSONBase64: String(body.clientDataJSON || ""),
+        authenticatorDataBase64: String(body.authenticatorData || ""),
+        signatureBase64: String(body.signature || ""),
+      });
 
-      let permissions: AdminPermission[] = [];
-      if (Array.isArray(adminProfile.permissions)) {
-        permissions = adminProfile.permissions.map((x: any) =>
-          x === "import_tags" ? "import_batches" : (x as AdminPermission)
+      if (!assertionVerification.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              assertionVerification.error ||
+              "فشل التحقق التشفيري من بصمة المشرف.",
+          },
+          { status: 401 }
         );
-      } else if (
-        adminProfile.permissions &&
-        typeof adminProfile.permissions === "object"
-      ) {
-        const obj = adminProfile.permissions as Record<string, boolean>;
-        if (obj.manage_reports) permissions.push("manage_reports");
-        if (obj.manage_tags) permissions.push("manage_tags");
-        if (obj.import_tags || obj.import_batches)
-          permissions.push("import_batches");
-        if (obj.manage_admins) permissions.push("manage_admins");
-        if (obj.danger_zone) permissions.push("danger_zone");
-        if (obj.can_live_edit) permissions.push("can_live_edit");
       }
-
-      if (adminProfile.role === "SUPER_ADMIN") {
-        if (permissions.length === 0) {
-          permissions = [
-            "manage_reports",
-            "manage_tags",
-            "import_batches",
-            "manage_admins",
-            "danger_zone",
-            "can_live_edit",
-          ];
-        } else if (!permissions.includes("can_live_edit")) {
-          permissions.push("can_live_edit");
-        }
-      }
-
-      const formattedProfile = {
-        id: adminProfile.id,
-        fullName: adminProfile.full_name || adminProfile.phone,
-        username: adminProfile.username || adminProfile.phone,
-        phone: adminProfile.phone,
-        role: adminProfile.role || "SUPER_ADMIN",
-        permissions,
-        mustChangePassword: false,
-        passkeyCredentialId: adminProfile.passkey_credential_id,
-        isActive: Boolean(adminProfile.is_active),
-        lastLogin: nowIso,
-        createdAt: adminProfile.created_at,
-      };
-
-      const sessionToken = createAdminSessionToken(formattedProfile);
 
       const response = NextResponse.json({
         ok: true,
         remainingAttempts: 4,
-        adminProfile: formattedProfile,
-        sessionToken,
+        adminProfile: authRes.adminProfile,
+        sessionToken: authRes.sessionToken,
       });
-      response.cookies.set("balaghni_admin_session", sessionToken, {
-        path: "/",
-        maxAge: ADMIN_COOKIE_MAX_AGE_SECONDS,
-        sameSite: "lax",
-      });
+      attachAdminSessionCookie(response, authRes.sessionToken);
       return response;
     }
 
-    // 1. المصادقة المؤسسية للمشرفين وتغيير كلمة المرور (password_login / enroll_passkey / change_own_password / status)
+    // 1. المصادقة المؤسسية للمشرفين وتغيير كلمة المرور وربط البصمة
     if (action === "auth") {
       const mode = body.mode as
         | "lookup_passkey"
@@ -224,6 +244,82 @@ export async function POST(req: NextRequest) {
         | "unlink_passkey"
         | "change_own_password"
         | "status";
+
+      // حماية ربط أو إلغاء البصمة: تتطلب جلسة مشرف نشطة وموقّعة
+      if (mode === "enroll_passkey" || mode === "unlink_passkey") {
+        const candidateToken = extractAdminCandidateToken(req, body.sessionToken);
+        const sessionAuth = await verifyAdminActionPermission(candidateToken, "status");
+        if (!sessionAuth.authorized || !sessionAuth.profile) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "يتطلب ربط أو إلغاء البصمة جلسة مشرف نشطة ومصادق عليها.",
+            },
+            { status: 401 }
+          );
+        }
+
+        let credentialToStore = String(
+          body.passkeyCredentialId || body.credential_id || ""
+        ).trim();
+
+        if (mode === "enroll_passkey") {
+          const regVerify = verifyWebAuthnRegistration({
+            req,
+            challengeTokenFromBody: body.challengeToken,
+            expectedScope: "admin",
+            credentialId: credentialToStore,
+            clientDataJSONBase64: String(body.clientDataJSON || ""),
+            publicKeySpkiBase64: String(body.publicKeySpki || ""),
+            publicKeyAlgorithm: Number(body.publicKeyAlgorithm || -7),
+          });
+          if (!regVerify.ok || !regVerify.encodedRecord) {
+            return NextResponse.json(
+              {
+                ok: false,
+                error:
+                  regVerify.error || "تعذر التحقق التشفيري من مفتاح المرور الجديد.",
+              },
+              { status: 400 }
+            );
+          }
+          credentialToStore = regVerify.encodedRecord;
+        }
+
+        const res = await verifyAdminAuthentication({
+          mode,
+          identifier: sessionAuth.profile.phone,
+          passkeyCredentialId: credentialToStore,
+          adminId: sessionAuth.profile.id,
+        });
+
+        if (res.ok && res.sessionToken) {
+          const response = NextResponse.json(res, { status: 200 });
+          attachAdminSessionCookie(response, res.sessionToken);
+          return response;
+        }
+        return NextResponse.json(res, { status: res.ok ? 200 : 400 });
+      }
+
+      // حماية تغيير كلمة المرور: إذا لم يدخل كلمة المرور الحالية، يجب أن يمتلك جلسة نشطة لنفس الحساب
+      if (mode === "change_own_password" && !body.currentPassword) {
+        const candidateToken = extractAdminCandidateToken(req, body.sessionToken);
+        const sessionAuth = await verifyAdminActionPermission(candidateToken, "status");
+        if (
+          !sessionAuth.authorized ||
+          !sessionAuth.profile ||
+          (adminId && sessionAuth.profile.id !== adminId)
+        ) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "يرجى إدخال كلمة المرور الحالية أو تسجيل الدخول أولاً.",
+            },
+            { status: 401 }
+          );
+        }
+      }
+
       const res = await verifyAdminAuthentication({
         mode: mode || "password_login",
         identifier: body.identifier,
@@ -236,29 +332,15 @@ export async function POST(req: NextRequest) {
 
       if (res.ok && res.sessionToken) {
         const response = NextResponse.json(res, { status: 200 });
-        response.cookies.set("balaghni_admin_session", res.sessionToken, {
-          path: "/",
-          maxAge: ADMIN_COOKIE_MAX_AGE_SECONDS,
-          sameSite: "lax",
-        });
+        attachAdminSessionCookie(response, res.sessionToken);
         return response;
       }
 
       return NextResponse.json(res, { status: res.ok ? 200 : 401 });
     }
 
-    // التحقق الأمني الصارم من صلاحيات المشرف من جهة الخادم لجميع العمليات الإدارية
-    const authHeader = req.headers.get("authorization") || "";
-    const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
-      ? authHeader.slice(7).trim()
-      : "";
-    const xAdminId =
-      req.headers.get("x-admin-id") || req.headers.get("x-admin-token") || "";
-    const cookieToken =
-      req.cookies.get("balaghni_admin_session")?.value || "";
-    const bodyToken = String(body.sessionToken || body.adminId || "").trim();
-
-    const candidateToken = bearerToken || xAdminId || bodyToken || cookieToken;
+    // التحقق الأمني الصارم من صلاحيات المشرف من جهة الخادم لجميع العمليات الإدارية (يرفض معرفات المشرف الخام)
+    const candidateToken = extractAdminCandidateToken(req, body.sessionToken);
 
     const authCheck = await verifyAdminActionPermission(candidateToken, action);
     if (!authCheck.authorized || !authCheck.profile) {
@@ -273,11 +355,7 @@ export async function POST(req: NextRequest) {
         { status: authCheck.expired ? 401 : 403 }
       );
       if (authCheck.expired) {
-        res.cookies.set("balaghni_admin_session", "", {
-          path: "/",
-          maxAge: 0,
-          expires: new Date(0),
-        });
+        clearAdminSessionCookie(res);
       }
       return res;
     }
@@ -353,7 +431,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 4. التحكم الكامل في فريق المشرفين والصلاحيات بجدول admin_profiles (إنشاء بتوليد تلقائي، إعادة تعيين كلمة السر، تعديل صلاحيات، تجميد، حذف)
+    // 4. التحكم الكامل في فريق المشرفين والصلاحيات بجدول admin_profiles
     if (
       action === "team_add" ||
       action === "team_toggle" ||
@@ -415,4 +493,5 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 

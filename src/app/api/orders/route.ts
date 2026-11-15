@@ -9,6 +9,17 @@ import {
   getPackageConfig,
   normalizePackageType,
 } from "@/lib/packages";
+import { formatFullLibyaE164 } from "@/lib/utils";
+import {
+  verifyAndConsumeOtpProof,
+  createOwnerSessionToken,
+  attachOwnerSessionCookie,
+} from "@/lib/security-tokens";
+import {
+  checkOrderRateLimit,
+  recordOrderAttempt,
+  getClientIp,
+} from "@/lib/rate-limiter";
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,19 +39,55 @@ export async function POST(req: NextRequest) {
     const expiresAt = exp.toISOString();
 
     const fullName = String(body.customerName || body.fullName || "").trim();
-    const phone = String(body.customerPhone || body.phone || "").trim();
+    const rawPhone = String(body.customerPhone || body.phone || "").trim();
+    const phone = formatFullLibyaE164(rawPhone);
     const city = String(body.city || "طرابلس").trim();
     const address = String(body.address || "").trim();
     const vehicleModel = body.vehicleModel ? String(body.vehicleModel).trim() : null;
-    const quantity = Number(body.quantity || 1);
-    const totalLyd = Number(body.totalLyd || pkgConfig.priceLyd || 100);
+    const quantity = Math.min(5, Math.max(1, Number(body.quantity || 1)));
+    const totalLyd = Number(pkgConfig.priceLyd || 100) * quantity;
 
     if (!fullName || !phone || !address) {
       return NextResponse.json(
-        { ok: false, error: "يرجى تعبئة الاسم الكامل ورقم الهاتف والعنوان." },
+        { ok: false, error: "يرجى تعبئة الاسم الكامل ورقم الهاتف الليبي الصحيح والعنوان." },
         { status: 400 }
       );
     }
+
+    // 1. فحص حدود المعدل (Rate Limit) لمنع استنزاف مخزون الملصقات
+    const ip = getClientIp(req);
+    const rateLimit = checkOrderRateLimit(phone, ip);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: rateLimit.reason,
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        { status: 429 }
+      );
+    }
+
+    // 2. التحقق الإلزامي من ملكية رقم الهاتف عبر رمز التحقق (OTP Proof Token) الموقّع من الخادم
+    const otpProofCheck = verifyAndConsumeOtpProof(
+      req,
+      body.otpProofToken,
+      phone
+    );
+    if (!otpProofCheck.valid) {
+      return NextResponse.json(
+        {
+          ok: false,
+          requiresOtp: true,
+          error:
+            otpProofCheck.error ||
+            "يرجى تأكيد رقم هاتفك عبر رمز التحقق قبل إتمام الطلب وسحب الملصق.",
+        },
+        { status: 401 }
+      );
+    }
+
+    recordOrderAttempt(phone, ip);
 
     const pullRes = await pullAndActivateLockedTag({
       planType: pkgType === "basic" ? "basic" : "nabbihni",
@@ -103,7 +150,11 @@ export async function POST(req: NextRequest) {
       `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${assignedStickerCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
     );
 
-    return NextResponse.json({
+    const ownerToken = createOwnerSessionToken({
+      tagCode: assignedStickerCode,
+      ownerPhone: phone,
+    });
+    const response = NextResponse.json({
       ok: true,
       stickerCode: assignedStickerCode,
       packageType: pkgType,
@@ -114,6 +165,8 @@ export async function POST(req: NextRequest) {
       subscriptionStartsAt: startsAt,
       subscriptionExpiresAt: expiresAt,
     });
+    attachOwnerSessionCookie(response, ownerToken, assignedStickerCode);
+    return response;
   } catch {
     return NextResponse.json(
       { ok: false, error: "تعذر تسجيل الطلب حالياً." },
@@ -121,3 +174,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

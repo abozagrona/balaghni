@@ -2,19 +2,48 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   sendZeroLeakNotification,
   uploadReportPhoto,
+  validateScanTargetAndCooldown,
 } from "@/lib/supabase/client";
+import {
+  checkReportIpRateLimit,
+  getClientIp,
+  recordReportIpAttempt,
+} from "@/lib/rate-limiter";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
 export const maxDuration = 30;
+
+function sanitizeUserText(raw: string, maxLen = 250): string {
+  return raw
+    .replace(/[<>]/g, "")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .trim()
+    .slice(0, maxLen);
+}
 
 /**
  * مسار إرسال البلاغات الآمن والمعزول (Zero-Leak & Anti-Spam Cooldown API)
  * المتصفح يرسل فقط: tag_code, reason, custom_note, senderPhone, image
  * السيرفر يستعلم داخلياً عن هاتف المالك ونوع باقته (SMS / WHATSAPP / BOTH) دون كشف الرقم نهائياً للواجهة الأمامية
- * حماية التبريد: منع إرسال أكثر من بلاغ لنفس الملصق إلا بعد مرور 5 دقائق
+ * حماية التبريد: منع إرسال أكثر من بلاغ لنفس الملصق إلا بعد مرور 5 دقائق، مع حد أقصى كلي للبلاغات لكل عنوان IP
  */
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = getClientIp(req);
+    const ipLimit = checkReportIpRateLimit(clientIp);
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          cooldownActive: true,
+          waitSeconds: ipLimit.retryAfterSeconds,
+          error: ipLimit.reason,
+        },
+        { status: 429 }
+      );
+    }
+    recordReportIpAttempt(clientIp);
+
     let tagCode = "";
     let reason = "blocking";
     let customNote = "";
@@ -27,18 +56,22 @@ export async function POST(req: NextRequest) {
       tagCode = String(
         formData.get("tag_code") || formData.get("tagCode") || ""
       );
-      reason = String(formData.get("reason") || "blocking");
-      customNote = String(
-        formData.get("custom_note") || formData.get("note") || ""
+      reason = sanitizeUserText(String(formData.get("reason") || "blocking"), 32);
+      customNote = sanitizeUserText(
+        String(formData.get("custom_note") || formData.get("note") || ""),
+        250
       );
-      senderPhone = String(formData.get("senderPhone") || "").trim();
+      senderPhone = sanitizeUserText(String(formData.get("senderPhone") || ""), 20);
       imageEntry = formData.get("image");
     } else {
       const body = await req.json().catch(() => ({}));
       tagCode = String(body.tag_code || body.tagCode || "");
-      reason = String(body.reason || "blocking");
-      customNote = String(body.custom_note || body.note || "");
-      senderPhone = String(body.senderPhone || "").trim();
+      reason = sanitizeUserText(String(body.reason || "blocking"), 32);
+      customNote = sanitizeUserText(
+        String(body.custom_note || body.note || ""),
+        250
+      );
+      senderPhone = sanitizeUserText(String(body.senderPhone || ""), 20);
     }
 
     if (!tagCode.trim()) {
@@ -49,7 +82,34 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedCode = formatBalaghniTagCode(tagCode);
-    const photoUrl = await uploadReportPhoto(normalizedCode, imageEntry);
+
+    // 1. فحص صلاحية الملصق وانتهاء فترة التبريد (5 دقائق) في قاعدة البيانات قبل رفع أي صورة للمخزن
+    const preCheck = await validateScanTargetAndCooldown(normalizedCode);
+    if (!preCheck.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          cooldownActive: Boolean(preCheck.cooldownActive),
+          waitSeconds: preCheck.waitSeconds || 0,
+          error:
+            preCheck.error ||
+            "تم إرسال بلاغ لصاحب السيارة بالفعل، يرجى الانتظار بضع دقائق",
+        },
+        { status: preCheck.cooldownActive ? 429 : 400 }
+      );
+    }
+
+    // 2. رفع الصورة فقط بعد التأكد من صحة الملصق وانتهاء فترة التبريد (مع التحقق من Magic Bytes والحجم)
+    const { url: photoUrl, error: uploadError } = await uploadReportPhoto(
+      normalizedCode,
+      imageEntry
+    );
+    if (uploadError) {
+      return NextResponse.json(
+        { ok: false, error: uploadError },
+        { status: 400 }
+      );
+    }
 
     const result = await sendZeroLeakNotification({
       tagCode: normalizedCode,
@@ -88,3 +148,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

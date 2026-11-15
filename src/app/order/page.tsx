@@ -14,7 +14,9 @@ import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { BellStickerPreview } from "@/components/brand/bell-sticker-preview";
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
+import { SmartOtpModal } from "@/components/auth/smart-otp-modal";
 import { cn, formatFullLibyaE164 } from "@/lib/utils";
+import { saveOwnerSession } from "@/lib/auth-session";
 
 const TIERS = [
   { id: "basic", name: "الباقة الأساسية", price: 50, badge: "واتساب فقط • 50 د.ل" },
@@ -54,6 +56,8 @@ export default function OrderPage() {
   const [vehicleModel, setVehicleModel] = React.useState("");
 
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [otpModalOpen, setOtpModalOpen] = React.useState(false);
+  const [phoneForOtp, setPhoneForOtp] = React.useState("");
   const [activatedOrder, setActivatedOrder] = React.useState<{
     stickerCode: string;
     packageName: string;
@@ -69,6 +73,7 @@ export default function OrderPage() {
 
   const handleOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setError(null);
 
     const formattedPhone = formatFullLibyaE164(phoneDigits);
@@ -84,11 +89,23 @@ export default function OrderPage() {
       return;
     }
 
+    setPhoneForOtp(formattedPhone);
+    setOtpModalOpen(true);
+  };
+
+  const handleOrderOtpVerified = async (
+    verifiedPhone: string,
+    otpProofToken?: string
+  ) => {
+    setOtpModalOpen(false);
     setIsSubmitting(true);
+    setError(null);
+
     try {
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           packageType: selectedTier,
           tier: selectedTier,
@@ -96,12 +113,13 @@ export default function OrderPage() {
           quantity,
           customerName: fullName.trim(),
           fullName: fullName.trim(),
-          customerPhone: formattedPhone,
-          phone: formattedPhone,
+          customerPhone: verifiedPhone,
+          phone: verifiedPhone,
           city,
           address: address.trim(),
           vehicleModel: vehicleModel.trim(),
           totalLyd,
+          otpProofToken,
         }),
       });
 
@@ -113,6 +131,14 @@ export default function OrderPage() {
         setIsSubmitting(false);
         return;
       }
+
+      saveOwnerSession({
+        tagCode: data.stickerCode,
+        vehicleInfo: vehicleModel.trim() || fullName.trim(),
+        city,
+        ownerPhone: verifiedPhone,
+        activatedAt: data.subscriptionStartsAt || new Date().toISOString(),
+      });
 
       setActivatedOrder({
         stickerCode: data.stickerCode,
@@ -474,6 +500,15 @@ export default function OrderPage() {
           </div>
         )}
       </main>
+
+      <SmartOtpModal
+        isOpen={otpModalOpen}
+        phone={phoneForOtp}
+        onClose={() => setOtpModalOpen(false)}
+        onVerified={handleOrderOtpVerified}
+        title="تأكيد رقم الهاتف لإتمام الطلب"
+        subtitle="سيتم ربط الملصق برقم هاتفك فور التحقق منه عبر واتساب أو رسالة SMS"
+      />
     </div>
   );
 }

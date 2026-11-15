@@ -21,16 +21,16 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
 
-    // استخراج رمز الجلسة أو معرّف المشرف من Headers أو Cookies أو Body
+    // استخراج رمز الجلسة الموقّع من Cookies أو Authorization Header فقط (مع رفض معرفات المشرف الخام)
     const authHeader = request.headers.get("authorization") || "";
     const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
       : "";
-    const xAdminId = request.headers.get("x-admin-id") || "";
+    const xAdminToken = request.headers.get("x-admin-token") || "";
     const cookieToken = request.cookies.get("balaghni_admin_session")?.value || "";
-    const bodyToken = String(body.sessionToken || body.adminId || "").trim();
+    const bodyToken = typeof body.sessionToken === "string" ? body.sessionToken.trim() : "";
 
-    const candidateToken = bearerToken || xAdminId || bodyToken || cookieToken;
+    const candidateToken = bearerToken || xAdminToken || bodyToken || cookieToken;
 
     // التحقق الصارم من صلاحية التعديل المباشر في Supabase
     const authCheck = await verifyAdminLiveEditPermission(candidateToken);

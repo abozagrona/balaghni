@@ -470,6 +470,30 @@ export async function activateStickerAtomic(params: {
     ? ["unactivated", "expired"]
     : ["unactivated"];
 
+  // حماية أمنية: منع إعادة ربط أو تجديد ملصق مرتبط بمالك سابق لهاتف مختلف غير مصرح به
+  const currentSticker = await getStickerLifecycle(code);
+  if (
+    currentSticker &&
+    currentSticker.ownerPhone &&
+    currentSticker.ownerPhone.trim() &&
+    currentSticker.ownerPhone.trim() !== "-"
+  ) {
+    const existingDigits = currentSticker.ownerPhone.replace(/[^\d]/g, "").slice(-9);
+    const callerDigits = params.ownerPhone.replace(/[^\d]/g, "").slice(-9);
+    if (existingDigits && callerDigits && existingDigits !== callerDigits) {
+      return {
+        ok: false,
+        error: "هذا الملصق مسجل باسم مالك آخر؛ لا يمكن إعادة ربطه أو تجديده بهاتف مختلف.",
+      };
+    }
+  }
+  if (currentSticker && !allowedStatuses.includes(currentSticker.status)) {
+    return {
+      ok: false,
+      error: "هذا الملصق مفعل مسبقاً ولا يمكن إعادة تفعيله.",
+    };
+  }
+
   // 1. محاولة التحديث الذري في Supabase بشرط WHERE code = $code AND status = 'unactivated'
   try {
     const { data: updatedRows, error: updateErr } = await supabaseAdmin
@@ -874,7 +898,10 @@ export async function createVendor(params: {
   pin?: string;
 }): Promise<{ ok: boolean; vendor?: VendorRecord; error?: string }> {
   const nowIso = new Date().toISOString();
-  const pinHash = params.pin ? hashPinSimple(params.pin) : hashPinSimple("123456");
+  const generatedPin = params.pin && params.pin.trim()
+    ? params.pin.trim()
+    : String(crypto.randomInt(100000, 1000000));
+  const pinHash = hashPinSimple(generatedPin);
   let id = `vnd_${Date.now().toString(36)}`;
 
   try {

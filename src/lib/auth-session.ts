@@ -112,10 +112,13 @@ export function saveOwnerSession(session: OwnerSession): void {
     window.localStorage.setItem(OWNER_USER_KEY, serialized);
     window.sessionStorage.setItem(OWNER_SESSION_KEY, serialized);
 
-    // تعيين الكوكي لضمان استمرار الجلسة بما لا يتجاوز 24 ساعة (86400 ثانية)
+    const secureFlag =
+      typeof window !== "undefined" && window.location.protocol === "https:"
+        ? "; Secure"
+        : "";
     document.cookie = `${OWNER_SESSION_COOKIE}=${encodeURIComponent(
       normalized.tagCode
-    )}; path=/; max-age=86400; SameSite=Lax`;
+    )}; path=/; max-age=86400; SameSite=Lax${secureFlag}`;
 
     // إشعار كافة المكونات في الصفحة بتحديث الجلسة فورياً
     window.dispatchEvent(new CustomEvent(AUTH_CHANGE_EVENT, { detail: normalized }));
@@ -163,7 +166,7 @@ export function touchSessionActivity(): void {
 }
 
 /**
- * إنهاء الجلسة وتسجيل الخروج ومسح كافة البيانات
+ * إنهاء الجلسة وتسجيل الخروج ومسح كافة البيانات والكوكيز الموقعة
  */
 export function clearOwnerSession(): void {
   if (typeof window === "undefined") return;
@@ -174,8 +177,13 @@ export function clearOwnerSession(): void {
     window.sessionStorage.removeItem(OWNER_SESSION_KEY);
     window.sessionStorage.removeItem(OWNER_USER_KEY);
 
-    // انتهاء صلاحية الكوكي
-    document.cookie = `${OWNER_SESSION_COOKIE}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+    // انتهاء صلاحية الكوكي المحلي ومسح الكوكي الموقع (httpOnly) عبر الخادم
+    document.cookie = `${OWNER_SESSION_COOKIE}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT; SameSite=Lax`;
+    void fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "logout" }),
+    }).catch(() => {});
 
     // إشعار كافة المكونات بالخروج
     window.dispatchEvent(new CustomEvent(AUTH_CHANGE_EVENT, { detail: null }));

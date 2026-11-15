@@ -25,7 +25,20 @@ export default function SmartOtpVerifyPage() {
   const [phoneInput, setPhoneInput] = React.useState("912345678");
   const [modalOpen, setModalOpen] = React.useState(false);
   const [verifiedPhone, setVerifiedPhone] = React.useState<string | null>(null);
-  const [lastMessage, setLastMessage] = React.useState<string | null>(null);
+  const [authState, setAuthState] = React.useState<"checking" | "authorized" | "unauthorized">("checking");
+
+  React.useEffect(() => {
+    fetch("/api/admin?mode=session")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.ok && data?.admin?.role === "super_admin") {
+          setAuthState("authorized");
+        } else {
+          setAuthState("unauthorized");
+        }
+      })
+      .catch(() => setAuthState("unauthorized"));
+  }, []);
 
   const formattedOtpPhone = formatLibyaPhoneForOtp(phoneInput);
 
@@ -37,6 +50,34 @@ export default function SmartOtpVerifyPage() {
     setVerifiedPhone(null);
     setModalOpen(true);
   };
+
+  if (authState === "checking") {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-[#07090E] text-white">
+        <LoaderCircle className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (authState !== "authorized") {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center bg-[#07090E] px-4 text-center text-white">
+        <div className="max-w-md rounded-3xl border border-white/15 bg-[#0F121C] p-8 shadow-2xl">
+          <ShieldCheck className="mx-auto h-12 w-12 text-primary" />
+          <h1 className="mt-4 text-xl font-black">صفحة اختبار مقيّدة للمدير العام</h1>
+          <p className="mt-2 text-xs leading-relaxed text-white/65">
+            هذه الصفحة مخصصة لاختبار بوابات الرسائل من قبل مدير النظام الرئيسي فقط لحماية رصيد الإشعارات.
+          </p>
+          <Link
+            href="/admin"
+            className="mt-6 inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-6 text-xs font-bold text-white"
+          >
+            الانتقال إلى لوحة الإدارة
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-dvh flex-col bg-[#07090E] text-white selection:bg-primary selection:text-white">

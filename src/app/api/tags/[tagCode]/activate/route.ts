@@ -1,18 +1,30 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { activateVehicleTag } from "@/lib/supabase/client";
 import { formatBalaghniTagCode, formatFullLibyaE164 } from "@/lib/utils";
+import {
+  verifyAndConsumeOtpProof,
+  createOwnerSessionToken,
+  attachOwnerSessionCookie,
+} from "@/lib/security-tokens";
+import {
+  checkPinRateLimit,
+  recordPinFailure,
+  clearPinFailures,
+  getClientIp,
+} from "@/lib/rate-limiter";
 
 interface RouteParams {
   params: Promise<{ tagCode: string }>;
 }
 
-export async function POST(request: Request, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { tagCode } = await params;
     const formattedCode = formatBalaghniTagCode(tagCode);
     const body = await request.json();
 
     const pin = String(body.pin || "000000").trim() || "000000";
+    const skipScratchPin = pin === "000000" || Boolean(body.skipScratchPin);
     const rawPhone = String(body.ownerPhone || "").trim();
     const vehicleInfo = String(body.vehicleInfo || "").trim();
     const city = String(body.city || "طرابلس").trim();
@@ -39,26 +51,69 @@ export async function POST(request: Request, { params }: RouteParams) {
       );
     }
 
+    // 1. فحص القفل ضد محاولات التخمين المتكررة
+    const ip = getClientIp(request);
+    const rateKey = `activate_tag:${formattedCode}:${ip}`;
+    const rateLimit = checkPinRateLimit(rateKey);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: rateLimit.reason,
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        { status: 429 }
+      );
+    }
+
+    // 2. إلزام التحقق الفعلي من رقم الهاتف عبر رمز التحقق (OTP Proof Token) الموقّع من الخادم
+    const otpProofCheck = verifyAndConsumeOtpProof(
+      request,
+      body.otpProofToken,
+      fullPhone
+    );
+    if (!otpProofCheck.valid) {
+      return NextResponse.json(
+        {
+          ok: false,
+          requiresOtp: true,
+          error:
+            otpProofCheck.error ||
+            "يرجى تأكيد رقم هاتفك عبر رمز التحقق قبل تفعيل الملصق.",
+        },
+        { status: 401 }
+      );
+    }
+
     const result = await activateVehicleTag({
       tagCode: formattedCode,
       pin,
       ownerPhone: fullPhone,
       vehicleInfo,
       city,
+      skipScratchPin,
     });
 
     if (!result.ok) {
+      recordPinFailure(rateKey);
       return NextResponse.json(
         { ok: false, error: result.error },
         { status: 403 }
       );
     }
 
-    return NextResponse.json({
+    clearPinFailures(rateKey);
+    const ownerToken = createOwnerSessionToken({
+      tagCode: formattedCode,
+      ownerPhone: fullPhone,
+    });
+    const response = NextResponse.json({
       ok: true,
       message: "تم تفعيل الملصق وربطه برقم هاتفك بنجاح!",
       tag: result.record,
     });
+    attachOwnerSessionCookie(response, ownerToken, formattedCode);
+    return response;
   } catch {
     return NextResponse.json(
       { ok: false, error: "حدث خطأ غير متوقع أثناء تفعيل الملصق." },
@@ -66,3 +121,4 @@ export async function POST(request: Request, { params }: RouteParams) {
     );
   }
 }
+
