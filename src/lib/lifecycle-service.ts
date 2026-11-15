@@ -32,63 +32,32 @@ export async function ensurePlanSchemaAndFixTag(): Promise<void> {
     } catch {
       // ignore
     }
-
-    const dbUrl =
-      process.env.POSTGRES_URL_NON_POOLING?.trim() ||
-      process.env.POSTGRES_URL?.trim() ||
-      process.env.DATABASE_URL?.trim();
-
-    if (!dbUrl) return;
-
     try {
-      const { Client } = await import("pg");
-      const client = new Client({
-        connectionString: dbUrl,
-        ssl: { rejectUnauthorized: false },
-      });
-      await client.connect();
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS public.stickers (
-          code text primary key,
-          status text not null default 'unactivated',
-          vendor_id uuid,
-          activation_source text,
-          activated_by_vendor_id uuid,
-          plan_type text not null default 'basic' check (plan_type in ('basic', 'nabbihni', 'gift')),
-          package_type text default 'basic',
-          features jsonb not null default '{"whatsapp":true,"sms_fallback":false,"nabbihni_reminders":false,"photo_attachments":false,"emergency_portal":false}'::jsonb,
-          owner_phone text,
-          owner_name text,
-          vehicle_info text,
-          company_account_id text,
-          subscription_starts_at timestamptz,
-          subscription_expires_at timestamptz,
-          created_at timestamptz default now(),
-          updated_at timestamptz default now()
-        );
-        ALTER TABLE public.stickers ADD COLUMN IF NOT EXISTS plan_type text default 'basic';
-        ALTER TABLE public.stickers ADD COLUMN IF NOT EXISTS package_type text default 'basic';
-        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS plan_type text;
-        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS package_type text;
-        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS subscription_starts_at timestamptz;
-        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS subscription_expires_at timestamptz;
-        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS activation_source text;
-        UPDATE public.tags
-        SET plan_type = 'basic', package_type = 'basic', notification_channel = 'WHATSAPP'
-        WHERE tag_code = 'LY-Y8D8-J4XH';
-        INSERT INTO public.stickers (code, status, plan_type, package_type, features, owner_phone, vehicle_info, activation_source, subscription_starts_at, subscription_expires_at, updated_at)
-        SELECT tag_code, 'active', 'basic', 'basic', '{"whatsapp":true,"sms_fallback":false,"nabbihni_reminders":false,"photo_attachments":false,"emergency_portal":false}'::jsonb, owner_phone, vehicle_make_model, 'online', COALESCE(activated_at, now()), COALESCE(activated_at, now()) + interval '365 days', now()
-        FROM public.tags
-        WHERE tag_code = 'LY-Y8D8-J4XH'
-        ON CONFLICT (code) DO UPDATE
-        SET plan_type = 'basic',
-            package_type = 'basic',
-            features = '{"whatsapp":true,"sms_fallback":false,"nabbihni_reminders":false,"photo_attachments":false,"emergency_portal":false}'::jsonb;
-        NOTIFY pgrst, 'reload schema';
-      `);
-      await client.end();
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          plan_type: "basic",
+          package_type: "basic",
+          notification_channel: "WHATSAPP",
+        })
+        .eq("tag_code", "LY-Y8D8-J4XH");
     } catch {
-      // ignore if direct pg connection is unavailable
+      // ignore if extended columns not in cache
+    }
+    try {
+      await supabaseAdmin.from("stickers").upsert(
+        {
+          code: "LY-Y8D8-J4XH",
+          status: "active",
+          plan_type: "basic",
+          package_type: "basic",
+          features: getDefaultFeaturesForPackage("basic"),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "code" }
+      );
+    } catch {
+      // ignore
     }
   })();
   return schemaMigrationPromise;
