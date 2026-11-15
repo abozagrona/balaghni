@@ -76,6 +76,7 @@ export interface VehicleTagRecord {
   hasSecuritySetup?: boolean;
   hasPasskey?: boolean;
   activatedAt?: string | null;
+  planType?: "basic" | "nabbihni" | "gift" | null;
   packageType?: string | null;
   activationSource?: string | null;
   subscriptionStartsAt?: string | null;
@@ -103,6 +104,7 @@ interface StoredTagRow {
   notification_channel?: string | null;
   has_emergency_contacts?: boolean;
   activated_at?: string | null;
+  plan_type?: string | null;
   package_type?: string | null;
   activation_source?: string | null;
   subscription_starts_at?: string | null;
@@ -207,6 +209,18 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
     ch === "SMS" || ch === "WHATSAPP" ? ch : "BOTH";
   const resolvedVehicleInfo =
     row.vehicle_info || row.vehicle_make_model || undefined;
+
+  const rawPlan = String(row.plan_type || row.package_type || "").trim().toLowerCase();
+  const src = String(row.activation_source || "").trim().toLowerCase();
+  let planType: "basic" | "nabbihni" | "gift" = "basic";
+  if (rawPlan === "gift" || rawPlan === "gift_promo" || src === "gift_promo" || ch === "SMS") {
+    planType = "gift";
+  } else if (rawPlan === "basic" || rawPlan === "standard" || ch === "WHATSAPP") {
+    planType = "basic";
+  } else if (rawPlan === "nabbihni" || rawPlan === "premium" || rawPlan === "elite" || ch === "BOTH") {
+    planType = "nabbihni";
+  }
+
   return {
     tagCode: row.tag_code,
     status: normalizeStatus(row.status),
@@ -218,13 +232,14 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
     vehicleModel: row.vehicle_model || "",
     vehicleColor: row.vehicle_color || undefined,
     city: row.city || row.vehicle_city || "طرابلس",
-    tier: row.tier || "premium",
+    tier: planType === "basic" ? "standard" : "premium",
     alertChannel,
     hasEmergencyContacts: Boolean(row.has_emergency_contacts ?? false),
     hasSecuritySetup: Boolean(row.owner_pin_hash),
     hasPasskey: Boolean(row.passkey_credential_id),
     activatedAt: row.activated_at || null,
-    packageType: row.package_type || null,
+    planType,
+    packageType: row.package_type || planType,
     activationSource: row.activation_source || null,
     subscriptionStartsAt: row.subscription_starts_at || row.activated_at || null,
     subscriptionExpiresAt: row.subscription_expires_at || null,
@@ -2816,7 +2831,7 @@ export async function getExecutiveAdminOverview(): Promise<{
     const { data: stickerRows, error: stickerErr } = await supabaseAdmin
       .from("stickers")
       .select(
-        "code,package_type,activation_source,subscription_starts_at,subscription_expires_at"
+        "code,plan_type,package_type,activation_source,subscription_starts_at,subscription_expires_at"
       );
     if (!stickerErr && Array.isArray(stickerRows)) {
       for (const s of stickerRows as Array<Record<string, unknown>>) {
@@ -2824,6 +2839,9 @@ export async function getExecutiveAdminOverview(): Promise<{
         if (code && localMap[code]) {
           localMap[code] = {
             ...localMap[code],
+            plan_type: s.plan_type
+              ? String(s.plan_type)
+              : localMap[code].plan_type,
             package_type: s.package_type
               ? String(s.package_type)
               : localMap[code].package_type,
@@ -2958,6 +2976,7 @@ export async function adminManageTagLifecycle(params: {
   city?: string;
   ownerPhone?: string;
   alertChannel?: AlertChannel;
+  planType?: "basic" | "nabbihni" | "gift";
   newOwnerPin?: string;
 }): Promise<{ ok: boolean; tag?: VehicleTagRecord; error?: string }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
@@ -2988,6 +3007,24 @@ export async function adminManageTagLifecycle(params: {
   }
 
   if (params.action === "update_vehicle") {
+    const chosenPlan: "basic" | "nabbihni" | "gift" =
+      params.planType === "basic" ||
+      params.planType === "nabbihni" ||
+      params.planType === "gift"
+        ? params.planType
+        : params.alertChannel === "WHATSAPP"
+        ? "basic"
+        : params.alertChannel === "SMS"
+        ? "gift"
+        : "nabbihni";
+
+    const resolvedChannel: AlertChannel =
+      chosenPlan === "basic"
+        ? "WHATSAPP"
+        : chosenPlan === "gift"
+        ? "SMS"
+        : params.alertChannel || "BOTH";
+
     const updated: StoredTagRow = {
       ...targetRow,
       vehicle_info:
@@ -3003,7 +3040,16 @@ export async function adminManageTagLifecycle(params: {
         params.ownerPhone !== undefined
           ? params.ownerPhone.trim() || null
           : targetRow.owner_phone,
-      alert_channel: params.alertChannel || targetRow.alert_channel || "BOTH",
+      alert_channel: resolvedChannel,
+      notification_channel: resolvedChannel,
+      plan_type: chosenPlan,
+      package_type: chosenPlan,
+      activation_source:
+        chosenPlan === "gift"
+          ? "gift_promo"
+          : targetRow.activation_source === "gift_promo"
+          ? "online"
+          : targetRow.activation_source,
     };
 
     try {
@@ -3013,9 +3059,61 @@ export async function adminManageTagLifecycle(params: {
           owner_phone: updated.owner_phone,
           vehicle_make_model: updated.vehicle_info,
           vehicle_city: updated.city,
-          notification_channel: updated.alert_channel,
+          notification_channel: resolvedChannel,
         })
         .eq("tag_code", normalizedCode);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          plan_type: chosenPlan,
+          package_type: chosenPlan,
+          activation_source: updated.activation_source || null,
+        })
+        .eq("tag_code", normalizedCode);
+    } catch {
+      // ignore if extended columns not in cache
+    }
+
+    const featuresJson =
+      chosenPlan === "basic"
+        ? {
+            whatsapp: true,
+            sms_fallback: false,
+            nabbihni_reminders: false,
+            photo_attachments: false,
+            emergency_portal: false,
+          }
+        : {
+            whatsapp: true,
+            sms_fallback: true,
+            nabbihni_reminders: true,
+            photo_attachments: true,
+            emergency_portal: true,
+          };
+
+    try {
+      await supabaseAdmin.from("stickers").upsert(
+        {
+          code: normalizedCode,
+          status:
+            String(updated.status || "ACTIVE").toUpperCase() === "ACTIVE"
+              ? "active"
+              : "unactivated",
+          plan_type: chosenPlan,
+          package_type: chosenPlan === "basic" ? "basic" : "nabbihni",
+          features: featuresJson,
+          owner_phone: updated.owner_phone,
+          vehicle_info: updated.vehicle_info,
+          activation_source: updated.activation_source || "online",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "code" }
+      );
     } catch {
       // ignore
     }
@@ -3026,7 +3124,7 @@ export async function adminManageTagLifecycle(params: {
       adminId: params.adminId,
       adminName: params.adminName,
       actionType: "TAG_UPDATE_VEHICLE",
-      actionDetails: `تحديث بيانات المركبة (${updated.vehicle_info || "—"})، الهاتف (${updated.owner_phone || "—"})، قناة التنبيه (${updated.alert_channel})`,
+      actionDetails: `تحديث بيانات المركبة (${updated.vehicle_info || "—"})، الهاتف (${updated.owner_phone || "—"})، الباقة (${chosenPlan === "basic" ? "الأساسية" : chosenPlan === "gift" ? "هدية - شهر مجاني" : "نَبِّهْنِي"})`,
       tagCode: normalizedCode,
     });
 

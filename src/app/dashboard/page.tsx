@@ -41,13 +41,17 @@ import { clearOwnerSession } from "@/lib/auth-session";
 import {
   computeCountdownDays,
   formatSlashDateYmd,
-  getPackageConfig,
+  getPlanDisplayInfo,
+  resolvePlanType,
   type PackageFeatures,
+  type PlanType,
 } from "@/lib/packages";
 
 interface StickerLifecycleSummary {
   status: "unactivated" | "gift_ready" | "active" | "expired";
+  planType?: PlanType;
   packageType: string;
+  activationSource?: string | null;
   features: PackageFeatures;
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
@@ -62,7 +66,13 @@ interface TagRecordData {
   vehicleModel: string;
   vehicleColor?: string;
   city?: string;
+  alertChannel?: "SMS" | "WHATSAPP" | "BOTH";
+  planType?: PlanType | null;
+  packageType?: string | null;
+  activationSource?: string | null;
   activatedAt?: string | null;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
   hasPasskey?: boolean;
 }
 
@@ -524,6 +534,46 @@ function DashboardContent() {
     0
   );
 
+  const [showEditProfileModal, setShowEditProfileModal] = React.useState(false);
+  const [profileVehicleInfo, setProfileVehicleInfo] = React.useState("");
+  const [profileCity, setProfileCity] = React.useState("طرابلس");
+  const [profilePhone, setProfilePhone] = React.useState("");
+  const [profileNewPin, setProfileNewPin] = React.useState("");
+  const [savingProfile, setSavingProfile] = React.useState(false);
+  const [profileMessage, setProfileMessage] = React.useState<string | null>(null);
+
+  const handleSaveProfileSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tagData || savingProfile) return;
+    setSavingProfile(true);
+    setProfileMessage(null);
+    try {
+      const res = await fetch("/api/dashboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_owner_profile",
+          tagCode: tagData.tagCode,
+          vehicleInfo: profileVehicleInfo.trim(),
+          city: profileCity.trim(),
+          ownerPhone: profilePhone.trim(),
+          newPin: profileNewPin.trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        if (data.tag) setTagData(data.tag);
+        if (data.lifecycle) setLifecycle(data.lifecycle);
+        setProfileNewPin("");
+        setShowEditProfileModal(false);
+        setProfileMessage("تم حفظ بيانات المركبة وإعدادات الأمان بنجاح ✓");
+        setTimeout(() => setProfileMessage(null), 3500);
+      }
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-screen flex-col">
@@ -569,12 +619,48 @@ function DashboardContent() {
     `${tagData.vehicleBrand || ""} ${tagData.vehicleModel || ""}`.trim() ||
     "غير محدد";
 
+  const activePlanType: PlanType = resolvePlanType({
+    planType: lifecycle?.planType || tagData.planType || null,
+    packageType: lifecycle?.packageType || tagData.packageType || null,
+    activationSource:
+      lifecycle?.activationSource || tagData.activationSource || null,
+    notificationChannel: tagData.alertChannel || null,
+    defaultPlan: "basic",
+  });
+  const planDisplay = getPlanDisplayInfo(activePlanType);
+
+  const effectiveStartsAt =
+    lifecycle?.subscriptionStartsAt ||
+    tagData.subscriptionStartsAt ||
+    tagData.activatedAt ||
+    null;
+
+  const effectiveExpiresAt = (() => {
+    const rawExp =
+      lifecycle?.subscriptionExpiresAt || tagData.subscriptionExpiresAt || null;
+    if (rawExp) return rawExp;
+    if (!effectiveStartsAt) return null;
+    const d = new Date(effectiveStartsAt);
+    if (Number.isNaN(d.getTime())) return null;
+    d.setUTCDate(d.getUTCDate() + (activePlanType === "gift" ? 30 : 365));
+    return d.toISOString();
+  })();
+
+  const remainingDays = computeCountdownDays(effectiveExpiresAt);
+
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
 
       <main className="flex-1 py-8 sm:py-12">
         <div className="shell space-y-10">
+          {profileMessage && (
+            <div className="flex items-center gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 text-xs font-bold text-emerald-700">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{profileMessage}</span>
+            </div>
+          )}
+
           {/* تلميح ذكي لتفعيل البصمة (يظهر فقط إذا لم تكن البصمة مفعلة ولم يتم تجاهله مؤقتاً) */}
           {!tagData.hasPasskey && !passkeyHintDismissed && (
             <div className="relative overflow-hidden rounded-3xl border border-primary/35 bg-gradient-to-l from-[#141721] via-[#171B28] to-[#1F1218] p-5 text-white shadow-card-soft sm:p-6">
@@ -642,7 +728,7 @@ function DashboardContent() {
             </div>
           )}
 
-          {/* 1. قسم مركبتي والملصق النشط (مجلوب حصراً من سطر الملصق في جدول tags) */}
+          {/* 1. قسم مركبتي والملصق النشط (مجلوب حصراً من سجل الملصق في قاعدة البيانات) */}
           <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-[#0B0D13] p-6 text-white shadow-[0_24px_60px_rgba(11,13,19,0.22)] sm:p-8 lg:p-10">
             <div
               aria-hidden="true"
@@ -662,58 +748,103 @@ function DashboardContent() {
                   >
                     {tagData.tagCode}
                   </span>
-                  {lifecycle && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/35 bg-amber-400/15 px-3 py-1 text-xs font-bold text-amber-300">
+
+                  {/* الشارة العلوية المخصصة حسب plan_type */}
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold",
+                      activePlanType === "basic"
+                        ? "border border-sky-400/35 bg-sky-500/15 text-sky-200"
+                        : activePlanType === "gift"
+                        ? "border border-purple-400/40 bg-purple-500/20 text-purple-200"
+                        : "border border-amber-400/35 bg-amber-400/15 text-amber-300"
+                    )}
+                  >
+                    {activePlanType !== "basic" && (
                       <Sparkles className="h-3.5 w-3.5" />
-                      {getPackageConfig(lifecycle.packageType).name}
-                    </span>
-                  )}
+                    )}
+                    {planDisplay.badgeText}
+                  </span>
+
                   {(() => {
-                    const daysLeft = computeCountdownDays(
-                      lifecycle?.subscriptionExpiresAt
-                    );
-                    if (daysLeft === null) return null;
-                    if (daysLeft <= 0 || lifecycle?.status === "expired") {
+                    if (remainingDays === null) return null;
+                    if (remainingDays <= 0 || lifecycle?.status === "expired") {
                       return (
                         <Link
-                          href={`/s/${encodeURIComponent(tagData.tagCode)}`}
+                          href="/order"
                           className="inline-flex items-center gap-1.5 rounded-full border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-xs font-bold text-rose-200 hover:bg-rose-500/30"
                         >
                           <Clock className="h-3.5 w-3.5" />
-                          منتهي الصلاحية — اضغط للتجديد
+                          منتهي الصلاحية — اضغط لتجديد الاشتراك أو الترقية
                         </Link>
                       );
                     }
                     return (
                       <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-400/35 bg-sky-500/15 px-3 py-1 text-xs font-bold text-sky-200">
                         <Clock className="h-3.5 w-3.5" />
-                        باقي {daysLeft} يوماً (ينتهي{" "}
-                        {formatSlashDateYmd(lifecycle?.subscriptionExpiresAt)})
+                        {activePlanType === "gift"
+                          ? `متبقي ${remainingDays} من 30 يوماً (ينتهي ${formatSlashDateYmd(effectiveExpiresAt)})`
+                          : `باقي ${remainingDays} يوماً (ينتهي ${formatSlashDateYmd(effectiveExpiresAt)})`}
                       </span>
                     );
                   })()}
                 </div>
 
                 <h1 className="text-2xl font-black tracking-tight text-white sm:text-4xl">
-                  لوحة تحكم مركبتي وخدمة «نبّهني»
+                  {planDisplay.dashboardTitle}
                 </h1>
 
                 <p className="max-w-xl text-xs leading-relaxed text-white/75 sm:text-sm">
-                  تعرض هذه اللوحة البيانات الحقيقية المسجلة لملصق سيارتك فقط
-                  بدون أي بيانات افتراضية.
-                  {lifecycle?.subscriptionStartsAt &&
-                    lifecycle?.subscriptionExpiresAt && (
-                      <span className="mt-1 block text-white/65">
-                        بداية الاشتراك:{" "}
-                        {formatSlashDateYmd(lifecycle.subscriptionStartsAt)} •
-                        تاريخ الانتهاء:{" "}
-                        {formatSlashDateYmd(lifecycle.subscriptionExpiresAt)}
-                      </span>
-                    )}
+                  {activePlanType === "basic"
+                    ? "استقبل بلاغات سيارتك الفورية عبر واتساب وSMS مع حماية كاملة لخصوصية رقم هاتفك وإدارة بيانات مركبتك."
+                    : activePlanType === "gift"
+                    ? "أنت تستمتع حالياً بالفترة التجريبية المجانية لمدة 30 يوماً على ملصق سيارتك. يمكنك تجديد الاشتراك أو الترقية في أي وقت."
+                    : "تعرض هذه اللوحة البيانات الحقيقية المسجلة لملصق سيارتك مع تفعيل كامل لمزايا وتذكيرات باقة نَبِّهْنِي."}
+                  {effectiveStartsAt && effectiveExpiresAt && (
+                    <span className="mt-1.5 block text-white/70 font-semibold">
+                      الباقة: {planDisplay.packageName} • بداية الاشتراك:{" "}
+                      {formatSlashDateYmd(effectiveStartsAt)} • تاريخ الانتهاء:{" "}
+                      {formatSlashDateYmd(effectiveExpiresAt)}
+                      {remainingDays !== null && remainingDays > 0
+                        ? ` • الأيام المتبقية: ${remainingDays} يوم`
+                        : ""}
+                    </span>
+                  )}
                 </p>
+
+                {activePlanType === "gift" && (
+                  <div className="pt-1">
+                    <Button
+                      asChild
+                      size="sm"
+                      className="rounded-xl bg-amber-500 text-black hover:bg-amber-400 font-black"
+                    >
+                      <Link href="/order">
+                        تجديد الاشتراك أو الترقية بعد انتهاء الشهر
+                      </Link>
+                    </Button>
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="button"
+                  onClick={() => {
+                    setProfileVehicleInfo(displayVehicleName === "غير محدد" ? "" : displayVehicleName);
+                    setProfileCity(tagData.city || "طرابلس");
+                    setProfilePhone(tagData.ownerPhone || "");
+                    setProfileNewPin("");
+                    setShowEditProfileModal(true);
+                  }}
+                  variant="outline"
+                  size="lg"
+                  className="rounded-2xl border-white/20 bg-white/5 text-white hover:bg-white/15"
+                >
+                  <Wrench className="h-4 w-4 text-primary" />
+                  <span>تعديل المركبة وPIN</span>
+                </Button>
+
                 <Button
                   type="button"
                   onClick={handleShareQr}
@@ -808,6 +939,103 @@ function DashboardContent() {
             </div>
           </section>
 
+          {/* نافذة تعديل بيانات المركبة والمدينة ورقم الهاتف ورمز PIN */}
+          {showEditProfileModal && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+            >
+              <div className="w-full max-w-md rounded-3xl border border-border bg-card p-6 shadow-2xl">
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-lg font-black text-foreground">
+                    تعديل بيانات المركبة ورمز PIN
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setShowEditProfileModal(false)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveProfileSubmit} className="space-y-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-foreground">
+                      نوع وموديل المركبة
+                    </label>
+                    <input
+                      type="text"
+                      value={profileVehicleInfo}
+                      onChange={(e) => setProfileVehicleInfo(e.target.value)}
+                      placeholder="مثال: هونداي سوناتا"
+                      className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold text-foreground"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1 block text-xs font-bold text-foreground">
+                        المدينة
+                      </label>
+                      <input
+                        type="text"
+                        value={profileCity}
+                        onChange={(e) => setProfileCity(e.target.value)}
+                        className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold text-foreground"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-bold text-foreground">
+                        رقم الهاتف (واتساب وSMS)
+                      </label>
+                      <input
+                        type="text"
+                        dir="ltr"
+                        value={profilePhone}
+                        onChange={(e) => setProfilePhone(e.target.value)}
+                        className="h-11 w-full rounded-xl border border-border bg-background px-3 font-mono text-xs font-bold text-foreground"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-foreground">
+                      رمز PIN جديد (اختياري — اتركه فارغاً للإبقاء على الرمز الحالي)
+                    </label>
+                    <input
+                      type="password"
+                      dir="ltr"
+                      value={profileNewPin}
+                      onChange={(e) => setProfileNewPin(e.target.value)}
+                      placeholder="••••"
+                      className="h-11 w-full rounded-xl border border-border bg-background px-3 font-mono text-sm font-bold text-foreground"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShowEditProfileModal(false)}
+                      className="rounded-xl"
+                    >
+                      إلغاء
+                    </Button>
+                    <Button
+                      type="submit"
+                      disabled={savingProfile}
+                      className="rounded-xl"
+                    >
+                      {savingProfile ? "جاري الحفظ..." : "حفظ التعديلات"}
+                    </Button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
           {/* 2. سجل البلاغات الواردة من جدول reports الخاصة بهذا الملصق حصراً */}
           <section className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -820,7 +1048,7 @@ function DashboardContent() {
                     سجل التنبيهات والبلاغات المستلمة
                   </h2>
                   <p className="text-xs text-muted-foreground">
-                    البلاغات الحقيقية المرسلة عند مسح ملصق سيارتك ({tagData.tagCode})
+                    استقبال البلاغات عبر واتساب وSMS عند مسح ملصق سيارتك ({tagData.tagCode})
                   </p>
                 </div>
               </div>
@@ -891,8 +1119,8 @@ function DashboardContent() {
 
                       <div className="mt-4 flex items-center justify-between border-t border-border pt-3 text-xs">
                         <span className="inline-flex items-center gap-1 text-muted-foreground">
-                          <MapPin className="h-3.5 w-3.5 text-primary" />
-                          {alert.location || "لم يُرفق موقع جغرافي"}
+                          <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+                          بلاغ موثّق عبر منصة بَلِّغْنِي
                         </span>
 
                         {alert.photoUrl ? (
@@ -917,21 +1145,21 @@ function DashboardContent() {
             )}
           </section>
 
-          {lifecycle?.features?.nabbihni_reminders === false ? (
+          {activePlanType === "basic" ? (
             <section className="rounded-3xl border border-amber-500/30 bg-amber-500/5 p-6 text-center shadow-card-soft">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-600">
                 <Sparkles className="h-6 w-6" />
               </div>
               <h2 className="mt-3 text-lg font-black text-foreground">
-                خدمة «نَبِّهْنِي» وسجل الصيانة متوفرة في باقة نَبِّهْنِي
+                الميزات المتقدمة وتذكيرات الوثائق وسجل الصيانة متوفرة في باقة نَبِّهْنِي
               </h2>
               <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-muted-foreground">
-                ملصقك مفعل حالياً على «الباقة الأساسية». قم بالترقية إلى باقة نَبِّهْنِي (100 د.ل/سنوياً) للحصول على تذكيرات التأمين والرخصة، سجل الصيانة، وطوارئ الطرقات.
+                ملصقك مفعل حالياً على «الباقة الأساسية». يمكنك الترقية اختيارياً للحصول على تذكيرات مواعيد التأمين والفحص الفني والرخصة وسجل صيانة المركبة المتكامل.
               </p>
               <div className="mt-4">
                 <Button asChild size="sm" className="rounded-xl">
-                  <Link href={`/s/${encodeURIComponent(tagData.tagCode)}`}>
-                    ترقية الباقة الآن
+                  <Link href="/order?tier=nabbihni">
+                    ترقية إلى باقة نَبِّهْنِي
                   </Link>
                 </Button>
               </div>

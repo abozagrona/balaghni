@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "node:crypto";
 import {
   getTagDashboardData,
   upsertVehicleDocumentForTag,
   addMaintenanceRecordForTag,
+  supabaseAdmin,
+  syncTagActivationToLocalStore,
 } from "@/lib/supabase/client";
 import { getStickerLifecycle } from "@/lib/lifecycle-service";
+import { formatBalaghniTagCode } from "@/lib/utils";
 
 export async function GET(request: NextRequest) {
   const tagCode = request.nextUrl.searchParams.get("tag") || "";
@@ -40,13 +44,89 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
     const action = String(body.action || "").trim();
-    const tagCode = String(body.tagCode || "").trim();
+    const tagCode = formatBalaghniTagCode(String(body.tagCode || ""));
 
     if (!tagCode) {
       return NextResponse.json(
         { ok: false, error: "كود الملصق مطلوب." },
         { status: 400 }
       );
+    }
+
+    if (action === "update_owner_profile") {
+      const vehicleInfo =
+        body.vehicleInfo !== undefined ? String(body.vehicleInfo).trim() : undefined;
+      const city = body.city !== undefined ? String(body.city).trim() : undefined;
+      const ownerPhone =
+        body.ownerPhone !== undefined ? String(body.ownerPhone).trim() : undefined;
+      const newPin =
+        body.newPin !== undefined && String(body.newPin).trim().length >= 4
+          ? String(body.newPin).trim()
+          : undefined;
+
+      const updateFields: Record<string, unknown> = {};
+      if (vehicleInfo !== undefined) updateFields.vehicle_make_model = vehicleInfo;
+      if (city !== undefined) updateFields.vehicle_city = city;
+      if (ownerPhone !== undefined && ownerPhone.length > 0) {
+        updateFields.owner_phone = ownerPhone;
+      }
+      if (newPin) {
+        updateFields.owner_pin_hash = crypto
+          .createHash("sha256")
+          .update(newPin)
+          .digest("hex");
+      }
+
+      if (Object.keys(updateFields).length > 0) {
+        await supabaseAdmin
+          .from("tags")
+          .update(updateFields)
+          .eq("tag_code", tagCode);
+      }
+
+      try {
+        const stickerUpdate: Record<string, unknown> = {
+          updated_at: new Date().toISOString(),
+        };
+        if (vehicleInfo !== undefined) stickerUpdate.vehicle_info = vehicleInfo;
+        if (ownerPhone !== undefined && ownerPhone.length > 0) {
+          stickerUpdate.owner_phone = ownerPhone;
+        }
+        await supabaseAdmin
+          .from("stickers")
+          .update(stickerUpdate)
+          .eq("code", tagCode);
+      } catch {
+        // ignore
+      }
+
+      if (vehicleInfo || city || ownerPhone) {
+        const existingLifecycle = await getStickerLifecycle(tagCode);
+        const planType = existingLifecycle?.planType || "basic";
+        syncTagActivationToLocalStore({
+          tagCode,
+          ownerPhone: ownerPhone || existingLifecycle?.ownerPhone || "",
+          vehicleInfo: vehicleInfo || existingLifecycle?.vehicleInfo || "مركبة مسجلة",
+          city: city || "طرابلس",
+          alertChannel:
+            planType === "basic" ? "WHATSAPP" : planType === "gift" ? "SMS" : "BOTH",
+          packageType: planType,
+          activationSource: existingLifecycle?.activationSource || "online",
+          subscriptionStartsAt: existingLifecycle?.subscriptionStartsAt || undefined,
+          subscriptionExpiresAt: existingLifecycle?.subscriptionExpiresAt || undefined,
+        });
+      }
+
+      const [updatedData, updatedLifecycle] = await Promise.all([
+        getTagDashboardData(tagCode),
+        getStickerLifecycle(tagCode),
+      ]);
+
+      return NextResponse.json({
+        ok: true,
+        tag: updatedData.tag,
+        lifecycle: updatedLifecycle,
+      });
     }
 
     if (action === "upsert_document") {

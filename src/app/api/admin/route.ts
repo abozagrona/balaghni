@@ -304,6 +304,12 @@ export async function POST(req: NextRequest) {
         city: body.city,
         ownerPhone: body.ownerPhone,
         alertChannel: body.alertChannel as AlertChannel | undefined,
+        planType:
+          body.planType === "basic" ||
+          body.planType === "nabbihni" ||
+          body.planType === "gift"
+            ? body.planType
+            : undefined,
         newOwnerPin: body.newOwnerPin,
       });
       const overview = await getExecutiveAdminOverview();

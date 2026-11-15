@@ -45,7 +45,10 @@ import {
   computeCountdownDays,
   formatSlashDateYmd,
   getPackageConfig,
+  getPlanDisplayInfo,
   normalizePackageType,
+  resolvePlanType,
+  type PlanType,
 } from "@/lib/packages";
 
 type TagStatus = "LOCKED" | "ACTIVE" | "REVOKED";
@@ -91,6 +94,7 @@ interface AdminTagRecord {
   hasSecuritySetup?: boolean;
   hasPasskey?: boolean;
   activatedAt?: string | null;
+  planType?: PlanType | null;
   packageType?: string | null;
   activationSource?: string | null;
   subscriptionStartsAt?: string | null;
@@ -206,6 +210,7 @@ export default function ExecutiveAdminDashboardPage() {
   const [editOwnerPhone, setEditOwnerPhone] = React.useState("");
   const [editAlertChannel, setEditAlertChannel] =
     React.useState<AlertChannel>("BOTH");
+  const [editPlanType, setEditPlanType] = React.useState<PlanType>("basic");
 
   // نافذة إعادة تعيين أمان المالك
   const [securityModalTag, setSecurityModalTag] =
@@ -1020,6 +1025,7 @@ export default function ExecutiveAdminDashboardPage() {
           city: editCity,
           ownerPhone: editOwnerPhone,
           alertChannel: editAlertChannel,
+          planType: editPlanType,
           adminId,
           adminName,
           sessionToken: adminSession?.sessionToken,
@@ -2313,9 +2319,18 @@ export default function ExecutiveAdminDashboardPage() {
                                 <span className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[11px] font-bold text-white">
                                   {tag.alertChannel || "BOTH"}
                                 </span>
-                                {tag.packageType && (
+                                {(tag.planType || tag.packageType) && (
                                   <span className="rounded-lg border border-sky-400/25 bg-sky-500/10 px-2 py-0.5 text-[10px] font-bold text-sky-200">
-                                    {getPackageConfig(normalizePackageType(tag.packageType)).name}
+                                    {
+                                      getPlanDisplayInfo(
+                                        resolvePlanType({
+                                          planType: tag.planType,
+                                          packageType: tag.packageType,
+                                          activationSource: tag.activationSource,
+                                          notificationChannel: tag.alertChannel,
+                                        })
+                                      ).packageName
+                                    }
                                   </span>
                                 )}
                                 {tag.activationSource && (
@@ -2371,12 +2386,24 @@ export default function ExecutiveAdminDashboardPage() {
                               <button
                                 type="button"
                                 onClick={() => {
+                                  const currentPlan = resolvePlanType({
+                                    planType: tag.planType,
+                                    packageType: tag.packageType,
+                                    activationSource: tag.activationSource,
+                                    notificationChannel: tag.alertChannel,
+                                  });
                                   setEditingTag(tag);
                                   setEditVehicleInfo(tag.vehicleInfo || "");
                                   setEditCity(tag.city || "طرابلس");
                                   setEditOwnerPhone(tag.ownerPhone || "");
+                                  setEditPlanType(currentPlan);
                                   setEditAlertChannel(
-                                    tag.alertChannel || "BOTH"
+                                    tag.alertChannel ||
+                                      (currentPlan === "basic"
+                                        ? "WHATSAPP"
+                                        : currentPlan === "gift"
+                                        ? "SMS"
+                                        : "BOTH")
                                   );
                                 }}
                                 className="inline-flex items-center gap-1 rounded-xl border border-white/15 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-white hover:border-primary"
@@ -2962,7 +2989,32 @@ export default function ExecutiveAdminDashboardPage() {
 
             <div>
               <label className="mb-1 block text-xs font-bold text-white/80">
-                قناة التنبيه والباقة (SMS / WHATSAPP / BOTH)
+                نوع الباقة (الأساسية / نَبِّهْنِي / هدية)
+              </label>
+              <select
+                value={editPlanType}
+                onChange={(e) => {
+                  const nextPlan = e.target.value as PlanType;
+                  setEditPlanType(nextPlan);
+                  if (nextPlan === "basic") {
+                    setEditAlertChannel("WHATSAPP");
+                  } else if (nextPlan === "gift") {
+                    setEditAlertChannel("SMS");
+                  } else {
+                    setEditAlertChannel("BOTH");
+                  }
+                }}
+                className="h-11 w-full rounded-xl border border-white/15 bg-[#07090E] px-3 text-xs font-bold text-white"
+              >
+                <option value="basic">الباقة الأساسية (basic - 50 د.ل)</option>
+                <option value="nabbihni">✨ باقة نَبِّهْنِي (nabbihni - 100 د.ل)</option>
+                <option value="gift">🎁 باقة الهدية - شهر مجاني (gift)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-bold text-white/80">
+                قناة التنبيه (SMS / WHATSAPP / BOTH)
               </label>
               <select
                 value={editAlertChannel}

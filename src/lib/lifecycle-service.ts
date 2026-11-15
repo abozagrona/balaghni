@@ -12,10 +12,87 @@ import {
   getPackagePriceLyd,
   NABBIHNI_FEATURES,
   normalizePackageType,
+  resolvePlanType,
   type PackageFeatures,
   type PackageType,
+  type PlanType,
 } from "@/lib/packages";
 import { formatBalaghniTagCode } from "@/lib/utils";
+
+let schemaMigrationPromise: Promise<void> | null = null;
+
+export async function ensurePlanSchemaAndFixTag(): Promise<void> {
+  if (schemaMigrationPromise) return schemaMigrationPromise;
+  schemaMigrationPromise = (async () => {
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({ notification_channel: "WHATSAPP" })
+        .eq("tag_code", "LY-Y8D8-J4XH");
+    } catch {
+      // ignore
+    }
+
+    const dbUrl =
+      process.env.POSTGRES_URL_NON_POOLING?.trim() ||
+      process.env.POSTGRES_URL?.trim() ||
+      process.env.DATABASE_URL?.trim();
+
+    if (!dbUrl) return;
+
+    try {
+      const { Client } = await import("pg");
+      const client = new Client({
+        connectionString: dbUrl,
+        ssl: { rejectUnauthorized: false },
+      });
+      await client.connect();
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS public.stickers (
+          code text primary key,
+          status text not null default 'unactivated',
+          vendor_id uuid,
+          activation_source text,
+          activated_by_vendor_id uuid,
+          plan_type text not null default 'basic' check (plan_type in ('basic', 'nabbihni', 'gift')),
+          package_type text default 'basic',
+          features jsonb not null default '{"whatsapp":true,"sms_fallback":false,"nabbihni_reminders":false,"photo_attachments":false,"emergency_portal":false}'::jsonb,
+          owner_phone text,
+          owner_name text,
+          vehicle_info text,
+          company_account_id text,
+          subscription_starts_at timestamptz,
+          subscription_expires_at timestamptz,
+          created_at timestamptz default now(),
+          updated_at timestamptz default now()
+        );
+        ALTER TABLE public.stickers ADD COLUMN IF NOT EXISTS plan_type text default 'basic';
+        ALTER TABLE public.stickers ADD COLUMN IF NOT EXISTS package_type text default 'basic';
+        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS plan_type text;
+        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS package_type text;
+        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS subscription_starts_at timestamptz;
+        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS subscription_expires_at timestamptz;
+        ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS activation_source text;
+        UPDATE public.tags
+        SET plan_type = 'basic', package_type = 'basic', notification_channel = 'WHATSAPP'
+        WHERE tag_code = 'LY-Y8D8-J4XH';
+        INSERT INTO public.stickers (code, status, plan_type, package_type, features, owner_phone, vehicle_info, activation_source, subscription_starts_at, subscription_expires_at, updated_at)
+        SELECT tag_code, 'active', 'basic', 'basic', '{"whatsapp":true,"sms_fallback":false,"nabbihni_reminders":false,"photo_attachments":false,"emergency_portal":false}'::jsonb, owner_phone, vehicle_make_model, 'online', COALESCE(activated_at, now()), COALESCE(activated_at, now()) + interval '365 days', now()
+        FROM public.tags
+        WHERE tag_code = 'LY-Y8D8-J4XH'
+        ON CONFLICT (code) DO UPDATE
+        SET plan_type = 'basic',
+            package_type = 'basic',
+            features = '{"whatsapp":true,"sms_fallback":false,"nabbihni_reminders":false,"photo_attachments":false,"emergency_portal":false}'::jsonb;
+        NOTIFY pgrst, 'reload schema';
+      `);
+      await client.end();
+    } catch {
+      // ignore if direct pg connection is unavailable
+    }
+  })();
+  return schemaMigrationPromise;
+}
 
 export type StickerStatus = "unactivated" | "gift_ready" | "active" | "expired";
 export type ActivationSource =
@@ -30,6 +107,7 @@ export interface StickerRecord {
   vendorId?: string | null;
   activationSource?: ActivationSource | null;
   activatedByVendorId?: string | null;
+  planType?: PlanType;
   packageType: PackageType;
   features: PackageFeatures;
   ownerPhone?: string | null;
@@ -182,6 +260,7 @@ function addDaysIso(startIso: string, days: number): string {
 export async function getStickerLifecycle(
   rawCode: string
 ): Promise<StickerRecord | null> {
+  await ensurePlanSchemaAndFixTag();
   const code = formatBalaghniTagCode(rawCode);
   const store = loadStore();
 
@@ -200,16 +279,26 @@ export async function getStickerLifecycle(
       if (status === "active" && expiresAt && new Date(expiresAt).getTime() < Date.now()) {
         status = "expired";
       }
+      const planType = resolvePlanType({
+        planType: data.plan_type ? String(data.plan_type) : null,
+        packageType: data.package_type ? String(data.package_type) : null,
+        activationSource: data.activation_source ? String(data.activation_source) : null,
+      });
+      const pkg: PackageType =
+        planType === "basic" ? "basic" : normalizePackageType(data.package_type || "nabbihni");
+      const defaultFeatures = getDefaultFeaturesForPackage(planType);
       return {
         code,
         status,
         vendorId: data.vendor_id || null,
         activationSource: data.activation_source || null,
         activatedByVendorId: data.activated_by_vendor_id || null,
-        packageType: normalizePackageType(data.package_type),
+        planType,
+        packageType: pkg,
         features:
-          (data.features as PackageFeatures) ||
-          getDefaultFeaturesForPackage(data.package_type),
+          planType === "basic"
+            ? defaultFeatures
+            : (data.features as PackageFeatures) || defaultFeatures,
         ownerPhone: data.owner_phone || null,
         ownerName: data.owner_name || null,
         vehicleInfo: data.vehicle_info || null,
@@ -225,7 +314,15 @@ export async function getStickerLifecycle(
   }
 
   if (store.stickers[code]) {
-    const rec = store.stickers[code];
+    const rec = { ...store.stickers[code] };
+    const resolvedPlan = resolvePlanType({
+      planType: rec.planType,
+      packageType: rec.packageType,
+      activationSource: rec.activationSource,
+    });
+    rec.planType = resolvedPlan;
+    rec.packageType = resolvedPlan === "basic" ? "basic" : "nabbihni";
+    rec.features = getDefaultFeaturesForPackage(resolvedPlan);
     if (
       rec.status === "active" &&
       rec.subscriptionExpiresAt &&
@@ -246,10 +343,23 @@ export async function getStickerLifecycle(
 
     if (tag) {
       const rawStatus = String(tag.status || "LOCKED").toUpperCase();
+      const planType = resolvePlanType({
+        planType: tag.plan_type ? String(tag.plan_type) : null,
+        packageType: tag.package_type ? String(tag.package_type) : null,
+        activationSource: tag.activation_source ? String(tag.activation_source) : null,
+        notificationChannel: tag.notification_channel ? String(tag.notification_channel) : null,
+        defaultPlan: "basic",
+      });
+      const defaultDurationDays = planType === "gift" ? 30 : 365;
+      const startsAt = tag.subscription_starts_at
+        ? String(tag.subscription_starts_at)
+        : tag.activated_at
+        ? String(tag.activated_at)
+        : null;
       const expiresAt = tag.subscription_expires_at
         ? String(tag.subscription_expires_at)
-        : tag.activated_at
-        ? addDaysIso(String(tag.activated_at), 365)
+        : startsAt
+        ? addDaysIso(startsAt, defaultDurationDays)
         : null;
 
       let status: StickerStatus =
@@ -257,20 +367,20 @@ export async function getStickerLifecycle(
       if (status === "active" && expiresAt && new Date(expiresAt).getTime() < Date.now()) {
         status = "expired";
       }
-      const pkg = normalizePackageType(tag.package_type);
+      const pkg: PackageType = planType === "basic" ? "basic" : "nabbihni";
       return {
         code,
         status,
         vendorId: tag.vendor_id || null,
-        activationSource: tag.activation_source || null,
+        activationSource:
+          tag.activation_source || (planType === "gift" ? "gift_promo" : null),
         activatedByVendorId: tag.activated_by_vendor_id || null,
+        planType,
         packageType: pkg,
-        features:
-          (tag.features as PackageFeatures) ||
-          getDefaultFeaturesForPackage(pkg),
+        features: getDefaultFeaturesForPackage(planType),
         ownerPhone: tag.owner_phone || null,
         vehicleInfo: tag.vehicle_make_model || tag.vehicle_info || null,
-        subscriptionStartsAt: tag.subscription_starts_at || tag.activated_at || null,
+        subscriptionStartsAt: startsAt,
         subscriptionExpiresAt: expiresAt,
         createdAt: String(tag.created_at || new Date().toISOString()),
         updatedAt: String(tag.created_at || new Date().toISOString()),
@@ -285,6 +395,7 @@ export async function getStickerLifecycle(
 
 async function syncTagActivationRecord(params: {
   code: string;
+  planType?: PlanType;
   packageType: PackageType;
   features: PackageFeatures;
   ownerPhone: string;
@@ -294,19 +405,43 @@ async function syncTagActivationRecord(params: {
   vendorId?: string | null;
   activationSource: ActivationSource;
 }) {
-  const alertChannel = params.packageType === "basic" ? "WHATSAPP" : "BOTH";
+  const planType: PlanType =
+    params.planType ||
+    resolvePlanType({
+      packageType: params.packageType,
+      activationSource: params.activationSource,
+    });
+  const alertChannel =
+    planType === "basic" ? "WHATSAPP" : planType === "gift" ? "SMS" : "BOTH";
   const vehicleLabel = params.vehicleInfo || "مركبة مفعلة";
   try {
-    await supabaseAdmin
+    const { error } = await supabaseAdmin
       .from("tags")
       .update({
         status: "ACTIVE",
         owner_phone: params.ownerPhone,
         vehicle_make_model: vehicleLabel,
         notification_channel: alertChannel,
+        plan_type: planType,
+        package_type: planType,
+        subscription_starts_at: params.startsAt,
+        subscription_expires_at: params.expiresAt,
+        activation_source: params.activationSource,
         activated_at: params.startsAt,
       })
       .eq("tag_code", params.code);
+    if (error) {
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          status: "ACTIVE",
+          owner_phone: params.ownerPhone,
+          vehicle_make_model: vehicleLabel,
+          notification_channel: alertChannel,
+          activated_at: params.startsAt,
+        })
+        .eq("tag_code", params.code);
+    }
   } catch {
     // ignore if remote tags columns differ
   }
@@ -316,7 +451,7 @@ async function syncTagActivationRecord(params: {
     vehicleInfo: vehicleLabel,
     city: "طرابلس",
     alertChannel,
-    packageType: params.packageType,
+    packageType: planType,
     activationSource: params.activationSource,
     subscriptionStartsAt: params.startsAt,
     subscriptionExpiresAt: params.expiresAt,
@@ -326,6 +461,7 @@ async function syncTagActivationRecord(params: {
 
 export async function activateStickerAtomic(params: {
   code: string;
+  planType?: PlanType;
   packageType: PackageType;
   ownerPhone: string;
   ownerName?: string;
@@ -344,11 +480,23 @@ export async function activateStickerAtomic(params: {
   sticker?: StickerRecord;
   error?: string;
 }> {
+  await ensurePlanSchemaAndFixTag();
   const code = formatBalaghniTagCode(params.code);
-  const pkg = normalizePackageType(params.packageType);
-  const features = params.customFeatures || getDefaultFeaturesForPackage(pkg);
+  const planType: PlanType =
+    params.planType ||
+    resolvePlanType({
+      packageType: params.packageType,
+      activationSource: params.activationSource,
+    });
+  const pkg: PackageType =
+    planType === "basic" ? "basic" : normalizePackageType(params.packageType);
+  const features =
+    params.customFeatures || getDefaultFeaturesForPackage(planType);
   const startsAt = new Date().toISOString();
-  const expiresAt = addDaysIso(startsAt, params.durationDays ?? 365);
+  const expiresAt = addDaysIso(
+    startsAt,
+    params.durationDays ?? (planType === "gift" ? 30 : 365)
+  );
   const allowedStatuses = params.allowExpiredRenewal
     ? ["unactivated", "expired"]
     : ["unactivated"];
@@ -359,6 +507,7 @@ export async function activateStickerAtomic(params: {
       .from("stickers")
       .update({
         status: "active",
+        plan_type: planType,
         package_type: pkg,
         features,
         owner_phone: params.ownerPhone,
@@ -379,6 +528,7 @@ export async function activateStickerAtomic(params: {
       if (Array.isArray(updatedRows) && updatedRows.length > 0) {
         await syncTagActivationRecord({
           code,
+          planType,
           packageType: pkg,
           features,
           ownerPhone: params.ownerPhone,
@@ -402,7 +552,7 @@ export async function activateStickerAtomic(params: {
             city: "تفعيل مباشر (QR)",
             address: `تفعيل مباشر عبر مسح الملصق ${code}`,
             vehicleModel: params.vehicleInfo || null,
-            totalLyd: getPackagePriceLyd(pkg),
+            totalLyd: getPackagePriceLyd(planType),
             paymentMethod: "online",
             paymentStatus: "paid",
             assignedTagCode: code,
@@ -413,11 +563,11 @@ export async function activateStickerAtomic(params: {
           });
           await sendWhatsappAlertMessage(
             params.ownerPhone,
-            `✅ تم تفعيل ملصق «بَلِّغْنِي» (${code}) بنجاح!\nالباقة: ${pkg === "basic" ? "الباقة الأساسية (50 د.ل)" : "باقة نَبِّهْنِي (100 د.ل)"}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+            `✅ تم تفعيل ملصق «بَلِّغْنِي» (${code}) بنجاح!\nالباقة: ${planType === "basic" ? "الباقة الأساسية (50 د.ل)" : planType === "gift" ? "باقة الهدية (شهر مجاني)" : "باقة نَبِّهْنِي (100 د.ل)"}\nصالح حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
           );
           await sendWhatsappAlertMessage(
             getAdminWhatsappNumber(),
-            `✅ تفعيل أونلاين مباشر لملصق (${code})\nالباقة: ${pkg}\nالهاتف: ${params.ownerPhone}\nالاسم: ${params.ownerName || "-"}`
+            `✅ تفعيل أونلاين مباشر لملصق (${code})\nالباقة: ${planType}\nالهاتف: ${params.ownerPhone}\nالاسم: ${params.ownerName || "-"}`
           );
         }
         const rec = await getStickerLifecycle(code);
@@ -520,6 +670,7 @@ export async function activateStickerAtomic(params: {
     vendorId: local?.vendorId || params.vendorId || null,
     activationSource: params.activationSource,
     activatedByVendorId: params.vendorId || null,
+    planType,
     packageType: pkg,
     features,
     ownerPhone: params.ownerPhone,
@@ -536,6 +687,7 @@ export async function activateStickerAtomic(params: {
 
   await syncTagActivationRecord({
     code,
+    planType,
     packageType: pkg,
     features,
     ownerPhone: params.ownerPhone,
@@ -560,6 +712,7 @@ export async function redeemGiftSticker(params: {
   sticker?: StickerRecord;
   error?: string;
 }> {
+  await ensurePlanSchemaAndFixTag();
   const code = formatBalaghniTagCode(params.code);
   const cleanPhone = params.phone.replace(/[^\d]/g, "");
   if (!cleanPhone) {
@@ -592,6 +745,7 @@ export async function redeemGiftSticker(params: {
           code,
           status: "active",
           activation_source: "gift_promo",
+          plan_type: "gift",
           package_type: "nabbihni",
           features: NABBIHNI_FEATURES,
           owner_phone: params.phone,
@@ -611,6 +765,7 @@ export async function redeemGiftSticker(params: {
     code,
     status: "active",
     activationSource: "gift_promo",
+    planType: "gift",
     packageType: "nabbihni",
     features: NABBIHNI_FEATURES,
     ownerPhone: params.phone,
@@ -626,6 +781,7 @@ export async function redeemGiftSticker(params: {
 
   await syncTagActivationRecord({
     code,
+    planType: "gift",
     packageType: "nabbihni",
     features: NABBIHNI_FEATURES,
     ownerPhone: params.phone,
@@ -1063,7 +1219,7 @@ export async function importGiftStickers(
       .digest("hex");
 
     try {
-      await supabaseAdmin.from("tags").upsert(
+      const { error: tagErr } = await supabaseAdmin.from("tags").upsert(
         {
           tag_code: code,
           activation_pin_hash: pinHash,
@@ -1071,11 +1227,29 @@ export async function importGiftStickers(
           owner_phone: null,
           vehicle_make_model: null,
           vehicle_city: null,
-          notification_channel: "BOTH",
+          notification_channel: "SMS",
+          plan_type: "gift",
+          package_type: "gift",
+          activation_source: "gift_promo",
           activated_at: nowIso,
         },
         { onConflict: "tag_code" }
       );
+      if (tagErr) {
+        await supabaseAdmin.from("tags").upsert(
+          {
+            tag_code: code,
+            activation_pin_hash: pinHash,
+            status: "ACTIVE",
+            owner_phone: null,
+            vehicle_make_model: null,
+            vehicle_city: null,
+            notification_channel: "SMS",
+            activated_at: nowIso,
+          },
+          { onConflict: "tag_code" }
+        );
+      }
     } catch {
       // ignore
     }
@@ -1086,6 +1260,7 @@ export async function importGiftStickers(
           code,
           status: "active",
           activation_source: "gift_promo",
+          plan_type: "gift",
           package_type: "nabbihni",
           features: NABBIHNI_FEATURES,
           owner_phone: null,
@@ -1105,6 +1280,7 @@ export async function importGiftStickers(
       code,
       status: "active",
       activationSource: "gift_promo",
+      planType: "gift",
       packageType: "nabbihni",
       features: NABBIHNI_FEATURES,
       ownerPhone: null,
@@ -1573,6 +1749,7 @@ export async function listAvailableStickers(): Promise<string[]> {
 }
 
 export async function pullAndActivateLockedTag(params: {
+  planType?: PlanType;
   packageType: PackageType;
   ownerPhone: string;
   ownerName: string;
@@ -1582,9 +1759,17 @@ export async function pullAndActivateLockedTag(params: {
   startsAt: string;
   expiresAt: string;
 }): Promise<{ ok: boolean; stickerCode?: string; error?: string }> {
-  const pkg = normalizePackageType(params.packageType);
-  const features = getDefaultFeaturesForPackage(pkg);
-  const alertChannel = pkg === "basic" ? "WHATSAPP" : "BOTH";
+  await ensurePlanSchemaAndFixTag();
+  const planType: PlanType =
+    params.planType ||
+    resolvePlanType({
+      packageType: params.packageType,
+    });
+  const pkg: PackageType =
+    planType === "basic" ? "basic" : normalizePackageType(params.packageType);
+  const features = getDefaultFeaturesForPackage(planType);
+  const alertChannel =
+    planType === "basic" ? "WHATSAPP" : planType === "gift" ? "SMS" : "BOTH";
   const activationSource =
     params.paymentMethod === "online" ? "online" : "cod_delivered";
   const vehicleLabel =
@@ -1613,6 +1798,20 @@ export async function pullAndActivateLockedTag(params: {
 
       if (!tagErr && Array.isArray(tagRows) && tagRows.length > 0) {
         updated = true;
+        try {
+          await supabaseAdmin
+            .from("tags")
+            .update({
+              plan_type: planType,
+              package_type: planType,
+              activation_source: activationSource,
+              subscription_starts_at: params.startsAt,
+              subscription_expires_at: params.expiresAt,
+            })
+            .eq("tag_code", candidateCode);
+        } catch {
+          // ignore if extended columns not yet in cache
+        }
       } else {
         lastError = tagErr
           ? `${tagErr.code || ""} ${tagErr.message}`
@@ -1627,6 +1826,7 @@ export async function pullAndActivateLockedTag(params: {
           {
             code: candidateCode,
             status: "active",
+            plan_type: planType,
             package_type: pkg,
             features,
             owner_phone: params.ownerPhone,
@@ -1649,7 +1849,7 @@ export async function pullAndActivateLockedTag(params: {
         vehicleInfo: vehicleLabel,
         city: params.city,
         alertChannel,
-        packageType: pkg,
+        packageType: planType,
         activationSource,
         subscriptionStartsAt: params.startsAt,
         subscriptionExpiresAt: params.expiresAt,
@@ -1660,6 +1860,7 @@ export async function pullAndActivateLockedTag(params: {
       store.stickers[candidateCode] = {
         code: candidateCode,
         status: "active",
+        planType,
         packageType: pkg,
         features,
         ownerPhone: params.ownerPhone,
@@ -1716,8 +1917,9 @@ export async function importStickerCodes(
         {
           code,
           status: "unactivated",
-          package_type: "nabbihni",
-          features: NABBIHNI_FEATURES,
+          plan_type: "basic",
+          package_type: "basic",
+          features: getDefaultFeaturesForPackage("basic"),
           created_at: nowIso,
           updated_at: nowIso,
         },
@@ -1728,8 +1930,8 @@ export async function importStickerCodes(
           tag_code: code,
           status: "LOCKED",
           type: "car",
-          package_type: "nabbihni",
-          features: NABBIHNI_FEATURES,
+          package_type: "basic",
+          features: getDefaultFeaturesForPackage("basic"),
           updated_at: nowIso,
         },
         { onConflict: "tag_code" }
@@ -1741,8 +1943,9 @@ export async function importStickerCodes(
     store.stickers[code] = {
       code,
       status: "unactivated",
-      packageType: "nabbihni",
-      features: NABBIHNI_FEATURES,
+      planType: "basic",
+      packageType: "basic",
+      features: getDefaultFeaturesForPackage("basic"),
       createdAt: nowIso,
       updatedAt: nowIso,
     };

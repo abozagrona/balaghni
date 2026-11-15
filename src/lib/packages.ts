@@ -111,11 +111,94 @@ export const CORPORATE_FEATURE_OPTIONS = [
   { id: "central_reports", label: "تقارير دورية وإدارة مركزية" },
 ] as const;
 
+export type PlanType = "basic" | "nabbihni" | "gift";
+
+export function resolvePlanType(params: {
+  planType?: string | null;
+  packageType?: string | null;
+  activationSource?: string | null;
+  notificationChannel?: string | null;
+  defaultPlan?: PlanType;
+}): PlanType {
+  const rawPlan = String(params.planType || "").trim().toLowerCase();
+  if (rawPlan === "gift" || rawPlan === "gift_promo" || rawPlan === "free_month") {
+    return "gift";
+  }
+  if (rawPlan === "basic" || rawPlan === "standard") {
+    return "basic";
+  }
+  if (rawPlan === "nabbihni" || rawPlan === "premium" || rawPlan === "elite") {
+    return "nabbihni";
+  }
+
+  const src = String(params.activationSource || "").trim().toLowerCase();
+  if (src === "gift_promo" || src === "gift") {
+    return "gift";
+  }
+
+  const rawPkg = String(params.packageType || "").trim().toLowerCase();
+  if (rawPkg === "gift" || rawPkg === "gift_promo") {
+    return "gift";
+  }
+  if (rawPkg === "basic" || rawPkg === "standard") {
+    return "basic";
+  }
+  if (rawPkg === "nabbihni" || rawPkg === "premium" || rawPkg === "elite") {
+    return "nabbihni";
+  }
+
+  const ch = String(params.notificationChannel || "").trim().toUpperCase();
+  if (ch === "WHATSAPP") {
+    return "basic";
+  }
+  if (ch === "SMS") {
+    return "gift";
+  }
+  if (ch === "BOTH") {
+    return "nabbihni";
+  }
+
+  return params.defaultPlan || "basic";
+}
+
+export function getPlanDisplayInfo(planType: PlanType): {
+  planType: PlanType;
+  badgeText: string;
+  dashboardTitle: string;
+  packageName: string;
+} {
+  if (planType === "gift") {
+    return {
+      planType: "gift",
+      badgeText: "🎁 باقة هدية (شهر مجاني)",
+      dashboardTitle: "لوحة تحكم مركبتي — الباقة التجريبية المجانية",
+      packageName: "باقة الهدية (شهر مجاني)",
+    };
+  }
+  if (planType === "nabbihni") {
+    return {
+      planType: "nabbihni",
+      badgeText: "✨ باقة نَبِّهْنِي",
+      dashboardTitle: "لوحة تحكم مركبتي وخدمة «نَبِّهْنِي»",
+      packageName: "باقة نَبِّهْنِي",
+    };
+  }
+  return {
+    planType: "basic",
+    badgeText: "الباقة الأساسية",
+    dashboardTitle: "لوحة تحكم مركبتي — الباقة الأساسية",
+    packageName: "الباقة الأساسية",
+  };
+}
+
 export function normalizePackageType(raw?: string | null): PackageType {
   const val = String(raw || "").trim().toLowerCase();
   if (val === "basic" || val === "standard") return "basic";
   if (val === "elite" || val === "corporate") return "elite";
-  return "nabbihni";
+  if (val === "nabbihni" || val === "premium" || val === "gift" || val === "gift_promo") {
+    return "nabbihni";
+  }
+  return "basic";
 }
 
 export function getPackageConfig(raw?: string | null): PackageDefinition {
@@ -125,12 +208,18 @@ export function getPackageConfig(raw?: string | null): PackageDefinition {
 export function getDefaultFeaturesForPackage(
   raw?: string | null
 ): PackageFeatures {
+  const val = String(raw || "").trim().toLowerCase();
+  if (val === "gift" || val === "gift_promo" || val === "nabbihni" || val === "elite" || val === "corporate") {
+    return { ...NABBIHNI_FEATURES };
+  }
   const pkg = normalizePackageType(raw);
   if (pkg === "basic") return { ...BASIC_FEATURES };
   return { ...NABBIHNI_FEATURES };
 }
 
 export function getPackagePriceLyd(raw?: string | null): number {
+  const val = String(raw || "").trim().toLowerCase();
+  if (val === "gift" || val === "gift_promo") return 0;
   const pkg = normalizePackageType(raw);
   if (pkg === "basic") return 50;
   if (pkg === "nabbihni") return 100;

@@ -43,6 +43,7 @@ export async function POST(req: NextRequest) {
     }
 
     const pullRes = await pullAndActivateLockedTag({
+      planType: pkgType === "basic" ? "basic" : "nabbihni",
       packageType: pkgType,
       ownerPhone: phone,
       ownerName: fullName,
