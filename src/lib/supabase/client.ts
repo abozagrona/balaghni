@@ -22,26 +22,30 @@ const rawSupabaseAnonKey =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
   "sb_publishable_wUsqBoHbhbuvVitBDo2wuw_xOhU-IEe";
 
+const normalizeSupabaseKey = (raw: string | undefined): string => {
+  const trimmed = (raw || "").trim().replace(/^["']|["']$/g, "").trim();
+  return trimmed
+    .replace(/^Sb_publishable_/, "sb_publishable_")
+    .replace(/^Sb_secret_/, "sb_secret_");
+};
+
 // تصحيح تلقائي لحالة الحرف الأول في مفتاح Supabase القابل للنشر (sb_publishable_...)
-const normalizedAnonKey = rawSupabaseAnonKey.replace(
-  /^Sb_publishable_/,
-  "sb_publishable_"
-);
+const normalizedAnonKey = normalizeSupabaseKey(rawSupabaseAnonKey);
 
 const isValidKeyFormat = (k: string) =>
-  (k.startsWith("eyJ") && k.split(".").length === 3) ||
-  k.startsWith("sb_secret_");
+  k.startsWith("sb_secret_") ||
+  (k.startsWith("eyJ") && k.split(".").length === 3 && k.length > 100);
 
 const serviceCandidates = [
-  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "",
-  process.env.SUPABASE_SECRET_KEY?.trim() || "",
+  normalizeSupabaseKey(process.env.SUPABASE_SECRET_KEY),
+  normalizeSupabaseKey(process.env.SUPABASE_SERVICE_ROLE_KEY),
 ];
 const validServiceKey = serviceCandidates.find(isValidKeyFormat) || "";
 const isValidServiceJwt = Boolean(validServiceKey);
 
 if (serviceCandidates.some(Boolean) && !isValidServiceJwt) {
   console.warn(
-    "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو بصيغة غير صالحة."
+    "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY في Vercel غير مكتمل أو بصيغة غير صالحة."
   );
 }
 
@@ -1610,12 +1614,15 @@ function mapAdminProfileRow(
   };
 }
 
+let lastAdminDbError: { code?: string; message?: string } | null = null;
+
 /**
  * البحث عن حساب المشرف في جدول public.admin_profiles عبر رقم الهاتف الإداري أو اسم المستخدم (username)
  */
 async function findAdminProfileByPhone(
   phoneInput: string
 ): Promise<RawAdminProfileRow | null> {
+  lastAdminDbError = null;
   const clean = String(phoneInput || "").trim();
   if (!clean) return null;
 
@@ -1624,7 +1631,21 @@ async function findAdminProfileByPhone(
   const digits = clean.replace(/\D/g, "");
 
   try {
-    const { data, error } = await supabase.from("admin_profiles").select("*");
+    let { data, error } = await supabaseAdmin.from("admin_profiles").select("*");
+    if (error && isValidServiceJwt && validServiceKey !== normalizedAnonKey) {
+      // في حال كان مفتاح الخدمة في Vercel غير متطابق مع المشروع، جرب المفتاح العام كاحتياط
+      const fallbackClient = createClient(rawSupabaseUrl, normalizedAnonKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      });
+      const retry = await fallbackClient.from("admin_profiles").select("*");
+      if (!retry.error && Array.isArray(retry.data)) {
+        data = retry.data;
+        error = null;
+      }
+    }
+    if (error) {
+      lastAdminDbError = { code: error.code, message: error.message };
+    }
     if (!error && Array.isArray(data)) {
       const matched = (data as RawAdminProfileRow[]).find((row) => {
         const rowPhoneNorm = normalizeAdminPhoneKey(row.phone || "");
@@ -1640,8 +1661,10 @@ async function findAdminProfileByPhone(
       });
       if (matched) return matched;
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    lastAdminDbError = {
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
 
   return null;
@@ -2103,6 +2126,15 @@ export async function verifyAdminAuthentication(params: {
       error: "بيانات الاعتماد غير صحيحة أو الحساب غير مفعل",
     };
   };
+
+  // في حال تعذر الوصول لجدول admin_profiles بسبب صلاحيات RLS / مفتاح الخدمة، لا نحتسبها محاولة خاطئة
+  if (!profileRow && lastAdminDbError) {
+    return {
+      ok: false,
+      remainingAttempts: Math.max(1, 4 - currentLimit.failedAttempts),
+      error: `تعذر قراءة حساب المشرف من قاعدة البيانات (${lastAdminDbError.code || "DB_ERR"}: ${lastAdminDbError.message || "Permission denied"}). يرجى تشغيل سكربت منح صلاحيات الجداول في Supabase SQL Editor أو تحديث مفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel.`,
+    };
+  }
 
   // التأكد من وجود الحساب وأنه نشط (is_active = true)
   if (!profileRow || !profileRow.is_active) {
