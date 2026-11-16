@@ -223,6 +223,9 @@ export function AdminLifecyclePanel({
       });
       onSuccess?.();
       await fetchLifecycle();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("balaghni:orders-updated"));
+      }
     } catch {
       setMessage({ type: "err", text: "خطأ في الاتصال بالخادم." });
     } finally {
@@ -404,6 +407,23 @@ export function AdminLifecyclePanel({
             <ShoppingBag className="h-4 w-4 text-primary" />
             <span>جميع طلبات المتجر والتفعيل ({orders.length})</span>
           </h3>
+          {orders.filter(
+            (o) =>
+              o.paymentMethod === "cod" &&
+              (o.status === "pending_delivery" || o.paymentStatus === "pending_cod")
+          ).length > 0 && (
+            <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-3 py-1 text-[11px] font-black text-amber-300">
+              طلبات كاش بانتظار التوصيل والدفع:{" "}
+              {
+                orders.filter(
+                  (o) =>
+                    o.paymentMethod === "cod" &&
+                    (o.status === "pending_delivery" ||
+                      o.paymentStatus === "pending_cod")
+                ).length
+              }
+            </span>
+          )}
         </div>
 
         {orders.length === 0 ? (
@@ -414,13 +434,26 @@ export function AdminLifecyclePanel({
               const pkg = getPackageConfig(ord.packageType);
               const daysLeft = computeCountdownDays(ord.subscriptionExpiresAt);
               const isOnline = ord.paymentMethod === "online";
+              const isCancelled =
+                ord.status === "cancelled" || ord.paymentStatus === "cancelled";
+              const isPendingCod =
+                !isOnline &&
+                !isCancelled &&
+                (ord.status === "pending_delivery" ||
+                  ord.paymentStatus === "pending_cod");
               const chosenSticker =
                 selectedOrderSticker[ord.id] ?? availableStickers[0] ?? "";
 
               return (
                 <div
                   key={ord.id}
-                  className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3"
+                  className={`rounded-2xl border p-4 space-y-3 ${
+                    isPendingCod
+                      ? "border-amber-500/35 bg-amber-500/[0.04]"
+                      : isCancelled
+                        ? "border-red-500/20 bg-red-500/[0.02] opacity-70"
+                        : "border-white/10 bg-white/[0.03]"
+                  }`}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
@@ -440,16 +473,25 @@ export function AdminLifecyclePanel({
                             : "bg-amber-500/15 text-amber-300"
                         }`}
                       >
-                        {isOnline ? "دفع أونلاين ✅" : "دفع عند الاستلام 💵"}
+                        {isOnline ? "دفع أونلاين ✅" : "دفع كاش عند الاستلام 💵"}
                       </span>
                     </div>
 
-                    {ord.assignedTagCode ? (
+                    {isCancelled ? (
+                      <span className="rounded-full border border-red-500/35 bg-red-500/15 px-3 py-1 text-[11px] font-bold text-red-300">
+                        طلب ملغى
+                      </span>
+                    ) : isPendingCod ? (
+                      <span className="rounded-full border border-amber-500/40 bg-amber-500/20 px-3 py-1 text-[11px] font-black text-amber-300">
+                        بانتظار التوصيل والدفع
+                        {ord.assignedTagCode ? ` · محجوز: ${ord.assignedTagCode}` : ""}
+                      </span>
+                    ) : ord.assignedTagCode ? (
                       <span
                         dir="ltr"
                         className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-3 py-1 font-mono text-xs font-bold text-emerald-300"
                       >
-                        مرتبط بالملصق: {ord.assignedTagCode}
+                        مفعّل ومرتبط بالملصق: {ord.assignedTagCode}
                       </span>
                     ) : (
                       <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-3 py-1 text-[11px] font-bold text-amber-300">
@@ -458,7 +500,7 @@ export function AdminLifecyclePanel({
                     )}
                   </div>
 
-                  <div className="grid gap-2 text-xs text-white/80 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-2 text-xs text-white/80 sm:grid-cols-2 lg:grid-cols-5">
                     <div>
                       <span className="text-white/50">الزبون: </span>
                       <strong className="text-white">{ord.customerName}</strong>
@@ -470,6 +512,12 @@ export function AdminLifecyclePanel({
                       </span>
                     </div>
                     <div>
+                      <span className="text-white/50">السيارة: </span>
+                      <span className="font-bold text-white">
+                        {ord.vehicleModel || "—"}
+                      </span>
+                    </div>
+                    <div>
                       <span className="text-white/50">المدينة والعنوان: </span>
                       <span>
                         {ord.city} — {ord.address}
@@ -477,19 +525,76 @@ export function AdminLifecyclePanel({
                     </div>
                     <div>
                       <span className="text-white/50">الاشتراك: </span>
-                      <span>
-                        {formatSlashDateYmd(ord.subscriptionStartsAt)} ⟵{" "}
-                        {formatSlashDateYmd(ord.subscriptionExpiresAt)}
-                      </span>
-                      {daysLeft !== null && (
-                        <span className="ms-1.5 font-bold text-sky-300">
-                          (باقي {Math.max(0, daysLeft)} يوم)
+                      {isPendingCod ? (
+                        <span className="font-bold text-amber-300">
+                          يبدأ عند تأكيد التسليم (365 يوماً)
                         </span>
+                      ) : isCancelled ? (
+                        <span className="text-red-300">ملغى</span>
+                      ) : (
+                        <>
+                          <span>
+                            {formatSlashDateYmd(ord.subscriptionStartsAt)} ⟵{" "}
+                            {formatSlashDateYmd(ord.subscriptionExpiresAt)}
+                          </span>
+                          {daysLeft !== null && (
+                            <span className="ms-1.5 font-bold text-sky-300">
+                              (باقي {Math.max(0, daysLeft)} يوم)
+                            </span>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
 
-                  {!ord.assignedTagCode && (
+                  {isPendingCod && (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-amber-500/20 pt-3">
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={
+                          busyAction === `confirm-${ord.id}` ||
+                          busyAction === `cancel-${ord.id}`
+                        }
+                        onClick={() =>
+                          runAction(`confirm-${ord.id}`, {
+                            action: "confirm_cod_delivery",
+                            orderId: ord.id,
+                            orderCode: ord.orderCode,
+                          })
+                        }
+                        className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-500"
+                      >
+                        {busyAction === `confirm-${ord.id}`
+                          ? "جاري التفعيل..."
+                          : "تأكيد التسليم والدفع (تفعيل الآن)"}
+                      </Button>
+
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          busyAction === `confirm-${ord.id}` ||
+                          busyAction === `cancel-${ord.id}`
+                        }
+                        onClick={() =>
+                          runAction(`cancel-${ord.id}`, {
+                            action: "cancel_cod_order",
+                            orderId: ord.id,
+                            orderCode: ord.orderCode,
+                          })
+                        }
+                        className="rounded-xl border-red-500/35 bg-red-500/10 text-red-300 hover:bg-red-600 hover:text-white"
+                      >
+                        {busyAction === `cancel-${ord.id}`
+                          ? "جاري الإلغاء..."
+                          : "إلغاء الطلب"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {!ord.assignedTagCode && !isCancelled && (
                     <div className="flex flex-wrap items-center gap-2 border-t border-white/10 pt-3">
                       {availableStickers.length > 0 ? (
                         <select

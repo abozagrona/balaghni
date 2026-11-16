@@ -9,6 +9,7 @@ import { sendWhatsappAlertMessage } from "@/lib/otp-service";
 import {
   getAdminWhatsappNumber,
   getDefaultFeaturesForPackage,
+  getPackageConfig,
   getPackagePriceLyd,
   NABBIHNI_FEATURES,
   normalizePackageType,
@@ -1627,11 +1628,13 @@ export async function recordMarketplaceOrder(params: {
   paymentStatus: string;
   assignedTagCode?: string | null;
   status?: string;
-  subscriptionStartsAt: string;
-  subscriptionExpiresAt: string;
+  subscriptionStartsAt?: string | null;
+  subscriptionExpiresAt?: string | null;
   skipAdminWhatsapp?: boolean;
 }): Promise<{ ok: boolean; order: OrderRecord; supabaseSaved: boolean }> {
-  const nowIso = params.subscriptionStartsAt || new Date().toISOString();
+  const nowIso = new Date().toISOString();
+  const startsAtVal = params.subscriptionStartsAt ?? null;
+  const expiresAtVal = params.subscriptionExpiresAt ?? null;
   const orderStatus =
     params.status ||
     (params.assignedTagCode ? "completed" : "pending_assignment");
@@ -1655,8 +1658,8 @@ export async function recordMarketplaceOrder(params: {
         payment_status: params.paymentStatus,
         assigned_tag_code: params.assignedTagCode || null,
         status: orderStatus,
-        subscription_starts_at: params.subscriptionStartsAt,
-        subscription_expires_at: params.subscriptionExpiresAt,
+        subscription_starts_at: startsAtVal,
+        subscription_expires_at: expiresAtVal,
         created_at: nowIso,
       })
       .select("id")
@@ -1708,8 +1711,8 @@ export async function recordMarketplaceOrder(params: {
     paymentStatus: params.paymentStatus,
     assignedTagCode: params.assignedTagCode || null,
     status: orderStatus,
-    subscriptionStartsAt: params.subscriptionStartsAt,
-    subscriptionExpiresAt: params.subscriptionExpiresAt,
+    subscriptionStartsAt: startsAtVal,
+    subscriptionExpiresAt: expiresAtVal,
     createdAt: nowIso,
   };
 
@@ -1739,15 +1742,27 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
       for (const row of data) {
         const orderCode = String(row.order_code || row.id);
         const existingLocal = byCode.get(orderCode);
-        const startsAt =
-          row.subscription_starts_at ||
-          existingLocal?.subscriptionStartsAt ||
-          row.created_at;
-        let expiresAt =
-          row.subscription_expires_at ||
-          existingLocal?.subscriptionExpiresAt ||
-          null;
-        if (!expiresAt && startsAt) {
+        const rowStatus = String(
+          row.status ||
+            existingLocal?.status ||
+            (row.assigned_tag_code ? "completed" : "pending_assignment")
+        );
+        const isPendingOrCancelled =
+          rowStatus === "pending_delivery" ||
+          rowStatus === "cancelled" ||
+          String(row.payment_status || "") === "pending_cod";
+
+        const startsAt = isPendingOrCancelled
+          ? row.subscription_starts_at || null
+          : row.subscription_starts_at ||
+            existingLocal?.subscriptionStartsAt ||
+            row.created_at;
+        let expiresAt = isPendingOrCancelled
+          ? row.subscription_expires_at || null
+          : row.subscription_expires_at ||
+            existingLocal?.subscriptionExpiresAt ||
+            null;
+        if (!isPendingOrCancelled && !expiresAt && startsAt) {
           expiresAt = addDaysIso(String(startsAt), 365);
         }
         const paymentMethod =
@@ -1909,19 +1924,26 @@ export async function pullAndActivateLockedTag(params: {
 
       if (!tagErr && Array.isArray(tagRows) && tagRows.length > 0) {
         updated = true;
-        try {
-          await supabaseAdmin
-            .from("tags")
-            .update({
-              plan_type: planType,
-              package_type: planType,
-              activation_source: activationSource,
-              subscription_starts_at: params.startsAt,
-              subscription_expires_at: params.expiresAt,
-            })
-            .eq("tag_code", candidateCode);
-        } catch {
-          // ignore if extended columns not yet in cache
+        const extFields: Record<string, unknown> = {
+          package_type: pkg,
+          activation_source: activationSource,
+          subscription_starts_at: params.startsAt,
+          subscription_expires_at: params.expiresAt,
+          owner_name: params.ownerName || null,
+          alert_channel: alertChannel,
+          vehicle_info: vehicleLabel,
+          city: params.city,
+          plan_type: planType,
+        };
+        for (const [col, val] of Object.entries(extFields)) {
+          try {
+            await supabaseAdmin
+              .from("tags")
+              .update({ [col]: val })
+              .eq("tag_code", candidateCode);
+          } catch {
+            // ignore missing column
+          }
         }
       } else {
         lastError = tagErr
@@ -1998,6 +2020,341 @@ export async function pullAndActivateLockedTag(params: {
         ? "لا توجد ملصقات متاحة بحالة LOCKED في المخزن حالياً."
         : `تعذر تفعيل الملصق (${candidates.length} متاح): ${lastError}`,
   };
+}
+
+/**
+ * حجز ملصق متاح بحالة LOCKED لطلب «الدفع كاش عند الاستلام» دون تفعيله أو بدء عداد الاشتراك
+ */
+export async function pullAndReserveCodTag(params: {
+  planType?: PlanType;
+  packageType: PackageType;
+  ownerPhone: string;
+  ownerName: string;
+  vehicleInfo?: string | null;
+  city: string;
+}): Promise<{ ok: boolean; stickerCode?: string; error?: string }> {
+  await ensurePlanSchemaAndFixTag();
+  const planType: PlanType =
+    params.planType || resolvePlanType({ packageType: params.packageType });
+  const pkg: PackageType =
+    planType === "basic" ? "basic" : normalizePackageType(params.packageType);
+  const features = getDefaultFeaturesForPackage(planType);
+  const vehicleLabel =
+    String(params.vehicleInfo || "").trim() || params.ownerName || "مركبة مسجلة";
+  const nowIso = new Date().toISOString();
+
+  const [candidates, allOrders] = await Promise.all([
+    listAvailableStickers(),
+    listAllOrders(),
+  ]);
+  const reservedSet = new Set(
+    allOrders
+      .filter(
+        (o) =>
+          o.status === "pending_delivery" || o.paymentStatus === "pending_cod"
+      )
+      .map((o) => String(o.assignedTagCode || o.orderCode || "").toUpperCase())
+      .filter(Boolean)
+  );
+
+  const candidateCode = candidates.find((c) => !reservedSet.has(c.toUpperCase()));
+  if (!candidateCode) {
+    return {
+      ok: false,
+      error: "لا توجد ملصقات متاحة (LOCKED) في المخزن حالياً لحجز الطلب.",
+    };
+  }
+
+  // إبقاء الملصق بحالة LOCKED في جدول tags وعدم تفعيله أو بدء عداد الاشتراك
+  try {
+    await supabaseAdmin.from("stickers").upsert(
+      {
+        code: candidateCode,
+        status: "unactivated",
+        plan_type: planType,
+        package_type: pkg,
+        features,
+        owner_phone: params.ownerPhone,
+        owner_name: params.ownerName,
+        vehicle_info: vehicleLabel,
+        activation_source: null,
+        subscription_starts_at: null,
+        subscription_expires_at: null,
+        updated_at: nowIso,
+      },
+      { onConflict: "code" }
+    );
+  } catch {
+    // ignore
+  }
+
+  const store = loadStore();
+  store.stickers[candidateCode] = {
+    code: candidateCode,
+    status: "unactivated",
+    planType,
+    packageType: pkg,
+    features,
+    ownerPhone: params.ownerPhone,
+    ownerName: params.ownerName,
+    vehicleInfo: vehicleLabel,
+    activationSource: "cod_pending" as StickerRecord["activationSource"],
+    subscriptionStartsAt: null,
+    subscriptionExpiresAt: null,
+    createdAt: store.stickers[candidateCode]?.createdAt || nowIso,
+    updatedAt: nowIso,
+  };
+  saveStore(store);
+
+  return { ok: true, stickerCode: candidateCode };
+}
+
+/**
+ * تأكيد تسليم ودفع طلب كاش عند الاستلام من لوحة الإدارة -> تفعيل الملصق وبدء عداد 365 يوماً وإرسال رسالة التفعيل
+ */
+export async function confirmCodOrderDelivery(params: {
+  orderId?: string;
+  orderCode?: string;
+}): Promise<{ ok: boolean; stickerCode?: string; error?: string }> {
+  const allOrders = await listAllOrders();
+  const target = allOrders.find(
+    (o) =>
+      (params.orderId && o.id === params.orderId) ||
+      (params.orderCode && o.orderCode === params.orderCode)
+  );
+  if (!target) {
+    return { ok: false, error: "الطلب غير موجود في قاعدة البيانات." };
+  }
+
+  const tagCode = String(
+    target.assignedTagCode || target.orderCode || ""
+  )
+    .trim()
+    .toUpperCase();
+  if (!tagCode) {
+    return { ok: false, error: "لا يوجد كود ملصق مرتبط بهذا الطلب." };
+  }
+
+  const pkgType = normalizePackageType(target.packageType);
+  const planType: PlanType = pkgType === "basic" ? "basic" : "nabbihni";
+  const pkgConfig = getPackageConfig(pkgType);
+  const features = getDefaultFeaturesForPackage(planType);
+  const alertChannel = planType === "basic" ? "WHATSAPP" : "BOTH";
+  const startsAt = new Date().toISOString();
+  const expiresAt = addDaysIso(startsAt, 365);
+  const vehicleLabel =
+    String(target.vehicleModel || "").trim() ||
+    target.customerName ||
+    "مركبة مسجلة";
+
+  try {
+    await supabaseAdmin
+      .from("tags")
+      .update({
+        status: "ACTIVE",
+        owner_phone: target.customerPhone,
+        vehicle_make_model: vehicleLabel,
+        vehicle_city: target.city || "طرابلس",
+        notification_channel: alertChannel,
+        activated_at: startsAt,
+      })
+      .eq("tag_code", tagCode);
+  } catch {
+    // ignore
+  }
+
+  const extFields: Record<string, unknown> = {
+    package_type: pkgType,
+    activation_source: "cod_delivered",
+    subscription_starts_at: startsAt,
+    subscription_expires_at: expiresAt,
+    owner_name: target.customerName || null,
+    alert_channel: alertChannel,
+    vehicle_info: vehicleLabel,
+    city: target.city || "طرابلس",
+    plan_type: planType,
+  };
+  for (const [col, val] of Object.entries(extFields)) {
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({ [col]: val })
+        .eq("tag_code", tagCode);
+    } catch {
+      // ignore missing column
+    }
+  }
+
+  try {
+    await supabaseAdmin.from("stickers").upsert(
+      {
+        code: tagCode,
+        status: "active",
+        plan_type: planType,
+        package_type: pkgType,
+        features,
+        owner_phone: target.customerPhone,
+        owner_name: target.customerName,
+        vehicle_info: vehicleLabel,
+        activation_source: "cod_delivered",
+        subscription_starts_at: startsAt,
+        subscription_expires_at: expiresAt,
+        updated_at: startsAt,
+      },
+      { onConflict: "code" }
+    );
+  } catch {
+    // ignore
+  }
+
+  syncTagActivationToLocalStore({
+    tagCode,
+    ownerPhone: target.customerPhone,
+    vehicleInfo: vehicleLabel,
+    city: target.city || "طرابلس",
+    alertChannel,
+    packageType: pkgType,
+    activationSource: "cod_delivered",
+    subscriptionStartsAt: startsAt,
+    subscriptionExpiresAt: expiresAt,
+    activatedAt: startsAt,
+  });
+
+  const store = loadStore();
+  store.stickers[tagCode] = {
+    code: tagCode,
+    status: "active",
+    planType,
+    packageType: pkgType,
+    features,
+    ownerPhone: target.customerPhone,
+    ownerName: target.customerName,
+    vehicleInfo: vehicleLabel,
+    activationSource: "cod_delivered",
+    subscriptionStartsAt: startsAt,
+    subscriptionExpiresAt: expiresAt,
+    createdAt: store.stickers[tagCode]?.createdAt || startsAt,
+    updatedAt: startsAt,
+  };
+  store.orders = store.orders.map((o) =>
+    o.id === target.id || o.orderCode === target.orderCode
+      ? {
+          ...o,
+          status: "completed",
+          paymentStatus: "paid",
+          assignedTagCode: tagCode,
+          subscriptionStartsAt: startsAt,
+          subscriptionExpiresAt: expiresAt,
+        }
+      : o
+  );
+  saveStore(store);
+
+  try {
+    await supabaseAdmin
+      .from("orders")
+      .update({
+        status: "completed",
+        payment_status: "paid",
+        assigned_tag_code: tagCode,
+        subscription_starts_at: startsAt,
+        subscription_expires_at: expiresAt,
+      })
+      .eq("order_code", target.orderCode);
+  } catch {
+    // ignore
+  }
+
+  await sendWhatsappAlertMessage(
+    target.customerPhone,
+    `✅ مرحباً ${target.customerName}، تم تأكيد استلام الدفع وتفعيل ملصق «بَلِّغْنِي» الخاص بك بنجاح!\nكود الملصق: ${tagCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+  );
+
+  return { ok: true, stickerCode: tagCode };
+}
+
+/**
+ * إلغاء طلب الدفع عند الاستلام وإعادة الملصق المحجوز إلى المخزون بحالة LOCKED
+ */
+export async function cancelCodOrder(params: {
+  orderId?: string;
+  orderCode?: string;
+}): Promise<{ ok: boolean; stickerCode?: string; error?: string }> {
+  const allOrders = await listAllOrders();
+  const target = allOrders.find(
+    (o) =>
+      (params.orderId && o.id === params.orderId) ||
+      (params.orderCode && o.orderCode === params.orderCode)
+  );
+  if (!target) {
+    return { ok: false, error: "الطلب غير موجود في قاعدة البيانات." };
+  }
+
+  const tagCode = String(target.assignedTagCode || target.orderCode || "")
+    .trim()
+    .toUpperCase();
+
+  try {
+    await supabaseAdmin
+      .from("orders")
+      .update({
+        status: "cancelled",
+        payment_status: "cancelled",
+        subscription_starts_at: null,
+        subscription_expires_at: null,
+      })
+      .eq("order_code", target.orderCode);
+  } catch {
+    // ignore
+  }
+
+  const store = loadStore();
+  store.orders = store.orders.map((o) =>
+    o.id === target.id || o.orderCode === target.orderCode
+      ? {
+          ...o,
+          status: "cancelled",
+          paymentStatus: "cancelled",
+          subscriptionStartsAt: null,
+          subscriptionExpiresAt: null,
+        }
+      : o
+  );
+
+  if (tagCode && tagCode.startsWith("LY-")) {
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          status: "LOCKED",
+          owner_phone: null,
+          activated_at: null,
+        })
+        .eq("tag_code", tagCode);
+    } catch {
+      // ignore
+    }
+    try {
+      await supabaseAdmin
+        .from("stickers")
+        .update({
+          status: "unactivated",
+          owner_phone: null,
+          owner_name: null,
+          vehicle_info: null,
+          activation_source: null,
+          subscription_starts_at: null,
+          subscription_expires_at: null,
+        })
+        .eq("code", tagCode);
+    } catch {
+      // ignore
+    }
+    delete store.stickers[tagCode];
+  }
+
+  saveStore(store);
+  return { ok: true, stickerCode: tagCode || undefined };
 }
 
 export async function importStickerCodes(

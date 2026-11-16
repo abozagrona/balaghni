@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   pullAndActivateLockedTag,
+  pullAndReserveCodTag,
   recordMarketplaceOrder,
 } from "@/lib/lifecycle-service";
 import { sendWhatsappAlertMessage } from "@/lib/otp-service";
@@ -32,11 +33,6 @@ export async function POST(req: NextRequest) {
         ? "online"
         : "cod";
     const paymentStatus = paymentMethod === "online" ? "paid" : "pending_cod";
-
-    const startsAt = new Date().toISOString();
-    const exp = new Date(startsAt);
-    exp.setUTCDate(exp.getUTCDate() + 365);
-    const expiresAt = exp.toISOString();
 
     const fullName = String(body.customerName || body.fullName || "").trim();
     const rawPhone = String(body.customerPhone || body.phone || "").trim();
@@ -89,6 +85,80 @@ export async function POST(req: NextRequest) {
 
     recordOrderAttempt(phone, ip);
 
+    const adminPhone = getAdminWhatsappNumber();
+
+    if (paymentMethod === "cod") {
+      // مسار الدفع كاش عند الاستلام: حجز الملصق فقط دون تفعيله أو بدء عداد الاشتراك
+      const reserveRes = await pullAndReserveCodTag({
+        planType: pkgType === "basic" ? "basic" : "nabbihni",
+        packageType: pkgType,
+        ownerPhone: phone,
+        ownerName: fullName,
+        vehicleInfo: vehicleModel,
+        city,
+      });
+
+      if (!reserveRes.ok || !reserveRes.stickerCode) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              reserveRes.error ||
+              "لا توجد ملصقات متاحة (LOCKED) في المخزن حالياً. يرجى استيراد دفعة جديدة من لوحة الأدمن.",
+          },
+          { status: 409 }
+        );
+      }
+
+      const reservedStickerCode = reserveRes.stickerCode;
+
+      await recordMarketplaceOrder({
+        orderCode: reservedStickerCode,
+        packageType: pkgType,
+        quantity,
+        customerName: fullName,
+        customerPhone: phone,
+        city,
+        address,
+        vehicleModel,
+        totalLyd,
+        paymentMethod: "cod",
+        paymentStatus: "pending_cod",
+        assignedTagCode: reservedStickerCode,
+        status: "pending_delivery",
+        subscriptionStartsAt: null,
+        subscriptionExpiresAt: null,
+      });
+
+      await sendWhatsappAlertMessage(
+        adminPhone,
+        `🛒 طلب جديد (دفع كاش عند الاستلام 💵 — بانتظار التوصيل)\nالكود المحجوز: ${reservedStickerCode}\nالباقة: ${pkgConfig.name}\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمركبة: ${vehicleModel || "—"}\nالمدينة: ${city} - ${address}\nالإجمالي: ${totalLyd} د.ل`
+      );
+
+      await sendWhatsappAlertMessage(
+        phone,
+        `📦 مرحباً ${fullName}، تم استلام طلبك لملصق «بَلِّغْنِي» بنجاح!\nكود الملصق المحجوز: ${reservedStickerCode}\nالباقة: ${pkgConfig.name}\nطريقة الدفع: كاش عند الاستلام (${totalLyd} د.ل)\nحالة الطلب: بانتظار التوصيل والدفع\nسيتم التواصل معك قريباً لتنسيق التوصيل وتفعيل الملصق عند الاستلام.`
+      );
+
+      return NextResponse.json({
+        ok: true,
+        stickerCode: reservedStickerCode,
+        packageType: pkgType,
+        packageName: pkgConfig.name,
+        paymentMethod: "cod",
+        paymentStatus: "pending_cod",
+        status: "pending_delivery",
+        subscriptionStartsAt: null,
+        subscriptionExpiresAt: null,
+      });
+    }
+
+    // مسار الدفع الإلكتروني الأونلاين الناجح: تفعيل فوري تلقائي للملصق وبدء عداد 365 يوماً
+    const startsAt = new Date().toISOString();
+    const exp = new Date(startsAt);
+    exp.setUTCDate(exp.getUTCDate() + 365);
+    const expiresAt = exp.toISOString();
+
     const pullRes = await pullAndActivateLockedTag({
       planType: pkgType === "basic" ? "basic" : "nabbihni",
       packageType: pkgType,
@@ -96,7 +166,7 @@ export async function POST(req: NextRequest) {
       ownerName: fullName,
       vehicleInfo: vehicleModel,
       city,
-      paymentMethod,
+      paymentMethod: "online",
       startsAt,
       expiresAt,
     });
@@ -114,8 +184,6 @@ export async function POST(req: NextRequest) {
     }
 
     const assignedStickerCode = pullRes.stickerCode;
-    const orderStatus =
-      paymentMethod === "online" ? "completed" : "pending_delivery";
 
     await recordMarketplaceOrder({
       orderCode: assignedStickerCode,
@@ -127,28 +195,22 @@ export async function POST(req: NextRequest) {
       address,
       vehicleModel,
       totalLyd,
-      paymentMethod,
+      paymentMethod: "online",
       paymentStatus,
       assignedTagCode: assignedStickerCode,
-      status: orderStatus,
+      status: "completed",
       subscriptionStartsAt: startsAt,
       subscriptionExpiresAt: expiresAt,
     });
 
-    const adminPhone = getAdminWhatsappNumber();
-    const paymentLabel =
-      paymentMethod === "online"
-        ? "دفع أونلاين ✅ (مدفوع)"
-        : "دفع عند الاستلام 💵 (COD)";
-
     await sendWhatsappAlertMessage(
       adminPhone,
-      `🛒 طلب وتفعيل ملصق جديد (${assignedStickerCode})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: ${paymentLabel}\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${quantity}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء: ${expiresAt.slice(0, 10)}`
+      `🛒 طلب وتفعيل ملصق جديد (${assignedStickerCode})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: دفع أونلاين ✅ (مدفوع)\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${quantity}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء: ${expiresAt.slice(0, 10)}`
     );
 
     await sendWhatsappAlertMessage(
       phone,
-      `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${assignedStickerCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+      `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${assignedStickerCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
     );
 
     const ownerToken = createOwnerSessionToken({
@@ -160,9 +222,9 @@ export async function POST(req: NextRequest) {
       stickerCode: assignedStickerCode,
       packageType: pkgType,
       packageName: pkgConfig.name,
-      paymentMethod,
+      paymentMethod: "online",
       paymentStatus,
-      status: orderStatus,
+      status: "completed",
       subscriptionStartsAt: startsAt,
       subscriptionExpiresAt: expiresAt,
     });

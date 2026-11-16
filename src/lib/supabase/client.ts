@@ -228,8 +228,6 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
   const ch = String(
     row.alert_channel || row.notification_channel || "BOTH"
   ).toUpperCase();
-  const alertChannel: AlertChannel =
-    ch === "SMS" || ch === "WHATSAPP" ? ch : "BOTH";
   const resolvedVehicleInfo =
     row.vehicle_info || row.vehicle_make_model || undefined;
 
@@ -246,6 +244,17 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
   } else if (status !== "LOCKED") {
     planType = ch === "SMS" ? "gift" : ch === "WHATSAPP" ? "basic" : "nabbihni";
   }
+
+  const alertChannel: AlertChannel =
+    planType === "basic"
+      ? "WHATSAPP"
+      : planType === "gift"
+      ? "SMS"
+      : planType === "nabbihni"
+      ? "BOTH"
+      : ch === "SMS" || ch === "WHATSAPP"
+      ? ch
+      : "BOTH";
 
   return {
     tagCode: row.tag_code,
@@ -268,7 +277,7 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
     hasPasskey: Boolean(row.passkey_credential_id),
     activatedAt: row.activated_at || null,
     planType,
-    packageType: row.package_type || planType || null,
+    packageType: planType || row.package_type || null,
     activationSource: row.activation_source || null,
     subscriptionStartsAt: row.subscription_starts_at || row.activated_at || null,
     subscriptionExpiresAt: row.subscription_expires_at || null,
@@ -3052,6 +3061,48 @@ export async function getExecutiveAdminOverview(): Promise<{
             subscription_expires_at: s.subscription_expires_at
               ? String(s.subscription_expires_at)
               : localMap[code].subscription_expires_at,
+          };
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const { data: orderRows, error: ordErr } = await supabaseAdmin
+      .from("orders")
+      .select(
+        "assigned_tag_code,order_code,tier,full_name,status,payment_method,subscription_starts_at,subscription_expires_at"
+      )
+      .order("created_at", { ascending: false })
+      .limit(300);
+    if (!ordErr && Array.isArray(orderRows)) {
+      for (const o of orderRows as Array<Record<string, unknown>>) {
+        const code = String(o.assigned_tag_code || o.order_code || "").toUpperCase();
+        const st = String(o.status || "").toLowerCase();
+        if (
+          code &&
+          localMap[code] &&
+          localMap[code].status === "ACTIVE" &&
+          st !== "cancelled" &&
+          st !== "pending_delivery"
+        ) {
+          localMap[code] = {
+            ...localMap[code],
+            owner_name:
+              localMap[code].owner_name ||
+              (o.full_name ? String(o.full_name) : null),
+            plan_type:
+              localMap[code].plan_type || (o.tier ? String(o.tier) : null),
+            package_type:
+              localMap[code].package_type || (o.tier ? String(o.tier) : null),
+            subscription_starts_at:
+              localMap[code].subscription_starts_at ||
+              (o.subscription_starts_at ? String(o.subscription_starts_at) : null),
+            subscription_expires_at:
+              localMap[code].subscription_expires_at ||
+              (o.subscription_expires_at ? String(o.subscription_expires_at) : null),
           };
         }
       }

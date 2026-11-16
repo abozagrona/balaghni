@@ -195,6 +195,7 @@ export default function ExecutiveAdminDashboardPage() {
   const [auditLogs, setAuditLogs] = React.useState<AdminAuditLog[]>([]);
   const [teamMembers, setTeamMembers] = React.useState<AdminTeamMember[]>([]);
   const [reportsCount, setReportsCount] = React.useState(0);
+  const [pendingOrdersCount, setPendingOrdersCount] = React.useState(0);
   const [loadingData, setLoadingData] = React.useState(true);
   const [toastMessage, setToastMessage] = React.useState<string | null>(null);
 
@@ -378,6 +379,30 @@ export default function ExecutiveAdminDashboardPage() {
                 : 4
             );
           }
+
+          try {
+            const lcRes = await fetch("/api/admin/lifecycle", {
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: getAdminHeaders(),
+            });
+            const lcData = await lcRes.json().catch(() => ({}));
+            if (lcRes.ok && lcData.ok && Array.isArray(lcData.orders)) {
+              const pending = lcData.orders.filter(
+                (o: {
+                  paymentMethod?: string;
+                  status?: string;
+                  paymentStatus?: string;
+                }) =>
+                  o.paymentMethod === "cod" &&
+                  (o.status === "pending_delivery" ||
+                    o.paymentStatus === "pending_cod")
+              ).length;
+              setPendingOrdersCount(pending);
+            }
+          } catch {
+            // ignore
+          }
         }
       } finally {
         isInitialLoadRef.current = false;
@@ -386,6 +411,16 @@ export default function ExecutiveAdminDashboardPage() {
     },
     [getAdminHeaders, handleAdminLogout]
   );
+
+  React.useEffect(() => {
+    const onOrdersUpdated = () => {
+      fetchAdminData(undefined, true);
+    };
+    window.addEventListener("balaghni:orders-updated", onOrdersUpdated);
+    return () => {
+      window.removeEventListener("balaghni:orders-updated", onOrdersUpdated);
+    };
+  }, [fetchAdminData]);
 
   // 1. التحويل التلقائي من 127.0.0.1 إلى localhost (إلزامي لعمل WebAuthn وبصمة الجهاز)
   React.useEffect(() => {
@@ -2235,7 +2270,7 @@ export default function ExecutiveAdminDashboardPage() {
             )}
           >
             <ShoppingBag className="h-4 w-4" />
-            <span>الطلبات الواردة</span>
+            <span>الطلبات الواردة ({pendingOrdersCount})</span>
           </button>
 
           {isSuperAdmin && (

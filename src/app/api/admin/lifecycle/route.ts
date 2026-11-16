@@ -4,6 +4,8 @@ import {
   assignOrderToSticker,
   assignStickersToVendor,
   assignUnassignedPaidOrderToSticker,
+  cancelCodOrder,
+  confirmCodOrderDelivery,
   createCorporatePackageAccount,
   createVendor,
   getVendorInventory,
@@ -253,6 +255,38 @@ export async function POST(req: NextRequest) {
         subscriptionStartsAt: startIso,
         subscriptionExpiresAt: expiresIso,
       });
+    }
+
+    if (action === "confirm_cod_delivery") {
+      const res = await confirmCodOrderDelivery({
+        orderId: body.orderId ? String(body.orderId) : undefined,
+        orderCode: body.orderCode ? String(body.orderCode) : undefined,
+      });
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? `تم تأكيد التسليم والدفع وتفعيل الملصق (${res.stickerCode}) وإرسال رسالة التفعيل للزبون ✓`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
+    }
+
+    if (action === "cancel_cod_order") {
+      const res = await cancelCodOrder({
+        orderId: body.orderId ? String(body.orderId) : undefined,
+        orderCode: body.orderCode ? String(body.orderCode) : undefined,
+      });
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? `تم إلغاء الطلب وإعادة الملصق (${res.stickerCode || "—"}) إلى المخزون بحالة LOCKED ✓`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
     }
 
     return NextResponse.json({ ok: false, error: "إجراء غير مدعوم." }, { status: 400 });
