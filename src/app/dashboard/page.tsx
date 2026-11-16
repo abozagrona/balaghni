@@ -9,7 +9,6 @@ import {
   ShieldCheck,
   BellRing,
   MapPin,
-  Share2,
   Eye,
   Plus,
   CheckCircle2,
@@ -22,7 +21,6 @@ import {
   DoorOpen,
   Check,
   X,
-  LogOut,
   Phone,
   LoaderCircle,
   Fingerprint,
@@ -165,7 +163,6 @@ function DashboardContent() {
     MaintenanceItem[]
   >([]);
 
-  const [sharedCopied, setSharedCopied] = React.useState(false);
   const [selectedPhotoAlert, setSelectedPhotoAlert] =
     React.useState<ReportAlertItem | null>(null);
 
@@ -191,14 +188,12 @@ function DashboardContent() {
   const [newNotes, setNewNotes] = React.useState("");
   const [savingMaintenance, setSavingMaintenance] = React.useState(false);
 
-  // حالة إدارة البصمة (Passkey) والتلميح الذكي في لوحة تحكم الزبون
+  // حالة إدارة البصمة (Passkey) في لوحة تحكم الزبون
   const [passkeyLoading, setPasskeyLoading] = React.useState(false);
   const [passkeyError, setPasskeyError] = React.useState<string | null>(null);
   const [passkeySuccess, setPasskeySuccess] = React.useState<string | null>(
     null
   );
-  const [passkeyHintDismissed, setPasskeyHintDismissed] =
-    React.useState(false);
 
   const handleLogout = React.useCallback(() => {
     clearOwnerSession();
@@ -262,14 +257,6 @@ function DashboardContent() {
           Array.isArray(data.maintenance) ? data.maintenance : []
         );
 
-        try {
-          const dismissed = window.sessionStorage.getItem(
-            `balaghni_passkey_hint_dismissed_${data.tag.tagCode}`
-          );
-          setPasskeyHintDismissed(dismissed === "1");
-        } catch {
-          setPasskeyHintDismissed(false);
-        }
       } catch {
         if (!cancelled) {
           setTagData(null);
@@ -286,19 +273,23 @@ function DashboardContent() {
     };
   }, [queryTag]);
 
-  const handleDismissPasskeyHint = () => {
-    setPasskeyHintDismissed(true);
-    if (tagData?.tagCode) {
-      try {
-        window.sessionStorage.setItem(
-          `balaghni_passkey_hint_dismissed_${tagData.tagCode}`,
-          "1"
-        );
-      } catch {
-        // ignore
-      }
-    }
-  };
+  React.useEffect(() => {
+    const onPasskeyUpdated = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ tagCode?: string; hasPasskey?: boolean }>
+      )?.detail;
+      if (!detail || typeof detail.hasPasskey !== "boolean") return;
+      setTagData((prev) =>
+        prev && (!detail.tagCode || prev.tagCode === detail.tagCode)
+          ? { ...prev, hasPasskey: detail.hasPasskey }
+          : prev
+      );
+    };
+    window.addEventListener("balaghni:passkey-updated", onPasskeyUpdated);
+    return () => {
+      window.removeEventListener("balaghni:passkey-updated", onPasskeyUpdated);
+    };
+  }, []);
 
   const handleEnablePasskey = async () => {
     if (!tagData || passkeyLoading) return;
@@ -412,6 +403,11 @@ function DashboardContent() {
 
       setTagData((prev) => (prev ? { ...prev, hasPasskey: true } : prev));
       setPasskeySuccess("تم تفعيل الدخول السريع بالبصمة (Passkey) بنجاح ✓");
+      window.dispatchEvent(
+        new CustomEvent("balaghni:passkey-updated", {
+          detail: { tagCode: tagData.tagCode, hasPasskey: true },
+        })
+      );
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "NotAllowedError") {
         setPasskeyError(
@@ -447,6 +443,11 @@ function DashboardContent() {
 
       setTagData((prev) => (prev ? { ...prev, hasPasskey: false } : prev));
       setPasskeySuccess("تم إلغاء ربط البصمة عن هذا الملصق بنجاح.");
+      window.dispatchEvent(
+        new CustomEvent("balaghni:passkey-updated", {
+          detail: { tagCode: tagData.tagCode, hasPasskey: false },
+        })
+      );
     } catch {
       setPasskeyError("تعذر الاتصال بالخادم أثناء إلغاء البصمة.");
     } finally {
@@ -454,27 +455,7 @@ function DashboardContent() {
     }
   };
 
-  const handleShareQr = async () => {
-    if (!tagData) return;
-    const shareUrl = `${window.location.origin}/s/${encodeURIComponent(
-      tagData.tagCode
-    )}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: `ملصق بَلِّغْنِي (${tagData.tagCode})`,
-          text: `رابط التواصل السريع مع صاحب المركبة عبر منصة بَلِّغْنِي:`,
-          url: shareUrl,
-        });
-        return;
-      } catch {
-        // fallback to clipboard
-      }
-    }
-    navigator.clipboard?.writeText(shareUrl).catch(() => {});
-    setSharedCopied(true);
-    setTimeout(() => setSharedCopied(false), 2200);
-  };
+
 
   const handleAddDocumentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -572,45 +553,7 @@ function DashboardContent() {
     0
   );
 
-  const [showEditProfileModal, setShowEditProfileModal] = React.useState(false);
-  const [profileVehicleInfo, setProfileVehicleInfo] = React.useState("");
-  const [profileCity, setProfileCity] = React.useState("طرابلس");
-  const [profilePhone, setProfilePhone] = React.useState("");
-  const [profileNewPin, setProfileNewPin] = React.useState("");
-  const [savingProfile, setSavingProfile] = React.useState(false);
-  const [profileMessage, setProfileMessage] = React.useState<string | null>(null);
-
-  const handleSaveProfileSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tagData || savingProfile) return;
-    setSavingProfile(true);
-    setProfileMessage(null);
-    try {
-      const res = await fetch("/api/dashboard", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "update_owner_profile",
-          tagCode: tagData.tagCode,
-          vehicleInfo: profileVehicleInfo.trim(),
-          city: profileCity.trim(),
-          ownerPhone: profilePhone.trim(),
-          newPin: profileNewPin.trim() || undefined,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        if (data.tag) setTagData(data.tag);
-        if (data.lifecycle) setLifecycle(data.lifecycle);
-        setProfileNewPin("");
-        setShowEditProfileModal(false);
-        setProfileMessage("تم حفظ بيانات المركبة وإعدادات الأمان بنجاح ✓");
-        setTimeout(() => setProfileMessage(null), 3500);
-      }
-    } finally {
-      setSavingProfile(false);
-    }
-  };
+  const [profileMessage] = React.useState<string | null>(null);
 
   if (loading) {
     return (
@@ -699,72 +642,7 @@ function DashboardContent() {
             </div>
           )}
 
-          {/* تلميح ذكي لتفعيل البصمة (يظهر فقط إذا لم تكن البصمة مفعلة ولم يتم تجاهله مؤقتاً) */}
-          {!tagData.hasPasskey && !passkeyHintDismissed && (
-            <div className="relative overflow-hidden rounded-3xl border border-primary/35 bg-gradient-to-l from-[#141721] via-[#171B28] to-[#1F1218] p-5 text-white shadow-card-soft sm:p-6">
-              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-                <div className="flex items-start gap-3.5">
-                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/20 text-primary">
-                    <Fingerprint className="h-6 w-6" />
-                  </span>
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/20 px-2.5 py-0.5 text-[11px] font-bold text-primary-accent">
-                        <Sparkles className="h-3 w-3" />
-                        تلميح أمان ذكي
-                      </span>
-                      <h2 className="text-base font-black text-white sm:text-lg">
-                        فعّل الدخول السريع بالبصمة (Passkey)
-                      </h2>
-                    </div>
-                    <p className="max-w-2xl text-xs leading-relaxed text-white/75 sm:text-sm">
-                      ادخل إلى لوحة تحكم مركبتك فوراً ببصمة الوجه أو الإصبع بدون
-                      الحاجة لكتابة رقم الهاتف أو رمز الـ PIN في كل مرة.
-                    </p>
-                  </div>
-                </div>
 
-                <div className="flex flex-wrap items-center gap-2.5 sm:shrink-0">
-                  <Button
-                    type="button"
-                    size="lg"
-                    onClick={handleEnablePasskey}
-                    disabled={passkeyLoading}
-                    className="rounded-2xl shadow-primary-glow"
-                  >
-                    {passkeyLoading ? (
-                      <>
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                        <span>جاري التفعيل...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Fingerprint className="h-4 w-4" />
-                        <span>تفعيل البصمة الآن</span>
-                      </>
-                    )}
-                  </Button>
-
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="lg"
-                    onClick={handleDismissPasskeyHint}
-                    disabled={passkeyLoading}
-                    className="rounded-2xl text-white/70 hover:bg-white/10 hover:text-white"
-                  >
-                    <span>تجاهل مؤقتاً</span>
-                  </Button>
-                </div>
-              </div>
-
-              {passkeyError && (
-                <p className="mt-3 rounded-xl border border-primary/40 bg-primary/15 px-3.5 py-2 text-xs font-bold text-primary-accent">
-                  {passkeyError}
-                </p>
-              )}
-            </div>
-          )}
 
           {/* 1. قسم مركبتي والملصق النشط (مجلوب حصراً من سجل الملصق في قاعدة البيانات) */}
           <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-[#0B0D13] p-6 text-white shadow-[0_24px_60px_rgba(11,13,19,0.22)] sm:p-8 lg:p-10">
@@ -834,10 +712,10 @@ function DashboardContent() {
 
                 <p className="max-w-xl text-xs leading-relaxed text-white/75 sm:text-sm">
                   {activePlanType === "basic"
-                    ? "استقبل بلاغات سيارتك الفورية عبر واتساب وSMS مع حماية كاملة لخصوصية رقم هاتفك وإدارة بيانات مركبتك."
+                    ? "استقبل بلاغات سيارتك الفورية عبر واتساب فقط مع حماية كاملة لخصوصية رقم هاتفك وإدارة بيانات مركبتك."
                     : activePlanType === "gift"
-                    ? "أنت تستمتع حالياً بالفترة التجريبية المجانية لمدة 30 يوماً على ملصق سيارتك. يمكنك تجديد الاشتراك أو الترقية في أي وقت."
-                    : "تعرض هذه اللوحة البيانات الحقيقية المسجلة لملصق سيارتك مع تفعيل كامل لمزايا وتذكيرات باقة نَبِّهْنِي."}
+                    ? "استمتع بتجربة مجانية لمدة 30 يوماً لاستقبال بلاغات سيارتك الفورية عبر واتساب وSMS مع حماية كاملة لخصوصية رقم هاتفك."
+                    : "استقبل بلاغات سيارتك الفورية عبر واتساب وSMS مع ميزة التنبيه الذكي ونداء الطوارئ وحماية كاملة لخصوصية رقم هاتفك."}
                   {effectiveStartsAt && effectiveExpiresAt && (
                     <span className="mt-1.5 block text-white/70 font-semibold">
                       الباقة: {planDisplay.packageName} • بداية الاشتراك:{" "}
@@ -867,42 +745,6 @@ function DashboardContent() {
 
               <div className="flex flex-wrap items-center gap-3">
                 <Button
-                  type="button"
-                  onClick={() => {
-                    setProfileVehicleInfo(displayVehicleName === "غير محدد" ? "" : displayVehicleName);
-                    setProfileCity(tagData.city || "طرابلس");
-                    setProfilePhone(tagData.ownerPhone || "");
-                    setProfileNewPin("");
-                    setShowEditProfileModal(true);
-                  }}
-                  variant="outline"
-                  size="lg"
-                  className="rounded-2xl border-white/20 bg-white/5 text-white hover:bg-white/15"
-                >
-                  <Wrench className="h-4 w-4 text-primary" />
-                  <span>تعديل المركبة وPIN</span>
-                </Button>
-
-                <Button
-                  type="button"
-                  onClick={handleShareQr}
-                  size="lg"
-                  className="rounded-2xl"
-                >
-                  {sharedCopied ? (
-                    <>
-                      <Check className="h-4 w-4" />
-                      <span>تم نسخ رابط الـ QR ✓</span>
-                    </>
-                  ) : (
-                    <>
-                      <Share2 className="h-4 w-4" />
-                      <span>مشاركة الـ QR</span>
-                    </>
-                  )}
-                </Button>
-
-                <Button
                   asChild
                   variant="outline"
                   size="lg"
@@ -912,17 +754,6 @@ function DashboardContent() {
                     <Eye className="h-4 w-4 text-primary" />
                     <span>معاينة صفحة البلاغات</span>
                   </Link>
-                </Button>
-
-                <Button
-                  type="button"
-                  onClick={handleLogout}
-                  variant="ghost"
-                  size="sm"
-                  className="rounded-xl text-white/60 hover:bg-white/10 hover:text-white"
-                >
-                  <LogOut className="h-4 w-4" />
-                  <span>تسجيل الخروج</span>
                 </Button>
               </div>
             </div>
@@ -977,102 +808,7 @@ function DashboardContent() {
             </div>
           </section>
 
-          {/* نافذة تعديل بيانات المركبة والمدينة ورقم الهاتف ورمز PIN */}
-          {showEditProfileModal && (
-            <div
-              role="dialog"
-              aria-modal="true"
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
-            >
-              <div className="w-full max-w-md rounded-3xl border border-border bg-card p-6 shadow-2xl">
-                <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-lg font-black text-foreground">
-                    تعديل بيانات المركبة ورمز PIN
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={() => setShowEditProfileModal(false)}
-                    className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
 
-                <form onSubmit={handleSaveProfileSubmit} className="space-y-4">
-                  <div>
-                    <label className="mb-1 block text-xs font-bold text-foreground">
-                      نوع وموديل المركبة
-                    </label>
-                    <input
-                      type="text"
-                      value={profileVehicleInfo}
-                      onChange={(e) => setProfileVehicleInfo(e.target.value)}
-                      placeholder="مثال: هونداي سوناتا"
-                      className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold text-foreground"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="mb-1 block text-xs font-bold text-foreground">
-                        المدينة
-                      </label>
-                      <input
-                        type="text"
-                        value={profileCity}
-                        onChange={(e) => setProfileCity(e.target.value)}
-                        className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-bold text-foreground"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-bold text-foreground">
-                        رقم الهاتف (واتساب وSMS)
-                      </label>
-                      <input
-                        type="text"
-                        dir="ltr"
-                        value={profilePhone}
-                        onChange={(e) => setProfilePhone(e.target.value)}
-                        className="h-11 w-full rounded-xl border border-border bg-background px-3 font-mono text-xs font-bold text-foreground"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-xs font-bold text-foreground">
-                      رمز PIN جديد (اختياري — اتركه فارغاً للإبقاء على الرمز الحالي)
-                    </label>
-                    <input
-                      type="password"
-                      dir="ltr"
-                      value={profileNewPin}
-                      onChange={(e) => setProfileNewPin(e.target.value)}
-                      placeholder="••••"
-                      className="h-11 w-full rounded-xl border border-border bg-background px-3 font-mono text-sm font-bold text-foreground"
-                    />
-                  </div>
-
-                  <div className="flex justify-end gap-2 pt-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => setShowEditProfileModal(false)}
-                      className="rounded-xl"
-                    >
-                      إلغاء
-                    </Button>
-                    <Button
-                      type="submit"
-                      disabled={savingProfile}
-                      className="rounded-xl"
-                    >
-                      {savingProfile ? "جاري الحفظ..." : "حفظ التعديلات"}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
 
           {/* 2. سجل البلاغات الواردة من جدول reports الخاصة بهذا الملصق حصراً */}
           <section className="space-y-4">
@@ -1780,7 +1516,7 @@ function DashboardContent() {
                     <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
                       {tagData.hasPasskey
                         ? "حسابك مرتبط ببصمة جهازك للدخول الفوري. يمكنك إعادة ربط جهاز جديد أو إلغاء التفعيل في أي وقت."
-                        : "اربط بصمة الوجه أو الإصبع بهاتفك للدخول مباشرة إلى لوحة التحكم بدون كتابة رقم الهاتف أو رمز الـ PIN."}
+                        : "اربط بصمة الوجه أو الإصبع بهاتفك للدخول مباشرة إلى لوحة التحكم بدون الحاجة لإدخال رمز التحقق في كل مرة."}
                     </p>
                   </div>
                 </div>

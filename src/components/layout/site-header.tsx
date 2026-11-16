@@ -13,10 +13,16 @@ import {
   LogOut,
   Car,
   ChevronLeft,
+  Fingerprint,
+  LoaderCircle,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { Button } from "@/components/ui/button";
 import { useOwnerSession } from "@/lib/auth-session";
+import {
+  arrayBufferToBase64Url,
+  base64UrlToUint8Array,
+} from "@/lib/utils";
 
 export function SiteHeader() {
   const router = useRouter();
@@ -25,6 +31,13 @@ export function SiteHeader() {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [dropdownOpen, setDropdownOpen] = React.useState(false);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
+
+  const [hasPasskey, setHasPasskey] = React.useState<boolean | null>(null);
+  const [passkeyLoading, setPasskeyLoading] = React.useState(false);
+  const [passkeyFeedback, setPasskeyFeedback] = React.useState<{
+    type: "error" | "success";
+    text: string;
+  } | null>(null);
 
   // إغلاق القائمة المنسدلة عند النقر خارجها
   React.useEffect(() => {
@@ -50,6 +63,195 @@ export function SiteHeader() {
     setDropdownOpen(false);
     setMobileOpen(false);
   }, []);
+
+  // التحقق من حالة تفعيل البصمة (Passkey) لحساب المالك النشط
+  React.useEffect(() => {
+    if (!isMounted || !isLoggedIn || !session?.tagCode) {
+      setHasPasskey(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/dashboard?tag=${encodeURIComponent(session.tagCode)}`,
+          {
+            cache: "no-store",
+            credentials: "same-origin",
+          }
+        );
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        if (!cancelled && data?.ok && data?.tag) {
+          setHasPasskey(Boolean(data.tag.hasPasskey));
+        }
+      } catch {
+        // تجاهل أخطاء الشبكة الصامتة في الشريط العلوي
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMounted, isLoggedIn, session?.tagCode]);
+
+  // مزامنة حالة البصمة فورياً مع أي تحديث من لوحة التحكم
+  React.useEffect(() => {
+    const onPasskeyUpdated = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ tagCode?: string; hasPasskey?: boolean }>
+      )?.detail;
+      if (!detail || typeof detail.hasPasskey !== "boolean") return;
+      if (!detail.tagCode || detail.tagCode === session?.tagCode) {
+        setHasPasskey(detail.hasPasskey);
+      }
+    };
+    window.addEventListener("balaghni:passkey-updated", onPasskeyUpdated);
+    return () => {
+      window.removeEventListener("balaghni:passkey-updated", onPasskeyUpdated);
+    };
+  }, [session?.tagCode]);
+
+  // تفعيل الدخول السريع بالبصمة (Passkey) مباشرة من قائمة الحساب
+  const handleEnablePasskey = async () => {
+    if (!session?.tagCode || passkeyLoading) return;
+    setPasskeyFeedback(null);
+    setPasskeyLoading(true);
+
+    try {
+      if (
+        typeof window === "undefined" ||
+        !window.PublicKeyCredential ||
+        !navigator.credentials?.create
+      ) {
+        setPasskeyFeedback({
+          type: "error",
+          text: "متصفحك الحالي لا يدعم المصادقة بالبصمة (WebAuthn).",
+        });
+        return;
+      }
+
+      const configRes = await fetch(
+        `/api/auth/passkey?tagCode=${encodeURIComponent(session.tagCode)}`,
+        {
+          cache: "no-store",
+          credentials: "same-origin",
+        }
+      ).catch(() => null);
+      const configData = configRes
+        ? await configRes.json().catch(() => ({}))
+        : {};
+      const rpId =
+        String(configData.rpId || "").trim() ||
+        window.location.hostname.replace(/^www\./, "");
+
+      const phone = session.tagCode.trim();
+      const challenge = configData.challenge
+        ? base64UrlToUint8Array(String(configData.challenge))
+        : (() => {
+            const arr = new Uint8Array(32);
+            window.crypto.getRandomValues(arr);
+            return arr;
+          })();
+
+      const credential = (await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: "بَلِّغْنِي", id: rpId },
+          user: {
+            id: new TextEncoder().encode(phone),
+            name: phone,
+            displayName: session.vehicleInfo || phone,
+          },
+          pubKeyCredParams: [
+            { type: "public-key", alg: -7 },
+            { type: "public-key", alg: -257 },
+          ],
+          authenticatorSelection: {
+            authenticatorAttachment: "platform",
+            userVerification: "preferred",
+            residentKey: "preferred",
+          },
+          timeout: 60000,
+        },
+      })) as PublicKeyCredential | null;
+
+      if (!credential || !credential.rawId) {
+        setPasskeyFeedback({
+          type: "error",
+          text: "تم إلغاء عملية تسجيل البصمة أو لم تكتمل.",
+        });
+        return;
+      }
+
+      const base64UrlCredId = arrayBufferToBase64Url(credential.rawId);
+      const attestationResp =
+        credential.response as AuthenticatorAttestationResponse;
+      const clientDataJSON = attestationResp?.clientDataJSON
+        ? arrayBufferToBase64Url(attestationResp.clientDataJSON)
+        : "";
+      const spkiBuffer =
+        typeof attestationResp?.getPublicKey === "function"
+          ? attestationResp.getPublicKey()
+          : null;
+      const publicKeySpki = spkiBuffer
+        ? arrayBufferToBase64Url(spkiBuffer)
+        : "";
+      const publicKeyAlgorithm =
+        typeof attestationResp?.getPublicKeyAlgorithm === "function"
+          ? attestationResp.getPublicKeyAlgorithm()
+          : -7;
+
+      const saveRes = await fetch("/api/auth/passkey", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          tagCode: session.tagCode,
+          passkeyCredentialId: base64UrlCredId,
+          challengeToken: configData.challengeToken,
+          clientDataJSON,
+          publicKeySpki,
+          publicKeyAlgorithm,
+        }),
+      });
+
+      const saveData = await saveRes.json().catch(() => ({}));
+      if (!saveRes.ok || !saveData.ok) {
+        setPasskeyFeedback({
+          type: "error",
+          text: saveData.error || "تعذر حفظ البصمة في قاعدة البيانات.",
+        });
+        return;
+      }
+
+      setHasPasskey(true);
+      setPasskeyFeedback({
+        type: "success",
+        text: "تم تفعيل الدخول السريع بالبصمة (Passkey) بنجاح ✓",
+      });
+      window.dispatchEvent(
+        new CustomEvent("balaghni:passkey-updated", {
+          detail: { tagCode: session.tagCode, hasPasskey: true },
+        })
+      );
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "NotAllowedError") {
+        setPasskeyFeedback({
+          type: "error",
+          text: "تم إلغاء نافذة البصمة أو لم يتم التحقق منها على الجهاز.",
+        });
+      } else {
+        setPasskeyFeedback({
+          type: "error",
+          text: "تعذر تفعيل البصمة حالياً. تأكد من تفعيل قفل الشاشة في هاتفك.",
+        });
+      }
+    } finally {
+      setPasskeyLoading(false);
+    }
+  };
 
   // معالجة تسجيل الخروج لإنهاء الجلسة وإعادة المستخدم كزائر عادي
   const handleLogoutClick = () => {
@@ -105,6 +307,16 @@ export function SiteHeader() {
                     className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-white"
                     title="جلسة نشطة"
                   />
+                  {/* نقطة تنبيه حمراء/برتقالية نابضة عند عدم تفعيل البصمة (Passkey) */}
+                  {hasPasskey === false && (
+                    <span
+                      className="absolute -top-0.5 -left-0.5 flex h-3.5 w-3.5"
+                      title="ينصح بتفعيل الدخول السريع بالبصمة (Passkey)"
+                    >
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-orange-500 opacity-75" />
+                      <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-red-500 ring-2 ring-white" />
+                    </span>
+                  )}
                 </button>
 
                 {/* القائمة المنسدلة لحساب المالك */}
@@ -160,7 +372,64 @@ export function SiteHeader() {
 
                     <div className="my-1 border-t border-border/40" />
 
-                    {/* خيار 2: تسجيل الخروج */}
+                    {/* خيار 2: تفعيل الدخول السريع بالبصمة (Passkey) */}
+                    <button
+                      type="button"
+                      onClick={handleEnablePasskey}
+                      disabled={passkeyLoading}
+                      className="group flex w-full items-center justify-between rounded-2xl px-3 py-2.5 text-xs font-bold text-foreground transition hover:bg-secondary disabled:opacity-60"
+                      role="menuitem"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className={`relative flex h-8 w-8 items-center justify-center rounded-xl transition ${
+                            hasPasskey
+                              ? "bg-emerald-500/15 text-emerald-600"
+                              : "bg-orange-500/15 text-orange-600 group-hover:bg-orange-500 group-hover:text-white"
+                          }`}
+                        >
+                          {passkeyLoading ? (
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Fingerprint className="h-4 w-4" />
+                          )}
+                          {hasPasskey === false && !passkeyLoading && (
+                            <span className="absolute -top-0.5 -left-0.5 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />
+                          )}
+                        </div>
+                        <div className="text-start">
+                          <span className="block font-black">
+                            {passkeyLoading
+                              ? "جاري تفعيل البصمة..."
+                              : hasPasskey
+                              ? "البصمة (Passkey) مفعّلة ✓"
+                              : "تفعيل الدخول السريع بالبصمة (Passkey)"}
+                          </span>
+                          <span className="block text-[10px] text-muted-foreground font-normal">
+                            {hasPasskey
+                              ? "اضغط لإعادة ربط بصمة جهاز آخر"
+                              : "دخول فوري ببصمة الوجه أو الإصبع"}
+                          </span>
+                        </div>
+                      </div>
+                      <ChevronLeft className="h-4 w-4 text-muted-foreground transition group-hover:text-foreground" />
+                    </button>
+
+                    {passkeyFeedback && (
+                      <div
+                        className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] font-bold ${
+                          passkeyFeedback.type === "success"
+                            ? "bg-emerald-500/10 text-emerald-700"
+                            : "bg-destructive/10 text-destructive"
+                        }`}
+                      >
+                        {passkeyFeedback.text}
+                      </div>
+                    )}
+
+                    <div className="my-1 border-t border-border/40" />
+
+                    {/* خيار 3: تسجيل الخروج */}
                     <button
                       type="button"
                       onClick={handleLogoutClick}
@@ -209,12 +478,21 @@ export function SiteHeader() {
             type="button"
             onClick={() => setMobileOpen(!mobileOpen)}
             aria-label="فتح القائمة"
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-surface text-foreground lg:hidden"
+            className="relative flex h-10 w-10 items-center justify-center rounded-full border border-border bg-surface text-foreground lg:hidden"
           >
             {mobileOpen ? (
               <X className="h-5 w-5" />
             ) : (
               <Menu className="h-5 w-5" />
+            )}
+            {isMounted && isLoggedIn && session && hasPasskey === false && (
+              <span
+                className="absolute -top-0.5 -left-0.5 flex h-3 w-3"
+                title="ينصح بتفعيل الدخول السريع بالبصمة (Passkey)"
+              >
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-orange-500 opacity-75" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500 ring-2 ring-white" />
+              </span>
             )}
           </button>
         </div>
@@ -230,6 +508,9 @@ export function SiteHeader() {
                     <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-primary">
                       <User className="h-5 w-5" />
                       <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                      {hasPasskey === false && (
+                        <span className="absolute -top-0.5 -left-0.5 h-3 w-3 rounded-full bg-red-500 ring-2 ring-white" />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs font-black text-foreground">
@@ -270,6 +551,45 @@ export function SiteHeader() {
                       <span>خروج</span>
                     </Button>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={handleEnablePasskey}
+                    disabled={passkeyLoading}
+                    className={`mt-2 flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition disabled:opacity-60 ${
+                      hasPasskey
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+                        : "border-orange-500/40 bg-orange-500/10 text-orange-700 hover:bg-orange-500/20"
+                    }`}
+                  >
+                    {passkeyLoading ? (
+                      <>
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                        <span>جاري تفعيل البصمة...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Fingerprint className="h-4 w-4" />
+                        <span>
+                          {hasPasskey
+                            ? "البصمة (Passkey) مفعّلة ✓"
+                            : "تفعيل الدخول السريع بالبصمة (Passkey)"}
+                        </span>
+                      </>
+                    )}
+                  </button>
+
+                  {passkeyFeedback && (
+                    <p
+                      className={`mt-2 rounded-xl px-3 py-1.5 text-[11px] font-bold ${
+                        passkeyFeedback.type === "success"
+                          ? "bg-emerald-500/10 text-emerald-700"
+                          : "bg-destructive/10 text-destructive"
+                      }`}
+                    >
+                      {passkeyFeedback.text}
+                    </p>
+                  )}
                 </div>
               )}
 
