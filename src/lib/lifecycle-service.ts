@@ -1639,13 +1639,48 @@ export async function recordMarketplaceOrder(params: {
     params.status ||
     (params.assignedTagCode ? "completed" : "pending_assignment");
   let id = `ord_${Date.now().toString(36)}`;
+  let finalOrderCode = params.orderCode;
   let supabaseSaved = false;
 
-  try {
-    const { data, error } = await supabaseAdmin
+  const tryInsertOrder = async (codeToUse: string) => {
+    const fullPayload = {
+      order_code: codeToUse,
+      tier: params.packageType,
+      quantity: params.quantity,
+      full_name: params.customerName,
+      phone: params.customerPhone,
+      city: params.city,
+      address: params.address,
+      vehicle_model: params.vehicleModel || null,
+      total_lyd: params.totalLyd,
+      payment_method: params.paymentMethod,
+      payment_status: params.paymentStatus,
+      assigned_tag_code: params.assignedTagCode || null,
+      status: orderStatus,
+      subscription_starts_at: startsAtVal,
+      subscription_expires_at: expiresAtVal,
+      created_at: nowIso,
+    };
+
+    const first = await supabaseAdmin
+      .from("orders")
+      .insert(fullPayload)
+      .select("id")
+      .single();
+
+    if (!first.error && first.data?.id) {
+      return { ok: true, id: String(first.data.id), code: codeToUse };
+    }
+
+    if (first.error?.code === "23505") {
+      return { ok: false, duplicate: true, error: first.error };
+    }
+
+    // Fallback to base columns if extended columns are not yet present, then update extended columns individually
+    const base = await supabaseAdmin
       .from("orders")
       .insert({
-        order_code: params.orderCode,
+        order_code: codeToUse,
         tier: params.packageType,
         quantity: params.quantity,
         full_name: params.customerName,
@@ -1654,51 +1689,60 @@ export async function recordMarketplaceOrder(params: {
         address: params.address,
         vehicle_model: params.vehicleModel || null,
         total_lyd: params.totalLyd,
-        payment_method: params.paymentMethod,
-        payment_status: params.paymentStatus,
-        assigned_tag_code: params.assignedTagCode || null,
         status: orderStatus,
-        subscription_starts_at: startsAtVal,
-        subscription_expires_at: expiresAtVal,
         created_at: nowIso,
       })
       .select("id")
       .single();
 
-    if (!error && data?.id) {
-      id = String(data.id);
-      supabaseSaved = true;
-    } else if (error) {
-      // Fallback to base columns if extended columns are not yet present
-      const { data: baseData, error: baseErr } = await supabaseAdmin
-        .from("orders")
-        .insert({
-          order_code: params.orderCode,
-          tier: params.packageType,
-          quantity: params.quantity,
-          full_name: params.customerName,
-          phone: params.customerPhone,
-          city: params.city,
-          address: params.address,
-          vehicle_model: params.vehicleModel || null,
-          total_lyd: params.totalLyd,
-          status: orderStatus,
-          created_at: nowIso,
-        })
-        .select("id")
-        .single();
-      if (!baseErr && baseData?.id) {
-        id = String(baseData.id);
-        supabaseSaved = true;
+    if (!base.error && base.data?.id) {
+      const insertedId = String(base.data.id);
+      const extCols: Record<string, unknown> = {
+        payment_method: params.paymentMethod,
+        payment_status: params.paymentStatus,
+        assigned_tag_code: params.assignedTagCode || null,
+        subscription_starts_at: startsAtVal,
+        subscription_expires_at: expiresAtVal,
+      };
+      for (const [col, val] of Object.entries(extCols)) {
+        try {
+          await supabaseAdmin
+            .from("orders")
+            .update({ [col]: val })
+            .eq("id", insertedId);
+        } catch {
+          // ignore missing column
+        }
       }
+      return { ok: true, id: insertedId, code: codeToUse };
     }
-  } catch {
-    // local store fallback below
+
+    if (base.error?.code === "23505") {
+      return { ok: false, duplicate: true, error: base.error };
+    }
+
+    console.error("[recordMarketplaceOrder] Supabase insert failed:", first.error || base.error);
+    return { ok: false, duplicate: false, error: first.error || base.error };
+  };
+
+  try {
+    let attempt = await tryInsertOrder(finalOrderCode);
+    if (!attempt.ok && attempt.duplicate) {
+      finalOrderCode = `${params.orderCode}-${Date.now().toString(36).toUpperCase()}`;
+      attempt = await tryInsertOrder(finalOrderCode);
+    }
+    if (attempt.ok && attempt.id) {
+      id = attempt.id;
+      finalOrderCode = attempt.code || finalOrderCode;
+      supabaseSaved = true;
+    }
+  } catch (err) {
+    console.error("[recordMarketplaceOrder] unexpected error:", err);
   }
 
   const order: OrderRecord = {
     id,
-    orderCode: params.orderCode,
+    orderCode: finalOrderCode,
     customerName: params.customerName,
     customerPhone: params.customerPhone,
     city: params.city,
@@ -1901,7 +1945,22 @@ export async function pullAndActivateLockedTag(params: {
   const vehicleLabel =
     String(params.vehicleInfo || "").trim() || params.ownerName || "مركبة مسجلة";
 
-  const candidates = await listAvailableStickers();
+  const [rawCandidates, allOrders] = await Promise.all([
+    listAvailableStickers(),
+    listAllOrders(),
+  ]);
+  const reservedSet = new Set(
+    allOrders
+      .filter(
+        (o) =>
+          o.status === "pending_delivery" || o.paymentStatus === "pending_cod"
+      )
+      .map((o) => String(o.assignedTagCode || o.orderCode || "").toUpperCase())
+      .filter(Boolean)
+  );
+  const candidates = rawCandidates.filter(
+    (c) => !reservedSet.has(c.toUpperCase())
+  );
   let lastError = "";
   for (const candidateCode of candidates) {
     try {
@@ -2065,7 +2124,45 @@ export async function pullAndReserveCodTag(params: {
     };
   }
 
-  // إبقاء الملصق بحالة LOCKED في جدول tags وعدم تفعيله أو بدء عداد الاشتراك
+  // إبقاء الملصق بحالة LOCKED في جدول tags مع حفظ بيانات الزبون والسيارة دون تفعيله أو بدء عداد الاشتراك
+  const alertChannel =
+    planType === "basic" ? "WHATSAPP" : planType === "gift" ? "SMS" : "BOTH";
+  try {
+    await supabaseAdmin
+      .from("tags")
+      .update({
+        status: "LOCKED",
+        owner_phone: params.ownerPhone,
+        vehicle_make_model: vehicleLabel,
+        vehicle_city: params.city,
+        notification_channel: alertChannel,
+        activated_at: null,
+      })
+      .eq("tag_code", candidateCode);
+  } catch {
+    // ignore
+  }
+  const extReserveFields: Record<string, unknown> = {
+    owner_name: params.ownerName || null,
+    vehicle_info: vehicleLabel,
+    city: params.city,
+    package_type: pkg,
+    alert_channel: alertChannel,
+    activation_source: null,
+    subscription_starts_at: null,
+    subscription_expires_at: null,
+  };
+  for (const [col, val] of Object.entries(extReserveFields)) {
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({ [col]: val })
+        .eq("tag_code", candidateCode);
+    } catch {
+      // ignore missing column
+    }
+  }
+
   try {
     await supabaseAdmin.from("stickers").upsert(
       {
@@ -2333,6 +2430,27 @@ export async function cancelCodOrder(params: {
         .eq("tag_code", tagCode);
     } catch {
       // ignore
+    }
+    const clearFields: Record<string, unknown> = {
+      owner_name: null,
+      vehicle_make_model: null,
+      vehicle_info: null,
+      city: null,
+      vehicle_city: null,
+      package_type: null,
+      activation_source: null,
+      subscription_starts_at: null,
+      subscription_expires_at: null,
+    };
+    for (const [col, val] of Object.entries(clearFields)) {
+      try {
+        await supabaseAdmin
+          .from("tags")
+          .update({ [col]: val })
+          .eq("tag_code", tagCode);
+      } catch {
+        // ignore missing column
+      }
     }
     try {
       await supabaseAdmin

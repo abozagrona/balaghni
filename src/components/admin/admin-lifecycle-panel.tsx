@@ -164,10 +164,36 @@ export function AdminLifecyclePanel({
   // Reset subscription start date
   const [resetOrderRef, setResetOrderRef] = React.useState("");
 
+  const getAdminLifecycleHeaders = React.useCallback(() => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (typeof window !== "undefined") {
+      try {
+        const raw =
+          window.sessionStorage.getItem("balaghni_admin_profile_session") ||
+          window.localStorage.getItem("balaghni_admin_profile_session");
+        if (raw) {
+          const parsed = JSON.parse(raw) as { sessionToken?: string };
+          if (parsed?.sessionToken) {
+            headers.Authorization = `Bearer ${parsed.sessionToken}`;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return headers;
+  }, []);
+
   const fetchLifecycle = React.useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/lifecycle", { cache: "no-store" });
+      const res = await fetch("/api/admin/lifecycle", {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: getAdminLifecycleHeaders(),
+      });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) {
         setVendors(Array.isArray(data.vendors) ? data.vendors : []);
@@ -190,7 +216,7 @@ export function AdminLifecyclePanel({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getAdminLifecycleHeaders]);
 
   React.useEffect(() => {
     fetchLifecycle();
@@ -206,7 +232,8 @@ export function AdminLifecyclePanel({
     try {
       const res = await fetch("/api/admin/lifecycle", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        headers: getAdminLifecycleHeaders(),
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
@@ -510,6 +537,31 @@ export function AdminLifecyclePanel({
                       <span dir="ltr" className="font-mono text-white">
                         {ord.customerPhone}
                       </span>
+                      {ord.customerPhone && (
+                        <span className="ms-2 inline-flex items-center gap-1">
+                          <a
+                            href={`tel:${ord.customerPhone}`}
+                            className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] font-bold text-white/80 hover:bg-white/20"
+                          >
+                            اتصال
+                          </a>
+                          <a
+                            href={`https://wa.me/${(() => {
+                              const d = String(ord.customerPhone || "").replace(/\D/g, "");
+                              return d.startsWith("0")
+                                ? `218${d.slice(1)}`
+                                : d.startsWith("218")
+                                ? d
+                                : `218${d}`;
+                            })()}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/30"
+                          >
+                            واتساب
+                          </a>
+                        </span>
+                      )}
                     </div>
                     <div>
                       <span className="text-white/50">السيارة: </span>
@@ -567,7 +619,7 @@ export function AdminLifecyclePanel({
                       >
                         {busyAction === `confirm-${ord.id}`
                           ? "جاري التفعيل..."
-                          : "تأكيد التسليم والدفع (تفعيل الآن)"}
+                          : "تم التسليم والدفع (تفعيل الآن)"}
                       </Button>
 
                       <Button
@@ -589,7 +641,7 @@ export function AdminLifecyclePanel({
                       >
                         {busyAction === `cancel-${ord.id}`
                           ? "جاري الإلغاء..."
-                          : "إلغاء الطلب"}
+                          : "إلغاء الطلب وتحرير الملصق"}
                       </Button>
                     </div>
                   )}

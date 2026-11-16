@@ -140,7 +140,11 @@ export async function POST(req: NextRequest) {
         `📦 مرحباً ${fullName}، تم استلام طلبك لملصق «بَلِّغْنِي» بنجاح!\nكود الملصق المحجوز: ${reservedStickerCode}\nالباقة: ${pkgConfig.name}\nطريقة الدفع: كاش عند الاستلام (${totalLyd} د.ل)\nحالة الطلب: بانتظار التوصيل والدفع\nسيتم التواصل معك قريباً لتنسيق التوصيل وتفعيل الملصق عند الاستلام.`
       );
 
-      return NextResponse.json({
+      const codOwnerToken = createOwnerSessionToken({
+        tagCode: reservedStickerCode,
+        ownerPhone: phone,
+      });
+      const codResponse = NextResponse.json({
         ok: true,
         stickerCode: reservedStickerCode,
         packageType: pkgType,
@@ -151,6 +155,8 @@ export async function POST(req: NextRequest) {
         subscriptionStartsAt: null,
         subscriptionExpiresAt: null,
       });
+      attachOwnerSessionCookie(codResponse, codOwnerToken, reservedStickerCode);
+      return codResponse;
     }
 
     // مسار الدفع الإلكتروني الأونلاين الناجح: تفعيل فوري تلقائي للملصق وبدء عداد 365 يوماً

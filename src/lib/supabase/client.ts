@@ -98,6 +98,7 @@ export interface VehicleTagRecord {
   activationSource?: string | null;
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
+  isCodReserved?: boolean;
   reportsCount?: number;
   lastReportAt?: string | null;
 }
@@ -3030,24 +3031,55 @@ export async function getExecutiveAdminOverview(): Promise<{
     // ignore
   }
 
+  const pendingCodSet = new Set<string>();
   try {
     const { data: orderRows, error: ordErr } = await supabaseAdmin
       .from("orders")
       .select(
-        "assigned_tag_code,order_code,tier,full_name,status,payment_method,subscription_starts_at,subscription_expires_at"
+        "assigned_tag_code,order_code,tier,full_name,phone,vehicle_model,city,status,payment_method,payment_status,subscription_starts_at,subscription_expires_at"
       )
       .order("created_at", { ascending: false })
       .limit(300);
     if (!ordErr && Array.isArray(orderRows)) {
       for (const o of orderRows as Array<Record<string, unknown>>) {
-        const code = String(o.assigned_tag_code || o.order_code || "").toUpperCase();
+        const rawAssigned = String(o.assigned_tag_code || "").toUpperCase();
+        const rawOrdCode = String(o.order_code || "").toUpperCase();
+        const code = rawAssigned || (rawOrdCode.startsWith("LY-") ? rawOrdCode.slice(0, 12) : "");
         const st = String(o.status || "").toLowerCase();
-        if (
+        const ps = String(o.payment_status || "").toLowerCase();
+        const isPendingCod = st === "pending_delivery" || ps === "pending_cod";
+
+        if (code && isPendingCod) {
+          pendingCodSet.add(code);
+          if (localMap[code] && localMap[code].status === "LOCKED") {
+            const vModel = o.vehicle_model ? String(o.vehicle_model) : null;
+            localMap[code] = {
+              ...localMap[code],
+              owner_name:
+                localMap[code].owner_name ||
+                (o.full_name ? String(o.full_name) : null),
+              owner_phone:
+                localMap[code].owner_phone ||
+                (o.phone ? String(o.phone) : null),
+              vehicle_info: localMap[code].vehicle_info || vModel,
+              vehicle_make_model: localMap[code].vehicle_make_model || vModel,
+              city:
+                localMap[code].city || (o.city ? String(o.city) : undefined),
+              vehicle_city:
+                localMap[code].vehicle_city ||
+                (o.city ? String(o.city) : null),
+              plan_type:
+                localMap[code].plan_type || (o.tier ? String(o.tier) : null),
+              package_type:
+                localMap[code].package_type || (o.tier ? String(o.tier) : null),
+            };
+          }
+        } else if (
           code &&
           localMap[code] &&
           localMap[code].status === "ACTIVE" &&
           st !== "cancelled" &&
-          st !== "pending_delivery"
+          !isPendingCod
         ) {
           localMap[code] = {
             ...localMap[code],
@@ -3148,6 +3180,9 @@ export async function getExecutiveAdminOverview(): Promise<{
       const stat = reportStatsMap.get(rec.tagCode.toUpperCase());
       return {
         ...rec,
+        isCodReserved:
+          rec.status === "LOCKED" &&
+          pendingCodSet.has(rec.tagCode.toUpperCase()),
         reportsCount: stat?.count ?? 0,
         lastReportAt: stat?.lastReportAt ?? null,
       };

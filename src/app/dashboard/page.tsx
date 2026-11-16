@@ -680,6 +680,20 @@ function DashboardContent() {
             </div>
           )}
 
+          {tagData.status === "LOCKED" && (
+            <div className="flex items-start gap-3 rounded-3xl border border-amber-500/40 bg-amber-500/10 p-5 text-amber-950 shadow-card-soft">
+              <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+              <div className="space-y-1">
+                <p className="text-sm font-black text-amber-900">
+                  طلبك قيد التجهيز والتوصيل — سيبدأ اشتراكك ويُفعّل الملصق فور استلامه
+                </p>
+                <p className="text-xs font-medium text-amber-800/90">
+                  ملصقك محجوز باسمك الآن، ولن يستقبل أي بلاغات ولن يبدأ احتساب الـ 365 يوماً إلا بعد تأكيد التسليم والدفع.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* 1. قسم مركبتي والملصق النشط (مجلوب حصراً من سجل الملصق في قاعدة البيانات) */}
           <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-[#0B0D13] p-6 text-white shadow-[0_24px_60px_rgba(11,13,19,0.22)] sm:p-8 lg:p-10">
             <div
@@ -690,9 +704,25 @@ function DashboardContent() {
             <div className="relative z-10 flex flex-col justify-between gap-6 lg:flex-row lg:items-center">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-3 py-1 text-xs font-bold text-emerald-400">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    حالة الملصق: {tagData.status}
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold",
+                      tagData.status === "LOCKED"
+                        ? "border-amber-500/35 bg-amber-500/15 text-amber-300"
+                        : "border-emerald-500/30 bg-emerald-500/15 text-emerald-400"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full animate-pulse",
+                        tagData.status === "LOCKED"
+                          ? "bg-amber-400"
+                          : "bg-emerald-400"
+                      )}
+                    />
+                    {tagData.status === "LOCKED"
+                      ? "حالة الملصق: محجوز للتوصيل"
+                      : `حالة الملصق: ${tagData.status}`}
                   </span>
                   <span
                     dir="ltr"

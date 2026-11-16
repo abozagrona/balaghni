@@ -100,6 +100,7 @@ interface AdminTagRecord {
   activationSource?: string | null;
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
+  isCodReserved?: boolean;
   reportsCount?: number;
   lastReportAt?: string | null;
 }
@@ -2520,21 +2521,28 @@ export default function ExecutiveAdminDashboardPage() {
                           className="transition hover:bg-white/[0.02]"
                         >
                           <td className="px-4 py-3.5">
-                            <div className="flex items-center gap-2">
-                              <span
-                                dir="ltr"
-                                className="font-mono text-sm font-black text-white"
-                              >
-                                {tag.tagCode}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setDetailsModalTag(tag)}
-                                title="بطاقة تفاصيل الزبون والاشتراك"
-                                className="rounded-lg p-1 text-white/55 transition hover:bg-white/10 hover:text-primary"
-                              >
-                                <Eye className="h-4 w-4" />
-                              </button>
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  dir="ltr"
+                                  className="font-mono text-sm font-black text-white"
+                                >
+                                  {tag.tagCode}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setDetailsModalTag(tag)}
+                                  title="بطاقة تفاصيل الزبون والاشتراك"
+                                  className="rounded-lg p-1 text-white/55 transition hover:bg-white/10 hover:text-primary"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                              </div>
+                              {tag.isCodReserved && (
+                                <span className="inline-flex w-fit items-center rounded-md border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-black text-amber-300">
+                                  محجوز لطلب توصيل
+                                </span>
+                              )}
                             </div>
                           </td>
 
