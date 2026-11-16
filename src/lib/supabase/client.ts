@@ -104,12 +104,15 @@ interface StoredTagRow {
   activation_pin_hash: string;
   status: TagStatus;
   owner_phone?: string | null;
+  owner_name?: string | null;
   owner_pin_hash?: string | null;
   recovery_key_hash?: string | null;
   emergency_recovery_hash?: string | null;
   passkey_credential_id?: string | null;
   vehicle_info?: string | null;
   vehicle_make_model?: string | null;
+  vehicle_name?: string | null;
+  car_model?: string | null;
   vehicle_brand?: string;
   vehicle_model?: string;
   vehicle_color?: string;
@@ -218,6 +221,7 @@ function removeFromSyncedStore(tagCode: string) {
 }
 
 function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
+  const status = normalizeStatus(row.status);
   const ch = String(
     row.alert_channel || row.notification_channel || "BOTH"
   ).toUpperCase();
@@ -228,26 +232,31 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
 
   const rawPlan = String(row.plan_type || row.package_type || "").trim().toLowerCase();
   const src = String(row.activation_source || "").trim().toLowerCase();
-  let planType: "basic" | "nabbihni" | "gift" = "basic";
-  if (rawPlan === "gift" || rawPlan === "gift_promo" || src === "gift_promo" || ch === "SMS") {
+  let planType: "basic" | "nabbihni" | "gift" | null =
+    status === "LOCKED" && !rawPlan ? null : "basic";
+  if (rawPlan === "gift" || rawPlan === "gift_promo" || src === "gift_promo") {
     planType = "gift";
-  } else if (rawPlan === "basic" || rawPlan === "standard" || ch === "WHATSAPP") {
+  } else if (rawPlan === "basic" || rawPlan === "standard") {
     planType = "basic";
-  } else if (rawPlan === "nabbihni" || rawPlan === "premium" || rawPlan === "elite" || ch === "BOTH") {
+  } else if (rawPlan === "nabbihni" || rawPlan === "premium" || rawPlan === "elite") {
     planType = "nabbihni";
+  } else if (status !== "LOCKED") {
+    planType = ch === "SMS" ? "gift" : ch === "WHATSAPP" ? "basic" : "nabbihni";
   }
 
   return {
     tagCode: row.tag_code,
-    status: normalizeStatus(row.status),
+    status,
     type: "car",
     ownerPhone: row.owner_phone || null,
     vehicleInfo: resolvedVehicleInfo,
     vehicleBrand:
-      row.vehicle_brand || resolvedVehicleInfo || "مركبة مسجلة",
+      row.vehicle_brand ||
+      resolvedVehicleInfo ||
+      (status === "LOCKED" ? "" : "مركبة مسجلة"),
     vehicleModel: row.vehicle_model || "",
     vehicleColor: row.vehicle_color || undefined,
-    city: row.city || row.vehicle_city || "طرابلس",
+    city: row.city || row.vehicle_city || (status === "LOCKED" ? "" : "طرابلس"),
     tier: planType === "basic" ? "standard" : "premium",
     alertChannel,
     hasEmergencyContacts: Boolean(row.has_emergency_contacts ?? false),
@@ -255,7 +264,7 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
     hasPasskey: Boolean(row.passkey_credential_id),
     activatedAt: row.activated_at || null,
     planType,
-    packageType: row.package_type || planType,
+    packageType: row.package_type || planType || null,
     activationSource: row.activation_source || null,
     subscriptionStartsAt: row.subscription_starts_at || row.activated_at || null,
     subscriptionExpiresAt: row.subscription_expires_at || null,
@@ -3012,12 +3021,13 @@ export async function getExecutiveAdminOverview(): Promise<{
     const { data: stickerRows, error: stickerErr } = await supabaseAdmin
       .from("stickers")
       .select(
-        "code,plan_type,package_type,activation_source,subscription_starts_at,subscription_expires_at"
+        "code,status,plan_type,package_type,activation_source,subscription_starts_at,subscription_expires_at"
       );
     if (!stickerErr && Array.isArray(stickerRows)) {
       for (const s of stickerRows as Array<Record<string, unknown>>) {
         const code = String(s.code || "").toUpperCase();
-        if (code && localMap[code]) {
+        const stickerStatus = String(s.status || "").toLowerCase();
+        if (code && localMap[code] && stickerStatus !== "unactivated") {
           localMap[code] = {
             ...localMap[code],
             plan_type: s.plan_type
@@ -3350,19 +3360,58 @@ export async function adminManageTagLifecycle(params: {
       activation_pin_hash: targetRow.activation_pin_hash,
       status: "LOCKED",
       owner_phone: null,
+      owner_name: null,
       owner_pin_hash: null,
       recovery_key_hash: null,
+      emergency_recovery_hash: null,
       passkey_credential_id: null,
       vehicle_info: null,
+      vehicle_make_model: null,
+      vehicle_name: null,
+      car_model: null,
       vehicle_brand: "",
       vehicle_model: "",
-      city: "طرابلس",
+      city: "",
+      vehicle_city: null,
       alert_channel: "BOTH",
       activated_at: null,
+      plan_type: null,
+      package_type: null,
+      activation_source: null,
+      subscription_starts_at: null,
+      subscription_expires_at: null,
     };
 
+    // دالة مساعدة لتحديث الأعمدة مع تجاهل الأعمدة غير الموجودة في مخطط الجدول الحي
+    const resilientUpdate = async (
+      table: string,
+      keyCol: string,
+      keyVal: string,
+      fields: Record<string, unknown>
+    ) => {
+      try {
+        const { error } = await supabaseAdmin
+          .from(table)
+          .update(fields)
+          .eq(keyCol, keyVal);
+        if (!error) return;
+      } catch {
+        // fallback to per-column update
+      }
+      for (const [col, val] of Object.entries(fields)) {
+        try {
+          await supabaseAdmin
+            .from(table)
+            .update({ [col]: val })
+            .eq(keyCol, keyVal);
+        } catch {
+          // ignore missing column or constraint
+        }
+      }
+    };
+
+    // 1. تصفير الحقول الأساسية في جدول tags
     try {
-      // Base columns
       await supabaseAdmin
         .from("tags")
         .update({
@@ -3373,39 +3422,70 @@ export async function adminManageTagLifecycle(params: {
           activated_at: null,
         })
         .eq("tag_code", normalizedCode);
-
-      // Extended columns
-      await supabaseAdmin
-        .from("tags")
-        .update({
-          vehicle_info: null,
-          vehicle_brand: null,
-          vehicle_model: null,
-          city: null,
-          recovery_key_hash: null,
-        })
-        .eq("tag_code", normalizedCode);
     } catch {
       // ignore
     }
 
-    // حذف جميع البلاغات والتنبيهات والوثائق المسجلة على هذا الملصق في Supabase
-    try {
-      await supabaseAdmin
-        .from("reports")
-        .delete()
-        .eq("tag_code", normalizedCode);
-      await supabaseAdmin
-        .from("reports")
-        .delete()
-        .eq("tag_id", normalizedCode);
-      await supabaseAdmin
-        .from("vehicle_documents")
-        .delete()
-        .eq("tag_code", normalizedCode);
-    } catch {
-      // ignore
-    }
+    // 2. تصفير كافة الحقول الإضافية (المركبة، المالك، المدينة، الباقة، التواريخ، الأمان) في جدول tags
+    await resilientUpdate("tags", "tag_code", normalizedCode, {
+      vehicle_info: null,
+      vehicle_make_model: null,
+      vehicle_name: null,
+      car_model: null,
+      vehicle_brand: null,
+      vehicle_model: null,
+      vehicle_color: null,
+      owner_name: null,
+      city: null,
+      vehicle_city: null,
+      recovery_key_hash: null,
+      emergency_recovery_hash: null,
+      has_emergency_contacts: false,
+      emergency_phones: [],
+      plan_type: null,
+      package_type: null,
+      activation_source: null,
+      activated_by_vendor_id: null,
+      subscription_starts_at: null,
+      subscription_expires_at: null,
+      last_sub_reminder_stage: null,
+      last_sub_reminder_sent_at: null,
+      alert_channel: "BOTH",
+      notification_channel: "BOTH",
+    });
+
+    // 3. تصفير سجل الملصق في جدول stickers (لأن نظرة الإدارة تدمج حقول الباقة والاشتراك منه)
+    await resilientUpdate("stickers", "code", normalizedCode, {
+      status: "unactivated",
+      owner_phone: null,
+      owner_name: null,
+      vehicle_info: null,
+      activation_source: null,
+      activated_by_vendor_id: null,
+      plan_type: "basic",
+      package_type: null,
+      subscription_starts_at: null,
+      subscription_expires_at: null,
+    });
+
+    // 4. حذف جميع البلاغات والتنبيهات والوثائق وسجلات الصيانة وأي مفاتيح مرور/جلسات مرتبطة بهذا الملصق
+    const deleteWhereEq = async (table: string, col: string, val: string) => {
+      try {
+        await supabaseAdmin.from(table).delete().eq(col, val);
+      } catch {
+        // ignore missing table/column
+      }
+    };
+
+    await Promise.all([
+      deleteWhereEq("reports", "tag_code", normalizedCode),
+      deleteWhereEq("reports", "tag_id", normalizedCode),
+      deleteWhereEq("notifications", "tag_code", normalizedCode),
+      deleteWhereEq("vehicle_documents", "tag_code", normalizedCode),
+      deleteWhereEq("maintenance_records", "tag_code", normalizedCode),
+      deleteWhereEq("passkeys", "tag_code", normalizedCode),
+      deleteWhereEq("owner_sessions", "tag_code", normalizedCode),
+    ]);
 
     saveToSyncedStore(updated);
 
@@ -3420,7 +3500,7 @@ export async function adminManageTagLifecycle(params: {
       adminName: params.adminName,
       actionType: "TAG_FACTORY_RESET",
       actionDetails:
-        "ضبط مصنع كامل: مسح ربط السيارة، هاتف المالك، رمز PIN، بصمة Passkey، وحذف البلاغات، وإرجاع الملصق لحالة LOCKED كأنه خرج من المطبعة",
+        "ضبط مصنع كامل: مسح ربط السيارة، اسم وهاتف المالك، المدينة، الباقة وتواريخها، رمز PIN، بصمة Passkey، وحذف البلاغات، وإرجاع الملصق لحالة LOCKED كأنه خرج من المطبعة",
       tagCode: normalizedCode,
     });
 
