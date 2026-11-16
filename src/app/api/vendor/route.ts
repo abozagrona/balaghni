@@ -136,8 +136,11 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const customerPhone = formatFullLibyaE164(String(body.customerPhone || ""));
-      if (!customerPhone) {
+      const rawCustomerPhone = String(body.customerPhone || "").trim();
+      const customerPhone = rawCustomerPhone
+        ? formatFullLibyaE164(rawCustomerPhone)
+        : "";
+      if (rawCustomerPhone && !customerPhone) {
         return NextResponse.json(
           { ok: false, error: "يرجى إدخال رقم هاتف ليبي صحيح للزبون." },
           { status: 400 }
@@ -152,7 +155,7 @@ export async function POST(req: NextRequest) {
         vendorId,
         code,
         packageType,
-        customerPhone,
+        customerPhone: customerPhone || undefined,
         customerName,
       });
 

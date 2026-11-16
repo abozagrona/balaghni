@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   activateStickerAtomic,
+  linkPrepaidSticker,
   redeemGiftSticker,
 } from "@/lib/lifecycle-service";
 import { normalizePackageType } from "@/lib/packages";
@@ -77,6 +78,37 @@ export async function POST(
 
     const ownerName = String(body.ownerName || "").trim();
     const vehicleInfo = String(body.vehicleInfo || "").trim();
+
+    if (mode === "link_prepaid") {
+      const linkRes = await linkPrepaidSticker({
+        code: normalizedCode,
+        phone: formattedPhone,
+        ownerName,
+        vehicleInfo,
+      });
+
+      if (!linkRes.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            alreadyRedeemed: Boolean(linkRes.alreadyLinked),
+            error: linkRes.error,
+          },
+          { status: linkRes.alreadyLinked ? 409 : 400 }
+        );
+      }
+
+      const ownerToken = createOwnerSessionToken({
+        tagCode: normalizedCode,
+        ownerPhone: formattedPhone,
+      });
+      const response = NextResponse.json({
+        ok: true,
+        sticker: linkRes.sticker,
+      });
+      attachOwnerSessionCookie(response, ownerToken, normalizedCode);
+      return response;
+    }
 
     if (mode === "gift") {
       const giftRes = await redeemGiftSticker({

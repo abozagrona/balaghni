@@ -792,6 +792,120 @@ export async function redeemGiftSticker(params: {
   return { ok: true, sticker: rec };
 }
 
+export async function linkPrepaidSticker(params: {
+  code: string;
+  phone: string;
+  ownerName?: string;
+  vehicleInfo?: string;
+}): Promise<{
+  ok: boolean;
+  alreadyLinked?: boolean;
+  sticker?: StickerRecord;
+  error?: string;
+}> {
+  await ensurePlanSchemaAndFixTag();
+  const code = formatBalaghniTagCode(params.code);
+  const cleanPhone = params.phone.replace(/[^\d]/g, "");
+  if (!cleanPhone) {
+    return { ok: false, error: "يرجى إدخال رقم هاتف ليبي صحيح." };
+  }
+
+  const existing = await getStickerLifecycle(code);
+  if (!existing || existing.status === "unactivated") {
+    return {
+      ok: false,
+      error: "هذا الملصق غير مدفوع أو غير مفعل مسبقاً.",
+    };
+  }
+
+  if (
+    existing.ownerPhone &&
+    existing.ownerPhone.trim() &&
+    existing.ownerPhone.trim() !== "-"
+  ) {
+    return {
+      ok: false,
+      alreadyLinked: true,
+      error: "تم ربط هذا الملصق بحساب مالك آخر مسبقاً.",
+    };
+  }
+
+  const store = loadStore();
+  const nowIso = new Date().toISOString();
+  const planType = existing.planType || "nabbihni";
+  const pkg: PackageType = planType === "basic" ? "basic" : "nabbihni";
+  const features = getDefaultFeaturesForPackage(planType);
+  const durationDays = planType === "gift" ? 30 : 365;
+  const startsAt = existing.subscriptionStartsAt || nowIso;
+  const expiresAt =
+    existing.subscriptionExpiresAt || addDaysIso(startsAt, durationDays);
+  const activationSource: ActivationSource =
+    existing.activationSource || "vendor_cash";
+
+  try {
+    await supabaseAdmin
+      .from("stickers")
+      .upsert(
+        {
+          code,
+          status: "active",
+          activation_source: activationSource,
+          plan_type: planType,
+          package_type: pkg,
+          features,
+          owner_phone: params.phone,
+          owner_name: params.ownerName || null,
+          vehicle_info: params.vehicleInfo || null,
+          vendor_id: existing.vendorId || null,
+          activated_by_vendor_id: existing.activatedByVendorId || null,
+          subscription_starts_at: startsAt,
+          subscription_expires_at: expiresAt,
+          updated_at: nowIso,
+        },
+        { onConflict: "code" }
+      );
+  } catch {
+    // ignore
+  }
+
+  const rec: StickerRecord = {
+    ...existing,
+    status: "active",
+    activationSource,
+    planType,
+    packageType: pkg,
+    features,
+    ownerPhone: params.phone,
+    ownerName: params.ownerName || null,
+    vehicleInfo: params.vehicleInfo || null,
+    subscriptionStartsAt: startsAt,
+    subscriptionExpiresAt: expiresAt,
+    updatedAt: nowIso,
+  };
+  store.stickers[code] = rec;
+  saveStore(store);
+
+  await syncTagActivationRecord({
+    code,
+    planType,
+    packageType: pkg,
+    features,
+    ownerPhone: params.phone,
+    vehicleInfo: params.vehicleInfo,
+    startsAt,
+    expiresAt,
+    vendorId: existing.activatedByVendorId || existing.vendorId,
+    activationSource,
+  });
+
+  await sendWhatsappAlertMessage(
+    params.phone,
+    `✅ تم ربط ملصق «بَلِّغْنِي» (${code}) بحسابك بنجاح!\nالباقة: ${planType === "gift" ? "باقة هدية - شهر مجاني" : pkg === "basic" ? "الباقة الأساسية" : "باقة نَبِّهْنِي"}\nصالح حتى: ${expiresAt.slice(0, 10)}\nلوحة التحكم: https://www.balaghni.ly/dashboard`
+  );
+
+  return { ok: true, sticker: rec };
+}
+
 export async function createCorporateLead(params: {
   companyName: string;
   city: string;
@@ -1091,8 +1205,8 @@ export async function vendorActivateCashSticker(params: {
   vendorId: string;
   code: string;
   packageType: PackageType;
-  customerPhone: string;
-  customerName: string;
+  customerPhone?: string;
+  customerName?: string;
 }): Promise<{ ok: boolean; sticker?: StickerRecord; error?: string }> {
   const code = formatBalaghniTagCode(params.code);
   const existing = await getStickerLifecycle(code);
@@ -1109,20 +1223,21 @@ export async function vendorActivateCashSticker(params: {
     };
   }
 
+  const cleanPhone = String(params.customerPhone || "").trim();
   const res = await activateStickerAtomic({
     code,
     packageType: params.packageType,
-    ownerPhone: params.customerPhone,
-    ownerName: params.customerName,
+    ownerPhone: cleanPhone || "",
+    ownerName: params.customerName || "",
     activationSource: "vendor_cash",
     vendorId: params.vendorId,
     durationDays: 365,
   });
 
-  if (res.ok) {
+  if (res.ok && cleanPhone) {
     await sendWhatsappAlertMessage(
-      params.customerPhone,
-      `🎉 تم تفعيل ملصق «بَلِّغْنِي» (${code}) بنجاح لمدة سنة كاملة!\nيرجى الدخول لحسابك على https://www.balaghni.ly/s/${code} لإكمال بيانات سيارتك.`
+      cleanPhone,
+      `🎉 تم تفعيل ملصق «بَلِّغْنِي» (${code}) بنجاح لمدة سنة كاملة!\nيرجى الدخول لحسابك على https://www.balaghni.ly/dashboard?tag=${code} لإكمال بيانات سيارتك.`
     );
   }
 

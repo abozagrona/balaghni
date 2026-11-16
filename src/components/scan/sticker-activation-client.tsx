@@ -20,12 +20,14 @@ import { saveOwnerSession } from "@/lib/auth-session";
 
 interface StickerActivationClientProps {
   code: string;
-  initialMode: "unactivated" | "gift_ready" | "expired";
+  initialMode: "unactivated" | "gift_ready" | "prepaid_ready" | "expired";
+  prepaidPackageName?: string;
 }
 
 export function StickerActivationClient({
   code,
   initialMode,
+  prepaidPackageName,
 }: StickerActivationClientProps) {
   const [mode, setMode] = React.useState(initialMode);
   const [selectedPkg, setSelectedPkg] = React.useState<PackageType>("nabbihni");
@@ -67,6 +69,12 @@ export function StickerActivationClient({
     setError(null);
 
     const finalPhone = verifiedPhone || phoneForOtp;
+    const apiMode =
+      mode === "gift_ready"
+        ? "gift"
+        : mode === "prepaid_ready"
+          ? "link_prepaid"
+          : "online";
 
     try {
       const res = await fetch(
@@ -76,7 +84,7 @@ export function StickerActivationClient({
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
           body: JSON.stringify({
-            mode: mode === "gift_ready" ? "gift" : "online",
+            mode: apiMode,
             packageType: selectedPkg,
             phone: finalPhone,
             otpProofToken: otpProofToken || "",
@@ -109,6 +117,7 @@ export function StickerActivationClient({
       });
 
       const isGift = mode === "gift_ready";
+      const isPrepaid = mode === "prepaid_ready";
       const fallbackExpiry = new Date(
         Date.now() + (isGift ? 30 : 365) * 24 * 60 * 60 * 1000
       )
@@ -119,8 +128,10 @@ export function StickerActivationClient({
         data.sticker?.subscriptionExpiresAt ||
         fallbackExpiry;
       const pkgLabel = isGift
-        ? "باقة نَبِّهْنِي (هدية 30 يوماً)"
-        : PACKAGES[selectedPkg]?.name || "باقة نَبِّهْنِي";
+        ? "باقة هدية - شهر مجاني"
+        : isPrepaid
+          ? prepaidPackageName || "باقة نَبِّهْنِي"
+          : PACKAGES[selectedPkg]?.name || "باقة نَبِّهْنِي";
 
       setActivatedDetails({
         code,
@@ -191,9 +202,25 @@ export function StickerActivationClient({
       {mode === "gift_ready" ? (
         <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-center">
           <Gift className="mx-auto h-8 w-8 text-amber-600" />
+          <span className="mt-2 inline-block rounded-full bg-amber-200/70 px-3 py-0.5 text-[11px] font-black text-amber-950">
+            باقة هدية - شهر مجاني
+          </span>
           <h2 className="mt-2 text-base font-black leading-relaxed text-amber-950">
             مبروك! حصلت على ملصق بَلِّغْنِي هدية مع اشتراك مجاني لمدة 30 يوماً — أدخل بياناتك لتفعيل الحماية على سيارتك فوراً
           </h2>
+        </div>
+      ) : mode === "prepaid_ready" ? (
+        <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
+          <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-600" />
+          <span className="mt-2 inline-block rounded-full bg-emerald-200/70 px-3 py-0.5 text-[11px] font-black text-emerald-950">
+            مدفوع ومفعّل مسبقاً • {prepaidPackageName || "باقة نَبِّهْنِي"}
+          </span>
+          <h2 className="mt-2 text-lg font-black text-emerald-950">
+            ربط الملصق بحسابك ({code})
+          </h2>
+          <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+            هذا الملصق مدفوع ومفعّل مسبقاً — أكّد رقم هاتفك عبر رمز التحقق (OTP) وأدخل بيانات سيارتك لربطه بحسابك فوراً.
+          </p>
         </div>
       ) : mode === "expired" ? (
         <div className="mb-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-center">
@@ -213,14 +240,11 @@ export function StickerActivationClient({
           <p className="text-xs leading-relaxed text-muted-foreground">
             اختر الباقة المناسبة وفعّل ملصقك أونلاين فوراً.
           </p>
-          <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] font-bold text-amber-900">
-            في حال استلامك الملصق من إحدى نقاط البيع المعتمدة، يمكنك تفعيله مباشرة من هنا بعد تأكيد رقم هاتفك
-          </div>
         </div>
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {mode !== "gift_ready" && (
+        {mode !== "gift_ready" && mode !== "prepaid_ready" && (
           <div className="grid gap-3 sm:grid-cols-2">
             {([PACKAGES.basic, PACKAGES.nabbihni] as const).map((pkg) => (
               <button
@@ -316,12 +340,16 @@ export function StickerActivationClient({
             <LoaderCircle className="h-4 w-4 animate-spin" />
           ) : mode === "gift_ready" ? (
             <Gift className="h-4 w-4" />
+          ) : mode === "prepaid_ready" ? (
+            <CheckCircle2 className="h-4 w-4" />
           ) : (
             <CreditCard className="h-4 w-4" />
           )}
           <span>
             {mode === "gift_ready"
               ? "تفعيل الشهر الهدية مجاناً الآن"
+              : mode === "prepaid_ready"
+              ? "تأكيد رقم الهاتف وربط الملصق بحسابي"
               : mode === "expired"
               ? `تجديد الاشتراك (${PACKAGES[selectedPkg].priceLyd} د.ل)`
               : `ادفع وفعّل الملصق أونلاين (${PACKAGES[selectedPkg].priceLyd} د.ل)`}

@@ -53,25 +53,47 @@ export default async function PublicQrScanPage({
     getStickerLifecycle(formattedCode),
   ]);
 
+  const hasOwnerPhone = (p?: string | null) =>
+    Boolean(p && p.trim() && p.trim() !== "-");
+
+  const isUnlinked =
+    !hasOwnerPhone(lifecycleSticker?.ownerPhone) &&
+    !hasOwnerPhone(tagRecord?.ownerPhone);
+
   const isUnlinkedGift =
-    lifecycleSticker?.activationSource === "gift_promo" &&
-    (!lifecycleSticker.ownerPhone || lifecycleSticker.ownerPhone.trim() === "-") &&
-    (!tagRecord?.ownerPhone || tagRecord.ownerPhone.trim() === "-");
+    isUnlinked &&
+    (lifecycleSticker?.activationSource === "gift_promo" ||
+      lifecycleSticker?.planType === "gift" ||
+      tagRecord?.planType === "gift");
+
+  const isUnlinkedPrepaid =
+    isUnlinked &&
+    !isUnlinkedGift &&
+    (lifecycleSticker?.status === "active" || tagRecord?.status === "ACTIVE");
 
   if (
     isUnlinkedGift ||
+    isUnlinkedPrepaid ||
     (lifecycleSticker &&
       (lifecycleSticker.status === "unactivated" ||
         lifecycleSticker.status === "gift_ready" ||
         lifecycleSticker.status === "expired"))
   ) {
-    const resolvedMode: "unactivated" | "gift_ready" | "expired" = isUnlinkedGift
-      ? "gift_ready"
-      : lifecycleSticker?.status === "expired"
-        ? "expired"
-        : lifecycleSticker?.status === "gift_ready"
-          ? "gift_ready"
-          : "unactivated";
+    const resolvedMode: "unactivated" | "gift_ready" | "prepaid_ready" | "expired" =
+      isUnlinkedGift
+        ? "gift_ready"
+        : isUnlinkedPrepaid
+          ? "prepaid_ready"
+          : lifecycleSticker?.status === "expired"
+            ? "expired"
+            : lifecycleSticker?.status === "gift_ready"
+              ? "gift_ready"
+              : "unactivated";
+
+    const prepaidPackageName =
+      lifecycleSticker?.planType === "basic" || tagRecord?.planType === "basic"
+        ? "الباقة الأساسية"
+        : "باقة نَبِّهْنِي";
 
     return (
       <div className="scan-shell flex min-h-dvh flex-col">
@@ -95,6 +117,7 @@ export default async function PublicQrScanPage({
           <StickerActivationClient
             code={formattedCode}
             initialMode={resolvedMode}
+            prepaidPackageName={prepaidPackageName}
           />
         </main>
       </div>

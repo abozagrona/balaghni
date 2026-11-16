@@ -170,9 +170,9 @@ export function getPlanDisplayInfo(planType: PlanType): {
   if (planType === "gift") {
     return {
       planType: "gift",
-      badgeText: "🎁 باقة هدية (شهر مجاني)",
-      dashboardTitle: "لوحة تحكم مركبتي — الباقة التجريبية المجانية",
-      packageName: "باقة الهدية (شهر مجاني)",
+      badgeText: "🎁 باقة هدية - شهر مجاني",
+      dashboardTitle: "لوحة تحكم مركبتي — باقة هدية - شهر مجاني",
+      packageName: "باقة هدية - شهر مجاني",
     };
   }
   if (planType === "nabbihni") {
