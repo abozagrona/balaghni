@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   CheckCircle2,
   Gift,
@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   AlertTriangle,
   RefreshCw,
+  ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
@@ -26,7 +27,6 @@ export function StickerActivationClient({
   code,
   initialMode,
 }: StickerActivationClientProps) {
-  const router = useRouter();
   const [mode, setMode] = React.useState(initialMode);
   const [selectedPkg, setSelectedPkg] = React.useState<PackageType>("nabbihni");
   const [phoneDigits, setPhoneDigits] = React.useState("");
@@ -37,7 +37,12 @@ export function StickerActivationClient({
   const [unassignedOrderId, setUnassignedOrderId] = React.useState<string | null>(
     null
   );
-  const [successMsg, setSuccessMsg] = React.useState<string | null>(null);
+  const [activatedDetails, setActivatedDetails] = React.useState<{
+    code: string;
+    packageName: string;
+    expiresAt: string;
+    isGift: boolean;
+  } | null>(null);
   const [otpModalOpen, setOtpModalOpen] = React.useState(false);
   const [phoneForOtp, setPhoneForOtp] = React.useState("");
 
@@ -69,6 +74,7 @@ export function StickerActivationClient({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({
             mode: mode === "gift_ready" ? "gift" : "online",
             packageType: selectedPkg,
@@ -102,31 +108,80 @@ export function StickerActivationClient({
         activatedAt: new Date().toISOString(),
       });
 
-      setSuccessMsg(
-        mode === "gift_ready"
-          ? "تم تفعيل شهرك المجاني بنجاح لمدة 30 يوماً بكامل مزايا باقة نَبِّهْنِي!"
-          : "تم تفعيل الملصق واشتراكك السنوي بنجاح لمدة 365 يوماً!"
-      );
+      const isGift = mode === "gift_ready";
+      const fallbackExpiry = new Date(
+        Date.now() + (isGift ? 30 : 365) * 24 * 60 * 60 * 1000
+      )
+        .toISOString()
+        .slice(0, 10);
+      const rawExpiry =
+        data.sticker?.subscription_expires_at ||
+        data.sticker?.subscriptionExpiresAt ||
+        fallbackExpiry;
+      const pkgLabel = isGift
+        ? "باقة نَبِّهْنِي (هدية 30 يوماً)"
+        : PACKAGES[selectedPkg]?.name || "باقة نَبِّهْنِي";
+
+      setActivatedDetails({
+        code,
+        packageName: pkgLabel,
+        expiresAt: String(rawExpiry).slice(0, 10),
+        isGift,
+      });
       setLoading(false);
-      setTimeout(() => {
-        router.refresh();
-      }, 1000);
     } catch {
       setError("حدث خطأ أثناء الاتصال بالخادم.");
       setLoading(false);
     }
   };
 
-  if (successMsg) {
+  if (activatedDetails) {
     return (
-      <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-6 text-center shadow-card-soft">
-        <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-600" />
-        <h2 className="mt-3 text-xl font-black text-emerald-900">
-          {successMsg}
+      <div className="rounded-3xl border border-emerald-200 bg-card p-6 text-center shadow-card-soft sm:p-8">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600">
+          <CheckCircle2 className="h-9 w-9" />
+        </div>
+        <h2 className="mt-4 text-2xl font-black text-foreground">
+          تم تفعيل ملصقك بنجاح
         </h2>
-        <p className="mt-2 text-xs text-emerald-700">
-          جاري تحديث صفحة الملصق ({code})...
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          {activatedDetails.isGift
+            ? "تم تفعيل شهرك المجاني بنجاح لمدة 30 يوماً بكامل مزايا باقة نَبِّهْنِي."
+            : "تم ربط الملصق برقم هاتفك وتفعيل اشتراكك السنوي لمدة 365 يوماً."}
         </p>
+
+        <div className="mt-5 space-y-2.5">
+          <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-4 text-emerald-900">
+            <p className="text-xs font-bold">كود الملصق المفعّل:</p>
+            <p dir="ltr" className="mt-1 font-mono text-xl font-black tracking-wider">
+              {activatedDetails.code}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-bold text-foreground">
+            <div>
+              <span className="text-muted-foreground">الباقة:</span>{" "}
+              <span>{activatedDetails.packageName}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">صالح حتى:</span>{" "}
+              <span dir="ltr" className="font-mono">
+                {activatedDetails.expiresAt}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-col gap-2.5">
+          <Button asChild size="lg" className="w-full rounded-2xl">
+            <Link href={`/dashboard?tag=${encodeURIComponent(activatedDetails.code)}`}>
+              <span>الانتقال إلى لوحة تحكم سيارتي</span>
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="lg" className="w-full rounded-2xl">
+            <Link href="/">العودة للصفحة الرئيسية</Link>
+          </Button>
+        </div>
       </div>
     );
   }
@@ -159,7 +214,7 @@ export function StickerActivationClient({
             اختر الباقة المناسبة وفعّل ملصقك أونلاين فوراً.
           </p>
           <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] font-bold text-amber-900">
-            إذا اشتريت الملصق كاش، اطلب من البائع تفعيله لك فوراً من حسابه
+            في حال استلامك الملصق من إحدى نقاط البيع المعتمدة، يمكنك تفعيله مباشرة من هنا بعد تأكيد رقم هاتفك
           </div>
         </div>
       )}

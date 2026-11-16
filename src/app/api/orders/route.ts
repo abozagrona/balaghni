@@ -114,7 +114,8 @@ export async function POST(req: NextRequest) {
     }
 
     const assignedStickerCode = pullRes.stickerCode;
-    const orderStatus = "completed";
+    const orderStatus =
+      paymentMethod === "online" ? "completed" : "pending_delivery";
 
     await recordMarketplaceOrder({
       orderCode: assignedStickerCode,

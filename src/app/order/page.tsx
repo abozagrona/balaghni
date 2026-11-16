@@ -63,6 +63,10 @@ export default function OrderPage() {
     packageName: string;
     paymentMethod: "online" | "cod";
     expiresAt: string;
+    totalLyd: number;
+    city: string;
+    address: string;
+    quantity: number;
   } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -79,7 +83,7 @@ export default function OrderPage() {
     const formattedPhone = formatFullLibyaE164(phoneDigits);
     if (!formattedPhone) {
       setError(
-        "يرجى إدخال رقم هاتف ليبي صحيح مكون من 9 أرقام ويبدأ بـ 91 أو 92 أو 93 أو 94."
+        "يرجى إدخال رقم هاتف ليبي صحيح مكون من 9 أرقام ويبدأ بـ 91 أو 92 أو 093 أو 094."
       );
       return;
     }
@@ -145,6 +149,10 @@ export default function OrderPage() {
         packageName: data.packageName || activeTierObj.name,
         paymentMethod: data.paymentMethod === "online" ? "online" : "cod",
         expiresAt: data.subscriptionExpiresAt || "",
+        totalLyd,
+        city,
+        address: address.trim(),
+        quantity,
       });
       setIsSubmitting(false);
     } catch {
@@ -176,32 +184,66 @@ export default function OrderPage() {
               <CheckCircle2 className="h-9 w-9" />
             </div>
             <h1 className="mt-4 text-2xl font-bold text-foreground">
-              تم تأكيد طلبك وتفعيل ملصقك بنجاح!
+              {activatedOrder.paymentMethod === "online"
+                ? "تم الشراء وتفعيل ملصقك بنجاح"
+                : "تم الشراء واستلام طلبك بنجاح"}
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              تم سحب وتفعيل كود ملصقك الحقيقي من المخزن مباشرة وإرسال التفاصيل إلى رقمك عبر الواتساب للتوصيل إلى{" "}
-              <strong className="text-foreground">{city}</strong>.
+              {activatedOrder.paymentMethod === "online" ? (
+                <>
+                  تم تفعيل ملصقك بنجاح وربطه برقم هاتفك، ويمكنك الآن الانتقال إلى لوحة تحكم سيارتي لإكمال إعداد البصمة وبيانات السيارة.
+                </>
+              ) : (
+                <>
+                  تم تسجيل طلبك بحالة <strong className="text-foreground">بانتظار التوصيل</strong> إلى{" "}
+                  <strong className="text-foreground">{activatedOrder.city}</strong>، وسيتم التواصل معك عبر الواتساب لتأكيد موعد التسليم.
+                </>
+              )}
             </p>
             <div className="mt-4 space-y-2.5">
               <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-4 text-emerald-800">
-                <p className="text-xs font-bold">كود الملصق المفعّل (365 يوماً):</p>
+                <p className="text-xs font-bold">
+                  {activatedOrder.paymentMethod === "online"
+                    ? "كود الملصق المفعّل (365 يوماً):"
+                    : "كود الملصق المخصص لطلبك:"}
+                </p>
                 <p dir="ltr" className="mt-1 font-mono text-xl font-black tracking-wider">
                   {activatedOrder.stickerCode}
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-bold text-foreground">
+              <div className="grid grid-cols-2 gap-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-bold text-foreground text-start">
                 <div>
                   <span className="text-muted-foreground">الباقة:</span>{" "}
                   <span>{activatedOrder.packageName}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">الدفع:</span>{" "}
+                  <span className="text-muted-foreground">طريقة الدفع:</span>{" "}
                   <span>
                     {activatedOrder.paymentMethod === "online"
-                      ? "أونلاين"
-                      : "عند الاستلام"}
+                      ? "دفع أونلاين"
+                      : "كاش عند الاستلام"}
                   </span>
                 </div>
+                <div>
+                  <span className="text-muted-foreground">الإجمالي:</span>{" "}
+                  <span className="font-mono">{activatedOrder.totalLyd} د.ل</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">حالة الطلب:</span>{" "}
+                  <span>
+                    {activatedOrder.paymentMethod === "online"
+                      ? "مفعّل فوراً"
+                      : "بانتظار التوصيل"}
+                  </span>
+                </div>
+                {activatedOrder.paymentMethod === "cod" && (
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground">العنوان:</span>{" "}
+                    <span>
+                      {activatedOrder.city} — {activatedOrder.address}
+                    </span>
+                  </div>
+                )}
                 {activatedOrder.expiresAt && (
                   <div className="col-span-2">
                     <span className="text-muted-foreground">صالح حتى:</span>{" "}
@@ -214,17 +256,47 @@ export default function OrderPage() {
             </div>
 
             <div className="mt-6 flex flex-col gap-2.5">
-              <Button asChild size="lg" className="w-full rounded-2xl">
-                <Link href="/login">دخول لوحة تحكم سيارتي</Link>
-              </Button>
-              <Button
-                asChild
-                variant="outline"
-                size="lg"
-                className="w-full rounded-2xl"
-              >
-                <Link href="/">العودة للصفحة الرئيسية</Link>
-              </Button>
+              {activatedOrder.paymentMethod === "online" ? (
+                <>
+                  <Button asChild size="lg" className="w-full rounded-2xl">
+                    <Link
+                      href={`/dashboard?tag=${encodeURIComponent(
+                        activatedOrder.stickerCode
+                      )}`}
+                    >
+                      الانتقال إلى لوحة تحكم سيارتي
+                    </Link>
+                  </Button>
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="lg"
+                    className="w-full rounded-2xl"
+                  >
+                    <Link href="/">العودة للصفحة الرئيسية</Link>
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button asChild size="lg" className="w-full rounded-2xl">
+                    <Link
+                      href={`/dashboard?tag=${encodeURIComponent(
+                        activatedOrder.stickerCode
+                      )}`}
+                    >
+                      متابعة الطلب في لوحة تحكم سيارتي
+                    </Link>
+                  </Button>
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="lg"
+                    className="w-full rounded-2xl"
+                  >
+                    <Link href="/">الانتقال للصفحة الرئيسية</Link>
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         ) : (
@@ -236,7 +308,7 @@ export default function OrderPage() {
             >
               <div>
                 <span className="rounded-full bg-secondary px-3 py-1 text-xs font-bold text-primary">
-                  الدفع عند الاستلام في جميع مدن ليبيا
+                  الدفع كاش عند الاستلام أو أونلاين في جميع مدن ليبيا
                 </span>
                 <h1 className="mt-2.5 text-2xl font-bold text-foreground">
                   اطلب ملصق «بَلِّغْنِي | BALAGHNI»
@@ -398,31 +470,43 @@ export default function OrderPage() {
                 </p>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod("cod")}
-                  className={cn(
-                    "rounded-2xl border p-3 text-xs font-bold transition-all",
-                    paymentMethod === "cod"
-                      ? "border-primary bg-secondary text-primary"
-                      : "border-border bg-white text-foreground"
-                  )}
-                >
-                  دفع عند الاستلام (COD)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod("online")}
-                  className={cn(
-                    "rounded-2xl border p-3 text-xs font-bold transition-all",
-                    paymentMethod === "online"
-                      ? "border-primary bg-secondary text-primary"
-                      : "border-border bg-white text-foreground"
-                  )}
-                >
-                  دفع أونلاين فوري
-                </button>
+              {/* 4. اختيار طريقة الدفع */}
+              <div className="space-y-2.5">
+                <label className="block text-sm font-bold text-foreground">
+                  4. اختر طريقة الدفع
+                </label>
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod("cod")}
+                    className={cn(
+                      "rounded-2xl border p-3.5 text-start transition-all",
+                      paymentMethod === "cod"
+                        ? "border-2 border-primary bg-secondary/70 text-primary shadow-sm"
+                        : "border-border bg-white text-foreground hover:border-primary/30"
+                    )}
+                  >
+                    <p className="text-xs font-black">الدفع كاش عند الاستلام (توصيل)</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      الدفع نقداً عند استلام الملصق — حالة الطلب: بانتظار التوصيل
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod("online")}
+                    className={cn(
+                      "rounded-2xl border p-3.5 text-start transition-all",
+                      paymentMethod === "online"
+                        ? "border-2 border-primary bg-secondary/70 text-primary shadow-sm"
+                        : "border-border bg-white text-foreground hover:border-primary/30"
+                    )}
+                  >
+                    <p className="text-xs font-black">الدفع أونلاين فوري</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      تفعيل فوري للملصق (الوضع المؤقت لحين ربط بوابة الدفع)
+                    </p>
+                  </button>
+                </div>
               </div>
 
               <Button
