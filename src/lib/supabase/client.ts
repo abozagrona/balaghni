@@ -99,6 +99,7 @@ export interface VehicleTagRecord {
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
   isCodReserved?: boolean;
+  isGiftExpired?: boolean;
   reportsCount?: number;
   lastReportAt?: string | null;
 }
@@ -1172,6 +1173,32 @@ export async function getTagDashboardData(rawTagCode: string): Promise<{
       reports: [],
       maintenance: [],
     };
+  }
+
+  const isGift =
+    tag.planType === "gift" || tag.activationSource === "gift_promo";
+  const isGiftExpired = Boolean(
+    isGift &&
+      tag.subscriptionExpiresAt &&
+      new Date(tag.subscriptionExpiresAt).getTime() <= Date.now()
+  );
+  if (isGiftExpired) {
+    if (tag.status === "ACTIVE") {
+      try {
+        await supabaseAdmin
+          .from("tags")
+          .update({ status: "LOCKED" })
+          .eq("tag_code", normalizedCode);
+        await supabaseAdmin
+          .from("stickers")
+          .update({ status: "expired" })
+          .eq("code", normalizedCode);
+      } catch {
+        // ignore
+      }
+    }
+    tag.status = "LOCKED";
+    tag.isGiftExpired = true;
   }
 
   const store = loadDashboardStore();
@@ -3173,20 +3200,70 @@ export async function getExecutiveAdminOverview(): Promise<{
     // ignore
   }
 
+  const nowMs = Date.now();
+  const expiredGiftCodes: string[] = [];
+
   const tags = Object.values(localMap)
     .filter((r) => !LEGACY_TEST_CODES.has(r.tag_code.toUpperCase()))
     .map((r) => {
       const rec = mapRowToRecord(r);
       const stat = reportStatsMap.get(rec.tagCode.toUpperCase());
+      const isGift =
+        rec.planType === "gift" || rec.activationSource === "gift_promo";
+      const isGiftExpired = Boolean(
+        isGift &&
+          rec.subscriptionExpiresAt &&
+          new Date(rec.subscriptionExpiresAt).getTime() <= nowMs
+      );
+
+      if (isGiftExpired && rec.status === "ACTIVE") {
+        expiredGiftCodes.push(rec.tagCode);
+      }
+
+      const finalStatus: TagStatus = isGiftExpired ? "LOCKED" : rec.status;
+      const hasOwnerPhone = Boolean(
+        rec.ownerPhone && rec.ownerPhone.trim() && rec.ownerPhone.trim() !== "-"
+      );
+      const isCodReserved = Boolean(
+        finalStatus === "LOCKED" &&
+          !isGiftExpired &&
+          (pendingCodSet.has(rec.tagCode.toUpperCase()) || hasOwnerPhone)
+      );
+
       return {
         ...rec,
-        isCodReserved:
-          rec.status === "LOCKED" &&
-          pendingCodSet.has(rec.tagCode.toUpperCase()),
+        status: finalStatus,
+        isGiftExpired,
+        isCodReserved,
         reportsCount: stat?.count ?? 0,
         lastReportAt: stat?.lastReportAt ?? null,
       };
+    })
+    // إخفاء ملصقات الهدايا النشطة أو الجاهزة من الجدول الرئيسي (تظهر في تبويب الهدايا فقط)
+    // وتظهر في الجدول الرئيسي فقط إذا انتهت مدة الـ 30 يوماً أو تمت ترقيتها
+    .filter((rec) => {
+      const isGift =
+        rec.planType === "gift" || rec.activationSource === "gift_promo";
+      if (isGift && !rec.isGiftExpired) {
+        return false;
+      }
+      return true;
     });
+
+  if (expiredGiftCodes.length > 0) {
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({ status: "LOCKED" })
+        .in("tag_code", expiredGiftCodes);
+      await supabaseAdmin
+        .from("stickers")
+        .update({ status: "expired" })
+        .in("code", expiredGiftCodes);
+    } catch {
+      // ignore
+    }
+  }
 
   let auditLogs: AdminAuditLogRecord[] = [...adminStore.auditLogs];
   try {

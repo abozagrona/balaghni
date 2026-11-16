@@ -72,6 +72,7 @@ interface TagRecordData {
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
   hasPasskey?: boolean;
+  isGiftExpired?: boolean;
 }
 
 interface VehicleDocumentItem {
@@ -680,18 +681,39 @@ function DashboardContent() {
             </div>
           )}
 
-          {tagData.status === "LOCKED" && (
-            <div className="flex items-start gap-3 rounded-3xl border border-amber-500/40 bg-amber-500/10 p-5 text-amber-950 shadow-card-soft">
-              <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-              <div className="space-y-1">
-                <p className="text-sm font-black text-amber-900">
-                  طلبك قيد التجهيز والتوصيل — سيبدأ اشتراكك ويُفعّل الملصق فور استلامه
-                </p>
-                <p className="text-xs font-medium text-amber-800/90">
-                  ملصقك محجوز باسمك الآن، ولن يستقبل أي بلاغات ولن يبدأ احتساب الـ 365 يوماً إلا بعد تأكيد التسليم والدفع.
-                </p>
+          {tagData.isGiftExpired ? (
+            <div className="flex flex-col justify-between gap-4 rounded-3xl border border-red-500/40 bg-red-500/10 p-5 text-red-950 shadow-card-soft sm:flex-row sm:items-center">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+                <div className="space-y-1">
+                  <p className="text-sm font-black text-red-900">
+                    انتهت الفترة المجانية (30 يوماً) — كافة بياناتك محفوظة بالكامل
+                  </p>
+                  <p className="text-xs font-medium text-red-800/90">
+                    تم إيقاف استقبال البلاغات مؤقتاً مع الاحتفاظ بكافة بيانات سيارتك وهاتفك وبصمتك. اشترك الآن لإعادة التفعيل الفوري لمدة 365 يوماً.
+                  </p>
+                </div>
               </div>
+              <Button asChild size="lg" className="shrink-0 rounded-2xl">
+                <Link href={`/s/${encodeURIComponent(tagData.tagCode)}`}>
+                  الاشتراك والتفعيل الفوري
+                </Link>
+              </Button>
             </div>
+          ) : (
+            tagData.status === "LOCKED" && (
+              <div className="flex items-start gap-3 rounded-3xl border border-amber-500/40 bg-amber-500/10 p-5 text-amber-950 shadow-card-soft">
+                <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+                <div className="space-y-1">
+                  <p className="text-sm font-black text-amber-900">
+                    طلبك قيد التجهيز والتوصيل — سيبدأ اشتراكك ويُفعّل الملصق فور استلامه
+                  </p>
+                  <p className="text-xs font-medium text-amber-800/90">
+                    ملصقك محجوز باسمك الآن، ولن يستقبل أي بلاغات ولن يبدأ احتساب الـ 365 يوماً إلا بعد تأكيد التسليم والدفع.
+                  </p>
+                </div>
+              </div>
+            )
           )}
 
           {/* 1. قسم مركبتي والملصق النشط (مجلوب حصراً من سجل الملصق في قاعدة البيانات) */}
@@ -707,7 +729,9 @@ function DashboardContent() {
                   <span
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold",
-                      tagData.status === "LOCKED"
+                      tagData.isGiftExpired
+                        ? "border-red-500/40 bg-red-500/15 text-red-300"
+                        : tagData.status === "LOCKED"
                         ? "border-amber-500/35 bg-amber-500/15 text-amber-300"
                         : "border-emerald-500/30 bg-emerald-500/15 text-emerald-400"
                     )}
@@ -715,12 +739,16 @@ function DashboardContent() {
                     <span
                       className={cn(
                         "h-2 w-2 rounded-full animate-pulse",
-                        tagData.status === "LOCKED"
+                        tagData.isGiftExpired
+                          ? "bg-red-400"
+                          : tagData.status === "LOCKED"
                           ? "bg-amber-400"
                           : "bg-emerald-400"
                       )}
                     />
-                    {tagData.status === "LOCKED"
+                    {tagData.isGiftExpired
+                      ? "انتهت الهدية — بانتظار الاشتراك"
+                      : tagData.status === "LOCKED"
                       ? "حالة الملصق: محجوز للتوصيل"
                       : `حالة الملصق: ${tagData.status}`}
                   </span>

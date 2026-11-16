@@ -97,7 +97,7 @@ interface GiftSummaryState {
 export function AdminLifecyclePanel({
   viewMode = "all",
 }: {
-  viewMode?: "all" | "orders" | "partners" | "gifts";
+  viewMode?: "all" | "orders" | "partners" | "gifts" | "treasury";
 }) {
   const [loading, setLoading] = React.useState(true);
   const [busyAction, setBusyAction] = React.useState<string | null>(null);
@@ -122,6 +122,37 @@ export function AdminLifecyclePanel({
     linkedGifts: 0,
     unlinkedGifts: 0,
     items: [],
+  });
+  const [treasury, setTreasury] = React.useState<{
+    openCashTotalLyd: number;
+    openCashCount: number;
+    todaySalesLyd: number;
+    todayCount: number;
+    monthSalesLyd: number;
+    monthCount: number;
+    yearSalesLyd: number;
+    yearCount: number;
+    entries: Array<{
+      id: string;
+      tagCode: string;
+      customerName: string;
+      operationType: "new_sale" | "gift_upgrade" | "gift_free";
+      packageType: string;
+      amountLyd: number;
+      paymentMethod: "cash" | "online" | "free";
+      custodyStatus: "open" | "closed" | "settled";
+      createdAt: string;
+    }>;
+  }>({
+    openCashTotalLyd: 0,
+    openCashCount: 0,
+    todaySalesLyd: 0,
+    todayCount: 0,
+    monthSalesLyd: 0,
+    monthCount: 0,
+    yearSalesLyd: 0,
+    yearCount: 0,
+    entries: [],
   });
 
   // CSV / TXT sticker import
@@ -212,6 +243,9 @@ export function AdminLifecyclePanel({
         if (data.giftSummary) {
           setGiftSummary(data.giftSummary);
         }
+        if (data.treasury) {
+          setTreasury(data.treasury);
+        }
       }
     } finally {
       setLoading(false);
@@ -220,6 +254,16 @@ export function AdminLifecyclePanel({
 
   React.useEffect(() => {
     fetchLifecycle();
+  }, [fetchLifecycle]);
+
+  React.useEffect(() => {
+    const onUpdated = () => {
+      void fetchLifecycle();
+    };
+    window.addEventListener("balaghni:orders-updated", onUpdated);
+    return () => {
+      window.removeEventListener("balaghni:orders-updated", onUpdated);
+    };
   }, [fetchLifecycle]);
 
   const runAction = async (
@@ -273,18 +317,22 @@ export function AdminLifecyclePanel({
           <h2 className="text-lg font-black text-white">
             {viewMode === "gifts"
               ? "ملصقات الهدايا (شهر مجاني) — حصري للمدير الرئيسي"
-              : viewMode === "partners"
-                ? "إدارة الباقات، المحلات/نقاط البيع، والشركات/الأساطيل"
-                : viewMode === "orders"
-                  ? "الطلبات الواردة وربط الملصقات"
-                  : "إدارة الباقات، المحلات، والشركات"}
+              : viewMode === "treasury"
+                ? "منظومة المبيعات والخزينة (إغلاق العُهَد)"
+                : viewMode === "partners"
+                  ? "إدارة الباقات، المحلات/نقاط البيع، والشركات/الأساطيل"
+                  : viewMode === "orders"
+                    ? "الطلبات الواردة وربط الملصقات"
+                    : "إدارة الباقات، المحلات، والشركات"}
           </h2>
           <p className="text-xs text-white/60">
             {viewMode === "gifts"
               ? "استيراد وتفعيل مسبق لملصقات الهدايا (30 يوماً مجاناً) مع تتبع حالة الارتباط بالهاتف."
-              : viewMode === "partners"
-                ? "النموذج الديناميكي والملف المالي الشامل لكل محل وشركة (الملصقات المفعّلة وغير المفعّلة، المبيعات، المسدد، وصافي المديونية)."
-                : "تحكم كامل في الطلبات ودورة حياة الملصقات وحسابات التجار والشركات."}
+              : viewMode === "treasury"
+                ? "توثيق تلقائي لجميع المبيعات المدفوعة وترقيات الهدايا، ومتابعة عهدة الكاش المفتوحة وإغلاقها يومياً."
+                : viewMode === "partners"
+                  ? "النموذج الديناميكي والملف المالي الشامل لكل محل وشركة (الملصقات المفعّلة وغير المفعّلة، المبيعات، المسدد، وصافي المديونية)."
+                  : "تحكم كامل في الطلبات ودورة حياة الملصقات وحسابات التجار والشركات."}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1296,9 +1344,272 @@ export function AdminLifecyclePanel({
                             : "—"}
                         </td>
                         <td dir="ltr" className="px-3 py-2.5 font-mono text-white/60">
-                          {item.subscriptionExpiresAt
-                            ? item.subscriptionExpiresAt.slice(0, 10)
-                            : "—"}
+                          {item.subscriptionExpiresAt ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span>{item.subscriptionExpiresAt.slice(0, 10)}</span>
+                              {(() => {
+                                const d = computeCountdownDays(
+                                  item.subscriptionExpiresAt
+                                );
+                                return d !== null ? (
+                                  <span
+                                    dir="rtl"
+                                    className="text-[10px] font-bold text-amber-300"
+                                  >
+                                    متبقي {Math.max(0, d)} يوم
+                                  </span>
+                                ) : null;
+                              })()}
+                            </div>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* قسم منظومة المبيعات والخزينة (إغلاق العُهَد) */}
+      {viewMode === "treasury" && (
+        <div className="space-y-5">
+          {/* بطاقة عهدة الكاش الحالية المفتوحة */}
+          <section className="rounded-3xl border border-emerald-500/35 bg-gradient-to-l from-[#10131C] via-[#121A24] to-[#0E1E1A] p-6 shadow-card-soft">
+            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+              <div className="space-y-1.5">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-black text-emerald-300">
+                  عهدة الكاش الحالية المفتوحة
+                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-mono text-3xl font-black text-white">
+                    {treasury.openCashTotalLyd.toLocaleString("en-US")}
+                  </span>
+                  <span className="text-sm font-bold text-emerald-300">د.ل</span>
+                </div>
+                <p className="text-xs text-white/65">
+                  عدد العمليات النقدية المفتوحة: {treasury.openCashCount} عملية
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={
+                    treasury.openCashTotalLyd <= 0 ||
+                    busyAction === "close-custody"
+                  }
+                  onClick={() =>
+                    runAction("close-custody", {
+                      action: "close_cash_custody",
+                    })
+                  }
+                  className="rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 font-black"
+                >
+                  {busyAction === "close-custody"
+                    ? "جاري إغلاق العهدة..."
+                    : "إغلاق العهدة اليومية وتصفية الكاش"}
+                </Button>
+              </div>
+            </div>
+          </section>
+
+          {/* بطاقات مبيعات وأرباح اليوم والشهر والسنة */}
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-3xl border border-white/10 bg-[#10131C] p-5">
+              <p className="text-xs font-bold text-white/60">
+                مبيعات وصافي أرباح اليوم
+              </p>
+              <p className="mt-2 font-mono text-2xl font-black text-white">
+                {treasury.todaySalesLyd.toLocaleString("en-US")}{" "}
+                <span className="text-xs text-primary">د.ل</span>
+              </p>
+              <p className="mt-1 text-[11px] text-white/50">
+                {treasury.todayCount} عملية مدفوعة اليوم
+              </p>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-[#10131C] p-5">
+              <p className="text-xs font-bold text-white/60">
+                مبيعات وأرباح الشهر الحالي
+              </p>
+              <p className="mt-2 font-mono text-2xl font-black text-white">
+                {treasury.monthSalesLyd.toLocaleString("en-US")}{" "}
+                <span className="text-xs text-sky-400">د.ل</span>
+              </p>
+              <p className="mt-1 text-[11px] text-white/50">
+                {treasury.monthCount} عملية مدفوعة هذا الشهر
+              </p>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-[#10131C] p-5">
+              <p className="text-xs font-bold text-white/60">
+                مبيعات وأرباح السنة الحالية
+              </p>
+              <p className="mt-2 font-mono text-2xl font-black text-white">
+                {treasury.yearSalesLyd.toLocaleString("en-US")}{" "}
+                <span className="text-xs text-emerald-400">د.ل</span>
+              </p>
+              <p className="mt-1 text-[11px] text-white/50">
+                {treasury.yearCount} عملية مدفوعة هذه السنة
+              </p>
+            </div>
+          </div>
+
+          {/* جدول سجل المبيعات والعُهَد بالتفصيل + تصدير CSV */}
+          <section className="rounded-3xl border border-white/10 bg-[#10131C] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-black text-white">
+                سجل المبيعات والعُهَد ({treasury.entries.length})
+              </h3>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={treasury.entries.length === 0}
+                onClick={() => {
+                  const headers = [
+                    "التاريخ",
+                    "كود الملصق",
+                    "اسم الزبون",
+                    "نوع العملية",
+                    "المبلغ (د.ل)",
+                    "طريقة الدفع",
+                    "حالة العهدة",
+                  ];
+                  const rows = treasury.entries.map((e) => [
+                    e.createdAt.slice(0, 19).replace("T", " "),
+                    e.tagCode,
+                    e.customerName,
+                    e.operationType === "gift_upgrade"
+                      ? "ترقية هدية"
+                      : e.operationType === "gift_free"
+                      ? "هدية مجانية 0 د.ل"
+                      : "بيع جديد",
+                    String(e.amountLyd),
+                    e.paymentMethod === "cash"
+                      ? "كاش"
+                      : e.paymentMethod === "online"
+                      ? "أونلاين"
+                      : "مجاني",
+                    e.custodyStatus === "open"
+                      ? "مفتوحة"
+                      : e.custodyStatus === "closed"
+                      ? "مغلقة"
+                      : "إلكتروني/مجاني",
+                  ]);
+                  const csv =
+                    "\uFEFF" +
+                    [headers, ...rows]
+                      .map((r) =>
+                        r
+                          .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
+                          .join(",")
+                      )
+                      .join("\n");
+                  const blob = new Blob([csv], {
+                    type: "text/csv;charset=utf-8;",
+                  });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `balaghni-sales-${new Date()
+                    .toISOString()
+                    .slice(0, 10)}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="rounded-xl border-white/20 bg-white/5 text-white hover:border-primary"
+              >
+                تصدير التقرير (Excel/CSV)
+              </Button>
+            </div>
+
+            {treasury.entries.length === 0 ? (
+              <p className="text-xs text-white/50">
+                لا توجد عمليات مسجلة في منظومة المبيعات حتى الآن.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-xs">
+                  <thead className="border-b border-white/10 text-white/60">
+                    <tr>
+                      <th className="px-3 py-2.5">التاريخ</th>
+                      <th className="px-3 py-2.5">كود الملصق</th>
+                      <th className="px-3 py-2.5">اسم الزبون</th>
+                      <th className="px-3 py-2.5">نوع العملية</th>
+                      <th className="px-3 py-2.5">المبلغ</th>
+                      <th className="px-3 py-2.5">طريقة الدفع</th>
+                      <th className="px-3 py-2.5">حالة العهدة</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10">
+                    {treasury.entries.map((entry) => (
+                      <tr key={entry.id} className="hover:bg-white/[0.02]">
+                        <td
+                          dir="ltr"
+                          className="px-3 py-2.5 font-mono text-white/70"
+                        >
+                          {entry.createdAt.slice(0, 10)}
+                        </td>
+                        <td
+                          dir="ltr"
+                          className="px-3 py-2.5 font-mono font-bold text-white"
+                        >
+                          {entry.tagCode}
+                        </td>
+                        <td className="px-3 py-2.5 font-bold text-white">
+                          {entry.customerName}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span
+                            className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                              entry.operationType === "gift_upgrade"
+                                ? "bg-sky-500/15 text-sky-300"
+                                : entry.operationType === "gift_free"
+                                ? "bg-purple-500/15 text-purple-300"
+                                : "bg-emerald-500/15 text-emerald-300"
+                            }`}
+                          >
+                            {entry.operationType === "gift_upgrade"
+                              ? "ترقية هدية"
+                              : entry.operationType === "gift_free"
+                              ? "هدية مجانية 0 د.ل"
+                              : "بيع جديد"}
+                          </span>
+                        </td>
+                        <td
+                          dir="ltr"
+                          className="px-3 py-2.5 font-mono font-black text-white"
+                        >
+                          {entry.amountLyd} د.ل
+                        </td>
+                        <td className="px-3 py-2.5 text-white/80">
+                          {entry.paymentMethod === "cash"
+                            ? "كاش 💵"
+                            : entry.paymentMethod === "online"
+                            ? "أونلاين 💳"
+                            : "مجاني 🎁"}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span
+                            className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                              entry.custodyStatus === "open"
+                                ? "bg-amber-500/20 text-amber-300"
+                                : entry.custodyStatus === "closed"
+                                ? "bg-emerald-500/15 text-emerald-300"
+                                : "bg-white/10 text-white/60"
+                            }`}
+                          >
+                            {entry.custodyStatus === "open"
+                              ? "عهدة مفتوحة"
+                              : entry.custodyStatus === "closed"
+                              ? "مغلقة ومصفّاة"
+                              : "إلكتروني"}
+                          </span>
                         </td>
                       </tr>
                     ))}

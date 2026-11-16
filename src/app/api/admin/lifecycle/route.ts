@@ -5,9 +5,12 @@ import {
   assignStickersToVendor,
   assignUnassignedPaidOrderToSticker,
   cancelCodOrder,
+  closeCashCustody,
   confirmCodOrderDelivery,
+  convertTagToGift,
   createCorporatePackageAccount,
   createVendor,
+  getSalesAndTreasurySummary,
   getVendorInventory,
   importGiftStickers,
   importStickerCodes,
@@ -38,6 +41,7 @@ async function getAdminAuth(
 ): Promise<{
   authorized: boolean;
   isSuperAdmin: boolean;
+  adminName: string;
 }> {
   const authHeader = req.headers.get("authorization") || "";
   const bearer = authHeader.toLowerCase().startsWith("bearer ")
@@ -48,12 +52,13 @@ async function getAdminAuth(
   const bodyToken =
     typeof bodySessionToken === "string" ? bodySessionToken.trim() : "";
   const token = bearer || xAdminToken || bodyToken || cookie;
-  if (!token) return { authorized: false, isSuperAdmin: false };
+  if (!token) return { authorized: false, isSuperAdmin: false, adminName: "مشرف النظام" };
   const check = await verifyAdminActionPermission(token, "status");
   return {
     authorized: check.authorized && Boolean(check.profile),
     isSuperAdmin:
       check.authorized && check.profile?.role === "SUPER_ADMIN",
+    adminName: check.profile?.fullName || check.profile?.phone || "مشرف النظام",
   };
 }
 
@@ -70,6 +75,7 @@ export async function GET(req: NextRequest) {
     orders,
     availableStickers,
     giftSummary,
+    treasury,
   ] = await Promise.all([
     listVendors(),
     listCorporateLeads(),
@@ -77,6 +83,7 @@ export async function GET(req: NextRequest) {
     listAllOrders(),
     listAvailableStickers(),
     auth.isSuperAdmin ? listGiftStickersSummary() : Promise.resolve(null),
+    getSalesAndTreasurySummary(),
   ]);
 
   const vendorSummaries = await Promise.all(
@@ -94,6 +101,7 @@ export async function GET(req: NextRequest) {
     orders,
     availableStickers,
     giftSummary,
+    treasury,
   });
 }
 
@@ -283,6 +291,37 @@ export async function POST(req: NextRequest) {
           ...res,
           message: res.ok
             ? `تم إلغاء الطلب وإعادة الملصق (${res.stickerCode || "—"}) إلى المخزون بحالة LOCKED ✓`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
+    }
+
+    if (action === "convert_to_gift") {
+      const res = await convertTagToGift({
+        tagCode: String(body.tagCode || ""),
+        adminName: auth.adminName,
+      });
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? `تم تحويل الملصق (${res.tagCode}) إلى ملصق هدية (شهر مجاني - 30 يوماً) ونقله إلى تبويب الهدايا ✓`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
+    }
+
+    if (action === "close_cash_custody") {
+      const res = await closeCashCustody({
+        adminName: auth.adminName,
+      });
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? `تم إغلاق العهدة النقدية وتصفية الكاش (${res.closure?.totalLyd || 0} د.ل) بنجاح ✓`
             : res.error,
         },
         { status: res.ok ? 200 : 400 }

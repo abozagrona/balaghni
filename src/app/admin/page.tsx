@@ -101,6 +101,7 @@ interface AdminTagRecord {
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
   isCodReserved?: boolean;
+  isGiftExpired?: boolean;
   reportsCount?: number;
   lastReportAt?: string | null;
 }
@@ -190,7 +191,14 @@ export default function ExecutiveAdminDashboardPage() {
 
   // بيانات لوحة الإدارة التنفيذية
   const [activeTab, setActiveTab] = React.useState<
-    "tags" | "orders" | "gifts" | "import" | "audit" | "team" | "danger"
+    | "tags"
+    | "orders"
+    | "gifts"
+    | "treasury"
+    | "import"
+    | "audit"
+    | "team"
+    | "danger"
   >("tags");
   const [tags, setTags] = React.useState<AdminTagRecord[]>([]);
   const [auditLogs, setAuditLogs] = React.useState<AdminAuditLog[]>([]);
@@ -227,8 +235,8 @@ export default function ExecutiveAdminDashboardPage() {
   // نافذة بطاقة تفاصيل الزبون والاشتراك
   const [detailsModalTag, setDetailsModalTag] =
     React.useState<AdminTagRecord | null>(null);
-  const [extendingSubscription, setExtendingSubscription] =
-    React.useState(false);
+  const [convertingToGift, setConvertingToGift] = React.useState(false);
+  const [codActionLoading, setCodActionLoading] = React.useState(false);
 
   // نافذة استعراض وتأكيد إعادة ضبط المصنع
   const [factoryResetModalTag, setFactoryResetModalTag] =
@@ -1295,51 +1303,83 @@ export default function ExecutiveAdminDashboardPage() {
     }
   };
 
-  const handleExtendSubscription = async (
-    tagCode: string,
-    days: 30 | 365
-  ) => {
-    setExtendingSubscription(true);
+  const handleConvertToGift = async (tagCode: string) => {
+    setConvertingToGift(true);
     try {
-      const res = await fetch("/api/admin", {
+      const res = await fetch("/api/admin/lifecycle", {
         method: "POST",
+        credentials: "same-origin",
         headers: getAdminHeaders(),
         body: JSON.stringify({
-          action: "extend_subscription",
+          action: "convert_to_gift",
           tagCode,
-          extendDays: days,
-          adminId,
-          adminName,
           sessionToken: adminSession?.sessionToken,
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.status === 401 || data.sessionExpired) {
+      if (res.status === 401) {
         handleAdminLogout(
-          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+          "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
         );
         return;
       }
       if (res.ok && data.ok) {
-        const nextTags: AdminTagRecord[] = Array.isArray(data.tags)
-          ? data.tags
-          : [];
-        setTags(nextTags);
-        setAuditLogs(data.auditLogs || []);
-        const updatedItem = nextTags.find((item) => item.tagCode === tagCode);
-        if (updatedItem) {
-          setDetailsModalTag(updatedItem);
+        setDetailsModalTag(null);
+        await fetchAdminData(undefined, true);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("balaghni:orders-updated"));
         }
         showToast(
-          `تم تمديد اشتراك الملصق (${tagCode}) لمدة +${days} يوماً بنجاح ✓`
+          data.message ||
+            `تم تحويل الملصق (${tagCode}) إلى ملصق هدية (شهر مجاني - 30 يوماً) ✓`
         );
       } else {
-        showToast(data.error || "تعذر تمديد الاشتراك.");
+        showToast(data.error || "تعذر تحويل الملصق إلى هدية.");
       }
     } catch {
-      showToast("تعذر تمديد الاشتراك نتيجة خطأ في الاتصال.");
+      showToast("تعذر تحويل الملصق نتيجة خطأ في الاتصال.");
     } finally {
-      setExtendingSubscription(false);
+      setConvertingToGift(false);
+    }
+  };
+
+  const handleDetailsCodAction = async (
+    tagCode: string,
+    action: "confirm_cod_delivery" | "cancel_cod_order"
+  ) => {
+    setCodActionLoading(true);
+    try {
+      const res = await fetch("/api/admin/lifecycle", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action,
+          orderCode: tagCode,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
+      if (res.ok && data.ok) {
+        setDetailsModalTag(null);
+        await fetchAdminData(undefined, true);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("balaghni:orders-updated"));
+        }
+        showToast(data.message || "تم تنفيذ العملية بنجاح ✓");
+      } else {
+        showToast(data.error || "تعذر تنفيذ العملية.");
+      }
+    } catch {
+      showToast("تعذر تنفيذ العملية نتيجة خطأ في الاتصال.");
+    } finally {
+      setCodActionLoading(false);
     }
   };
 
@@ -2380,6 +2420,20 @@ export default function ExecutiveAdminDashboardPage() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("treasury")}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
+              activeTab === "treasury"
+                ? "bg-primary text-white shadow-primary-glow"
+                : "text-emerald-300/90 hover:bg-emerald-500/15 hover:text-emerald-200"
+            )}
+          >
+            <Activity className="h-4 w-4" />
+            <span>المبيعات والخزينة</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("import")}
             className={cn(
               "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black transition",
@@ -2541,6 +2595,11 @@ export default function ExecutiveAdminDashboardPage() {
                               {tag.isCodReserved && (
                                 <span className="inline-flex w-fit items-center rounded-md border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-black text-amber-300">
                                   محجوز لطلب توصيل
+                                </span>
+                              )}
+                              {tag.isGiftExpired && (
+                                <span className="inline-flex w-fit items-center rounded-md border border-red-500/40 bg-red-500/15 px-2 py-0.5 text-[10px] font-black text-red-300">
+                                  انتهت الهدية — بانتظار الاشتراك
                                 </span>
                               )}
                             </div>
@@ -3177,6 +3236,10 @@ export default function ExecutiveAdminDashboardPage() {
           <AdminLifecyclePanel viewMode="gifts" />
         )}
 
+        {activeTab === "treasury" && (
+          <AdminLifecyclePanel viewMode="treasury" />
+        )}
+
         {/* ==================================================================== */}
         {/* التبويب 5: منطقة الطوارئ وتصفير النظام (Danger Zone) */}
         {/* ==================================================================== */}
@@ -3598,28 +3661,57 @@ export default function ExecutiveAdminDashboardPage() {
               {/* 4. أزرار إدارية سريعة */}
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-4">
                 <div className="flex flex-wrap items-center gap-2">
+                  {dTag.isCodReserved && (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={codActionLoading || convertingToGift}
+                        onClick={() =>
+                          handleDetailsCodAction(
+                            dTag.tagCode,
+                            "confirm_cod_delivery"
+                          )
+                        }
+                        className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 font-bold"
+                      >
+                        {codActionLoading
+                          ? "جاري التفعيل..."
+                          : "تأكيد استلام الكاش وتفعيل الاشتراك السنوي (365 يوماً)"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={codActionLoading || convertingToGift}
+                        onClick={() =>
+                          handleDetailsCodAction(
+                            dTag.tagCode,
+                            "cancel_cod_order"
+                          )
+                        }
+                        className="rounded-xl border-red-500/35 bg-red-500/10 text-red-300 hover:bg-red-600 hover:text-white"
+                      >
+                        إلغاء الطلب وتحرير الملصق
+                      </Button>
+                    </>
+                  )}
+
                   <Button
                     type="button"
                     size="sm"
-                    disabled={extendingSubscription}
-                    onClick={() => handleExtendSubscription(dTag.tagCode, 30)}
-                    className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-500"
+                    disabled={convertingToGift || codActionLoading}
+                    onClick={() => handleConvertToGift(dTag.tagCode)}
+                    className="rounded-xl bg-purple-600 text-white hover:bg-purple-500 font-bold"
                   >
-                    {extendingSubscription
-                      ? "جاري التمديد..."
-                      : "تمديد الاشتراك (+30 يوماً)"}
+                    <Gift className="h-3.5 w-3.5" />
+                    <span>
+                      {convertingToGift
+                        ? "جاري التحويل..."
+                        : "تحويل إلى ملصق هدية (شهر مجاني - 30 يوماً)"}
+                    </span>
                   </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={extendingSubscription}
-                    onClick={() => handleExtendSubscription(dTag.tagCode, 365)}
-                    className="rounded-xl bg-sky-600 text-white hover:bg-sky-500"
-                  >
-                    {extendingSubscription
-                      ? "جاري التمديد..."
-                      : "تمديد الاشتراك (+365 يوماً)"}
-                  </Button>
+
                   <Button
                     type="button"
                     size="sm"

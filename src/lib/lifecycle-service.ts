@@ -157,6 +157,27 @@ export interface OrderRecord {
   createdAt: string;
 }
 
+export interface SalesLedgerEntry {
+  id: string;
+  tagCode: string;
+  customerName: string;
+  operationType: "new_sale" | "gift_upgrade" | "gift_free";
+  packageType: PackageType | "gift";
+  amountLyd: number;
+  paymentMethod: "cash" | "online" | "free";
+  custodyStatus: "open" | "closed" | "settled";
+  createdAt: string;
+}
+
+export interface CustodyClosureRecord {
+  id: string;
+  closedAt: string;
+  closedBy: string;
+  totalLyd: number;
+  count: number;
+  entryIds: string[];
+}
+
 interface LocalLifecycleStore {
   stickers: Record<string, StickerRecord>;
   vendors: VendorRecord[];
@@ -165,6 +186,8 @@ interface LocalLifecycleStore {
   corporateLeads: CorporateLeadRecord[];
   unassignedPaidOrders: UnassignedPaidOrderRecord[];
   orders: OrderRecord[];
+  salesLedger?: SalesLedgerEntry[];
+  custodyClosures?: CustodyClosureRecord[];
 }
 
 const STORE_PATH = path.join(
@@ -188,6 +211,10 @@ function loadStore(): LocalLifecycleStore {
           ? parsed.unassignedPaidOrders
           : [],
         orders: Array.isArray(parsed.orders) ? parsed.orders : [],
+        salesLedger: Array.isArray(parsed.salesLedger) ? parsed.salesLedger : [],
+        custodyClosures: Array.isArray(parsed.custodyClosures)
+          ? parsed.custodyClosures
+          : [],
       };
     }
   } catch {
@@ -201,6 +228,8 @@ function loadStore(): LocalLifecycleStore {
     corporateLeads: [],
     unassignedPaidOrders: [],
     orders: [],
+    salesLedger: [],
+    custodyClosures: [],
   };
 }
 
@@ -467,12 +496,20 @@ export async function activateStickerAtomic(params: {
     startsAt,
     params.durationDays ?? (planType === "gift" ? 30 : 365)
   );
-  const allowedStatuses = params.allowExpiredRenewal
+  // حماية أمنية: منع إعادة ربط أو تجديد ملصق مرتبط بمالك سابق لهاتف مختلف غير مصرح به
+  const currentSticker = await getStickerLifecycle(code);
+  const isGiftUpgrade = Boolean(
+    currentSticker &&
+      (currentSticker.planType === "gift" ||
+        currentSticker.activationSource === "gift_promo") &&
+      planType !== "gift"
+  );
+  const allowedStatuses = isGiftUpgrade
+    ? ["unactivated", "gift_ready", "active", "expired"]
+    : params.allowExpiredRenewal
     ? ["unactivated", "expired"]
     : ["unactivated"];
 
-  // حماية أمنية: منع إعادة ربط أو تجديد ملصق مرتبط بمالك سابق لهاتف مختلف غير مصرح به
-  const currentSticker = await getStickerLifecycle(code);
   if (
     currentSticker &&
     currentSticker.ownerPhone &&
@@ -564,6 +601,23 @@ export async function activateStickerAtomic(params: {
             `✅ تفعيل أونلاين مباشر لملصق (${code})\nالباقة: ${planType}\nالهاتف: ${params.ownerPhone}\nالاسم: ${params.ownerName || "-"}`
           );
         }
+        await recordSaleTransaction({
+          tagCode: code,
+          customerName: params.ownerName || params.ownerPhone,
+          operationType: isGiftUpgrade
+            ? "gift_upgrade"
+            : planType === "gift"
+            ? "gift_free"
+            : "new_sale",
+          packageType: pkg,
+          amountLyd: planType === "gift" ? 0 : getPackagePriceLyd(planType),
+          paymentMethod:
+            planType === "gift"
+              ? "free"
+              : params.activationSource === "online"
+              ? "online"
+              : "cash",
+        });
         const rec = await getStickerLifecycle(code);
         return { ok: true, sticker: rec || undefined };
       }
@@ -783,6 +837,15 @@ export async function redeemGiftSticker(params: {
     startsAt: nowIso,
     expiresAt,
     activationSource: "gift_promo",
+  });
+
+  await recordSaleTransaction({
+    tagCode: code,
+    customerName: params.ownerName || params.phone,
+    operationType: "gift_free",
+    packageType: "gift",
+    amountLyd: 0,
+    paymentMethod: "free",
   });
 
   await sendWhatsappAlertMessage(
@@ -1492,9 +1555,18 @@ export async function listGiftStickersSummary(): Promise<GiftStickersSummary> {
     }
   }
 
-  const items = Array.from(byCode.values()).sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt)
-  );
+  const nowMs = Date.now();
+  const items = Array.from(byCode.values())
+    .filter((item) => {
+      if (
+        item.subscriptionExpiresAt &&
+        new Date(item.subscriptionExpiresAt).getTime() <= nowMs
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const linkedGifts = items.filter((i) => i.isLinked).length;
   return {
     totalGifts: items.length,
@@ -1850,6 +1922,80 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
     // ignore
   }
 
+  // ضمان ظهور أي ملصق حالته LOCKED ويحتوي على رقم هاتف زبون (وليس هدية منتهية) في تبويب «الطلبات الواردة»
+  try {
+    const existingAssignedSet = new Set<string>();
+    for (const ord of byCode.values()) {
+      if (
+        ord.status === "pending_delivery" ||
+        ord.paymentStatus === "pending_cod"
+      ) {
+        const c = String(ord.assignedTagCode || ord.orderCode || "")
+          .trim()
+          .toUpperCase();
+        if (c) existingAssignedSet.add(c);
+      }
+    }
+
+    const { data: lockedWithPhone } = await supabaseAdmin
+      .from("tags")
+      .select("*")
+      .eq("status", "LOCKED")
+      .not("owner_phone", "is", null)
+      .limit(200);
+
+    if (Array.isArray(lockedWithPhone)) {
+      const nowMs = Date.now();
+      for (const row of lockedWithPhone as Array<Record<string, unknown>>) {
+        const code = String(row.tag_code || "").trim().toUpperCase();
+        const phone = String(row.owner_phone || "").trim();
+        if (!code || !phone || phone === "-" || existingAssignedSet.has(code)) {
+          continue;
+        }
+        const pkgRaw = String(row.package_type || row.plan_type || "").toLowerCase();
+        const srcRaw = String(row.activation_source || "").toLowerCase();
+        const expIso = row.subscription_expires_at
+          ? String(row.subscription_expires_at)
+          : null;
+        const isExpiredGift =
+          (pkgRaw === "gift" || srcRaw === "gift_promo") &&
+          expIso &&
+          new Date(expIso).getTime() <= nowMs;
+        if (isExpiredGift) continue;
+
+        const pkgType = normalizePackageType(pkgRaw || "basic");
+        const pkgCfg = getPackageConfig(pkgType);
+        byCode.set(`COD-${code}`, {
+          id: `tag_${code}`,
+          orderCode: code,
+          customerName: String(
+            row.owner_name || row.vehicle_make_model || row.vehicle_info || phone
+          ),
+          customerPhone: phone,
+          city: String(row.city || row.vehicle_city || "طرابلس"),
+          address: String(row.city || row.vehicle_city || "—"),
+          vehicleModel: row.vehicle_make_model
+            ? String(row.vehicle_make_model)
+            : row.vehicle_info
+            ? String(row.vehicle_info)
+            : null,
+          packageType: pkgType,
+          quantity: 1,
+          totalLyd: Number(pkgCfg.priceLyd || 100),
+          paymentMethod: "cod",
+          paymentStatus: "pending_cod",
+          assignedTagCode: code,
+          status: "pending_delivery",
+          subscriptionStartsAt: null,
+          subscriptionExpiresAt: null,
+          createdAt: String(row.created_at || new Date().toISOString()),
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   return Array.from(byCode.values()).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt)
   );
@@ -2065,6 +2211,17 @@ export async function pullAndActivateLockedTag(params: {
         updatedAt: params.startsAt,
       };
       saveStore(store);
+
+      if (params.paymentMethod === "online") {
+        await recordSaleTransaction({
+          tagCode: candidateCode,
+          customerName: params.ownerName || params.ownerPhone,
+          operationType: "new_sale",
+          packageType: pkg,
+          amountLyd: getPackagePriceLyd(pkg),
+          paymentMethod: "online",
+        });
+      }
 
       return { ok: true, stickerCode: candidateCode };
     } catch (err) {
@@ -2361,6 +2518,15 @@ export async function confirmCodOrderDelivery(params: {
   } catch {
     // ignore
   }
+
+  await recordSaleTransaction({
+    tagCode,
+    customerName: target.customerName || target.customerPhone,
+    operationType: "new_sale",
+    packageType: pkgType,
+    amountLyd: getPackagePriceLyd(pkgType),
+    paymentMethod: "cash",
+  });
 
   await sendWhatsappAlertMessage(
     target.customerPhone,
@@ -2665,4 +2831,369 @@ export async function wipeAllOldData(): Promise<{
   }
 
   return { ok: true, clearedTables };
+}
+
+// ============================================================================
+// منظومة المبيعات والخزينة (إغلاق العُهَد) والتحويل إلى ملصق هدية (شهر مجاني)
+// ============================================================================
+
+export async function recordSaleTransaction(params: {
+  tagCode: string;
+  customerName?: string | null;
+  operationType: "new_sale" | "gift_upgrade" | "gift_free";
+  packageType: PackageType | "gift";
+  amountLyd: number;
+  paymentMethod: "cash" | "online" | "free";
+  adminName?: string;
+}): Promise<SalesLedgerEntry> {
+  const nowIso = new Date().toISOString();
+  const entry: SalesLedgerEntry = {
+    id: `sale_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    tagCode: formatBalaghniTagCode(params.tagCode) || params.tagCode.toUpperCase(),
+    customerName: String(params.customerName || "").trim() || "بدون اسم",
+    operationType: params.operationType,
+    packageType: params.packageType,
+    amountLyd: Number(params.amountLyd || 0),
+    paymentMethod: params.paymentMethod,
+    custodyStatus: params.paymentMethod === "cash" ? "open" : "settled",
+    createdAt: nowIso,
+  };
+
+  try {
+    await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_name: params.adminName || "منظومة المبيعات",
+      action_type: "SALE_RECORDED",
+      target_item: entry.tagCode,
+      details: JSON.stringify(entry),
+      created_at: nowIso,
+    });
+  } catch {
+    // ignore
+  }
+
+  const store = loadStore();
+  store.salesLedger = [entry, ...(store.salesLedger || [])].slice(0, 1000);
+  saveStore(store);
+  return entry;
+}
+
+export async function getSalesAndTreasurySummary(): Promise<{
+  openCashTotalLyd: number;
+  openCashCount: number;
+  todaySalesLyd: number;
+  todayCount: number;
+  monthSalesLyd: number;
+  monthCount: number;
+  yearSalesLyd: number;
+  yearCount: number;
+  entries: SalesLedgerEntry[];
+  closures: CustodyClosureRecord[];
+}> {
+  const store = loadStore();
+  const entryMap = new Map<string, SalesLedgerEntry>();
+  const closureMap = new Map<string, CustodyClosureRecord>();
+
+  for (const e of store.salesLedger || []) {
+    entryMap.set(e.id, e);
+  }
+  for (const c of store.custodyClosures || []) {
+    closureMap.set(c.id, c);
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("admin_audit_logs")
+      .select("id,action_type,details,action_details,created_at")
+      .in("action_type", ["SALE_RECORDED", "CUSTODY_CLOSED"])
+      .order("created_at", { ascending: false })
+      .limit(1000);
+
+    if (!error && Array.isArray(data)) {
+      for (const row of data as Array<Record<string, unknown>>) {
+        const rawJson = String(row.details || row.action_details || "");
+        if (!rawJson.startsWith("{")) continue;
+        try {
+          const parsed = JSON.parse(rawJson);
+          if (row.action_type === "SALE_RECORDED" && parsed?.id) {
+            entryMap.set(String(parsed.id), parsed as SalesLedgerEntry);
+          } else if (row.action_type === "CUSTODY_CLOSED" && parsed?.id) {
+            closureMap.set(String(parsed.id), parsed as CustodyClosureRecord);
+          }
+        } catch {
+          // ignore non-json audit rows
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const closures = Array.from(closureMap.values()).sort(
+    (a, b) => new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime()
+  );
+  const closedEntryIds = new Set<string>();
+  for (const c of closures) {
+    for (const id of c.entryIds || []) {
+      closedEntryIds.add(id);
+    }
+  }
+  const latestClosedAt = closures[0]?.closedAt
+    ? new Date(closures[0].closedAt).getTime()
+    : 0;
+
+  const entries = Array.from(entryMap.values())
+    .map((e) => {
+      if (e.paymentMethod !== "cash") {
+        return { ...e, custodyStatus: "settled" as const };
+      }
+      const isClosed =
+        closedEntryIds.has(e.id) ||
+        (latestClosedAt > 0 && new Date(e.createdAt).getTime() <= latestClosedAt);
+      return {
+        ...e,
+        custodyStatus: (isClosed ? "closed" : "open") as "open" | "closed",
+      };
+    })
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const monthStr = now.toISOString().slice(0, 7);
+  const yearStr = now.toISOString().slice(0, 4);
+
+  let openCashTotalLyd = 0;
+  let openCashCount = 0;
+  let todaySalesLyd = 0;
+  let todayCount = 0;
+  let monthSalesLyd = 0;
+  let monthCount = 0;
+  let yearSalesLyd = 0;
+  let yearCount = 0;
+
+  for (const e of entries) {
+    if (e.paymentMethod === "cash" && e.custodyStatus === "open") {
+      openCashTotalLyd += Number(e.amountLyd || 0);
+      openCashCount += 1;
+    }
+    if (e.amountLyd > 0) {
+      const dateStr = String(e.createdAt || "");
+      if (dateStr.startsWith(todayStr)) {
+        todaySalesLyd += Number(e.amountLyd);
+        todayCount += 1;
+      }
+      if (dateStr.startsWith(monthStr)) {
+        monthSalesLyd += Number(e.amountLyd);
+        monthCount += 1;
+      }
+      if (dateStr.startsWith(yearStr)) {
+        yearSalesLyd += Number(e.amountLyd);
+        yearCount += 1;
+      }
+    }
+  }
+
+  return {
+    openCashTotalLyd,
+    openCashCount,
+    todaySalesLyd,
+    todayCount,
+    monthSalesLyd,
+    monthCount,
+    yearSalesLyd,
+    yearCount,
+    entries,
+    closures,
+  };
+}
+
+export async function closeCashCustody(params: {
+  adminName: string;
+}): Promise<{ ok: boolean; closure?: CustodyClosureRecord; error?: string }> {
+  const summary = await getSalesAndTreasurySummary();
+  const openEntries = summary.entries.filter(
+    (e) => e.paymentMethod === "cash" && e.custodyStatus === "open"
+  );
+
+  if (openEntries.length === 0 || summary.openCashTotalLyd <= 0) {
+    return {
+      ok: false,
+      error: "لا توجد مبالغ كاش مفتوحة في العهدة الحالية لإغلاقها.",
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const closure: CustodyClosureRecord = {
+    id: `cust_${Date.now().toString(36)}`,
+    closedAt: nowIso,
+    closedBy: params.adminName || "مشرف النظام",
+    totalLyd: summary.openCashTotalLyd,
+    count: openEntries.length,
+    entryIds: openEntries.map((e) => e.id),
+  };
+
+  try {
+    await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_name: closure.closedBy,
+      action_type: "CUSTODY_CLOSED",
+      target_item: `${closure.totalLyd} LYD`,
+      details: JSON.stringify(closure),
+      created_at: nowIso,
+    });
+  } catch {
+    // ignore
+  }
+
+  const store = loadStore();
+  store.custodyClosures = [closure, ...(store.custodyClosures || [])];
+  saveStore(store);
+
+  return { ok: true, closure };
+}
+
+/**
+ * تحويل ملصق إلى «ملصق هدية (شهر مجاني - 30 يوماً)» ونقله إلى تبويب الهدايا
+ */
+export async function convertTagToGift(params: {
+  tagCode: string;
+  adminName: string;
+}): Promise<{ ok: boolean; tagCode?: string; error?: string }> {
+  const code = formatBalaghniTagCode(params.tagCode);
+  if (!code) {
+    return { ok: false, error: "كود الملصق غير صالح." };
+  }
+
+  let existingTag: Record<string, unknown> | null = null;
+  try {
+    const { data } = await supabaseAdmin
+      .from("tags")
+      .select("*")
+      .eq("tag_code", code)
+      .maybeSingle();
+    if (data) existingTag = data as Record<string, unknown>;
+  } catch {
+    // ignore
+  }
+
+  const ownerPhone = existingTag?.owner_phone
+    ? String(existingTag.owner_phone).trim()
+    : null;
+  const ownerName = existingTag?.owner_name
+    ? String(existingTag.owner_name).trim()
+    : null;
+  const vehicleInfo = existingTag?.vehicle_info || existingTag?.vehicle_make_model
+    ? String(existingTag.vehicle_info || existingTag.vehicle_make_model).trim()
+    : null;
+  const city = existingTag?.city || existingTag?.vehicle_city
+    ? String(existingTag.city || existingTag.vehicle_city).trim()
+    : "طرابلس";
+
+  const hasOwner = Boolean(ownerPhone && ownerPhone !== "-");
+  const nowIso = new Date().toISOString();
+  const startsAt = hasOwner ? nowIso : null;
+  const expiresAt = hasOwner ? addDaysIso(nowIso, 30) : null;
+  const tagStatus = hasOwner ? "ACTIVE" : "LOCKED";
+  const stickerStatus = hasOwner ? "active" : "gift_ready";
+  const features = getDefaultFeaturesForPackage("gift");
+
+  try {
+    await supabaseAdmin
+      .from("tags")
+      .update({
+        status: tagStatus,
+        notification_channel: "SMS",
+        activated_at: startsAt,
+      })
+      .eq("tag_code", code);
+  } catch {
+    // ignore
+  }
+
+  const extFields: Record<string, unknown> = {
+    package_type: "gift",
+    activation_source: "gift_promo",
+    alert_channel: "SMS",
+    subscription_starts_at: startsAt,
+    subscription_expires_at: expiresAt,
+    plan_type: "gift",
+  };
+  for (const [col, val] of Object.entries(extFields)) {
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({ [col]: val })
+        .eq("tag_code", code);
+    } catch {
+      // ignore missing column
+    }
+  }
+
+  try {
+    await supabaseAdmin.from("stickers").upsert(
+      {
+        code,
+        status: stickerStatus,
+        plan_type: "gift",
+        package_type: "gift",
+        features,
+        owner_phone: ownerPhone,
+        owner_name: ownerName,
+        vehicle_info: vehicleInfo,
+        activation_source: "gift_promo",
+        subscription_starts_at: startsAt,
+        subscription_expires_at: expiresAt,
+        updated_at: nowIso,
+      },
+      { onConflict: "code" }
+    );
+  } catch {
+    // ignore
+  }
+
+  const store = loadStore();
+  store.stickers[code] = {
+    code,
+    status: stickerStatus,
+    planType: "gift",
+    packageType: "nabbihni",
+    features,
+    ownerPhone,
+    ownerName,
+    vehicleInfo,
+    activationSource: "gift_promo",
+    subscriptionStartsAt: startsAt,
+    subscriptionExpiresAt: expiresAt,
+    createdAt: store.stickers[code]?.createdAt || nowIso,
+    updatedAt: nowIso,
+  };
+  saveStore(store);
+
+  if (hasOwner && ownerPhone) {
+    syncTagActivationToLocalStore({
+      tagCode: code,
+      ownerPhone,
+      vehicleInfo: vehicleInfo || ownerName || "مركبة مسجلة",
+      city,
+      alertChannel: "SMS",
+      packageType: "nabbihni",
+      activationSource: "gift_promo",
+      subscriptionStartsAt: startsAt || undefined,
+      subscriptionExpiresAt: expiresAt || undefined,
+      activatedAt: startsAt || undefined,
+    });
+
+    await recordSaleTransaction({
+      tagCode: code,
+      customerName: ownerName || ownerPhone,
+      operationType: "gift_free",
+      packageType: "gift",
+      amountLyd: 0,
+      paymentMethod: "free",
+      adminName: params.adminName,
+    });
+  }
+
+  return { ok: true, tagCode: code };
 }
