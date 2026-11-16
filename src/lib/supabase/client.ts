@@ -2218,12 +2218,12 @@ export async function verifyAdminAuthentication(params: {
 /**
  * الحدود الزمنية الصارمة لجلسات المديرين
  */
-export const ADMIN_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 دقيقة خمول
-export const ADMIN_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان كحد أقصى للجلسة
+export const ADMIN_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان (120 دقيقة) من الخمول التام
+export const ADMIN_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // مهلة التجديد الانسيابية (ساعتان)
 export const ADMIN_COOKIE_MAX_AGE_SECONDS = 2 * 60 * 60; // 7200 ثانية
 
 /**
- * توليد رمز جلسة إدارية موقّع تشفيرياً (HMAC-SHA256) وموثق زمنياً
+ * توليد رمز جلسة إدارية موقّع تشفيرياً (HMAC-SHA256) بصلاحية متجددة مع النشاط (Sliding Session)
  */
 export function createAdminSessionToken(profile: {
   id: string;
@@ -2250,16 +2250,16 @@ export function createAdminSessionToken(profile: {
     fullName: profile.fullName,
     role: profile.role,
     permissions: profile.permissions,
-    iat: sessionCreatedAt,
+    iat: now,
     sessionCreatedAt,
     lastActivityAt: now,
-    exp: sessionCreatedAt + ADMIN_ABSOLUTE_TIMEOUT_MS,
+    exp: now + ADMIN_IDLE_TIMEOUT_MS,
   };
   return signSecurityToken(payload);
 }
 
 /**
- * فحص التوقيع التشفيري وصلاحية وتوقيت جلسة المدير (مهلة خمول 15 دقيقة / حد أقصى ساعتان)
+ * فحص التوقيع التشفيري وصلاحية وتوقيت جلسة المدير (مهلة خمول 120 دقيقة متجددة تلقائياً مع النشاط)
  */
 export function verifyAdminSessionToken(token?: string): {
   valid: boolean;
@@ -2298,7 +2298,7 @@ export function verifyAdminSessionToken(token?: string): {
       valid: false,
       expired: isExpired,
       error: isExpired
-        ? "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        ? "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
         : "رمز الجلسة الإدارية غير صالح أو غير موقّع.",
     };
   }
@@ -2309,23 +2309,14 @@ export function verifyAdminSessionToken(token?: string): {
   const lastActive = Number(parsed.lastActivityAt || createdAt || 0);
 
   if (
-    (createdAt > 0 && now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS) ||
-    (typeof parsed.exp === "number" && now >= parsed.exp)
+    (typeof parsed.exp === "number" && now >= parsed.exp) ||
+    (lastActive > 0 && now - lastActive >= ADMIN_IDLE_TIMEOUT_MS)
   ) {
     return {
       valid: false,
       expired: true,
       error:
-        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
-    };
-  }
-
-  if (lastActive > 0 && now - lastActive >= ADMIN_IDLE_TIMEOUT_MS) {
-    return {
-      valid: false,
-      expired: true,
-      error:
-        "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
+        "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً.",
     };
   }
 
@@ -2408,21 +2399,6 @@ export async function verifyAdminLiveEditPermission(authToken?: string): Promise
       authorized: false,
       error: "هذا الحساب الإداري مجمد حالياً.",
     };
-  }
-
-  if (profileRow.last_login) {
-    const lastLoginTime = new Date(profileRow.last_login).getTime();
-    if (
-      !Number.isNaN(lastLoginTime) &&
-      Date.now() - lastLoginTime >= ADMIN_ABSOLUTE_TIMEOUT_MS
-    ) {
-      return {
-        authorized: false,
-        expired: true,
-        error:
-          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
-      };
-    }
   }
 
   const mapped = mapAdminProfileRow(profileRow, loadAdminStore());
@@ -2511,21 +2487,6 @@ export async function verifyAdminActionPermission(
       authorized: false,
       error: "هذا الحساب الإداري مجمد حالياً.",
     };
-  }
-
-  if (profileRow.last_login) {
-    const lastLoginTime = new Date(profileRow.last_login).getTime();
-    if (
-      !Number.isNaN(lastLoginTime) &&
-      Date.now() - lastLoginTime >= ADMIN_ABSOLUTE_TIMEOUT_MS
-    ) {
-      return {
-        authorized: false,
-        expired: true,
-        error:
-          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً.",
-      };
-    }
   }
 
   const mapped = mapAdminProfileRow(profileRow, loadAdminStore());

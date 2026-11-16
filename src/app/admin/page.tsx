@@ -77,9 +77,9 @@ interface AdminProfileSession {
   lastActivityAt?: number;
 }
 
-// المهل الزمنية الصارمة لجلسات المديرين
-const ADMIN_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 دقيقة خمول
-const ADMIN_ABSOLUTE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان كحد أقصى للجلسة
+// المهل الزمنية التفاعلية لجلسات المديرين (Sliding Session)
+const ADMIN_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // ساعتان (120 دقيقة) من الخمول التام
+const ADMIN_WARNING_BEFORE_EXPIRY_MS = 2 * 60 * 1000; // تنبيه قبل انتهاء الخمول بدقيقتين
 const ADMIN_COOKIE_MAX_AGE_SECONDS = 2 * 60 * 60; // 7200 ثانية
 
 interface AdminTagRecord {
@@ -198,6 +198,9 @@ export default function ExecutiveAdminDashboardPage() {
   const [pendingOrdersCount, setPendingOrdersCount] = React.useState(0);
   const [loadingData, setLoadingData] = React.useState(true);
   const [toastMessage, setToastMessage] = React.useState<string | null>(null);
+  const [sessionWarningSecondsLeft, setSessionWarningSecondsLeft] =
+    React.useState<number | null>(null);
+  const [refreshingSession, setRefreshingSession] = React.useState(false);
 
   // البحث والفلترة اللحظية في جدول الملصقات
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -365,6 +368,30 @@ export default function ExecutiveAdminDashboardPage() {
           return;
         }
         if (res.ok && data.ok) {
+          if (data.sessionToken && adminSessionRef.current) {
+            const now = Date.now();
+            setAdminSession((prev) => {
+              if (!prev) return null;
+              const updated: AdminProfileSession = {
+                ...prev,
+                sessionToken: String(data.sessionToken),
+                lastActivityAt: now,
+              };
+              try {
+                window.sessionStorage.setItem(
+                  ADMIN_SESSION_STORAGE_KEY,
+                  JSON.stringify(updated)
+                );
+                window.localStorage.setItem(
+                  ADMIN_SESSION_STORAGE_KEY,
+                  JSON.stringify(updated)
+                );
+              } catch {
+                // ignore
+              }
+              return updated;
+            });
+          }
           setTags(Array.isArray(data.tags) ? data.tags : []);
           setAuditLogs(Array.isArray(data.auditLogs) ? data.auditLogs : []);
           setTeamMembers(
@@ -411,6 +438,58 @@ export default function ExecutiveAdminDashboardPage() {
     },
     [getAdminHeaders, handleAdminLogout]
   );
+
+  const refreshAdminSession = React.useCallback(async () => {
+    const current = adminSessionRef.current;
+    if (!current) return;
+    setRefreshingSession(true);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "refresh_session",
+          sessionToken: current.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
+      if (res.ok && data.ok && data.sessionToken) {
+        const now = Date.now();
+        setAdminSession((prev) => {
+          if (!prev) return null;
+          const updated: AdminProfileSession = {
+            ...prev,
+            sessionToken: String(data.sessionToken),
+            lastActivityAt: now,
+          };
+          try {
+            window.sessionStorage.setItem(
+              ADMIN_SESSION_STORAGE_KEY,
+              JSON.stringify(updated)
+            );
+            window.localStorage.setItem(
+              ADMIN_SESSION_STORAGE_KEY,
+              JSON.stringify(updated)
+            );
+          } catch {
+            // ignore
+          }
+          return updated;
+        });
+      }
+    } catch {
+      // ignore transient network errors during background refresh
+    } finally {
+      setRefreshingSession(false);
+    }
+  }, [getAdminHeaders, handleAdminLogout]);
 
   React.useEffect(() => {
     const onOrdersUpdated = () => {
@@ -461,15 +540,12 @@ export default function ExecutiveAdminDashboardPage() {
           const createdAt = parsed.sessionCreatedAt || now;
           const lastActive = parsed.lastActivityAt || createdAt;
 
-          if (
-            now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS ||
-            now - lastActive >= ADMIN_IDLE_TIMEOUT_MS
-          ) {
+          if (now - lastActive >= ADMIN_IDLE_TIMEOUT_MS) {
             handleAdminLogout(
-              "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+              "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
             );
           } else {
-            setAdminSession(parsed);
+            setAdminSession({ ...parsed, lastActivityAt: now });
           }
         }
       }
@@ -480,8 +556,8 @@ export default function ExecutiveAdminDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // مراقب جلسة المدير التلقائي (Admin Session Watcher):
-  // 15 دقيقة خمول من عدم النشاط أو ساعتان كحد أقصى منذ تسجيل الدخول
+  // مراقب جلسة المدير التفاعلي (Sliding Session Watcher):
+  // تتجدد الجلسة تلقائياً مع أي نشاط، ولا تنتهي إلا بعد ساعتين (120 دقيقة) من الخمول التام، مع تنبيه قبلها بدقيقتين
   React.useEffect(() => {
     if (!isAuthenticated) return;
 
@@ -491,25 +567,25 @@ export default function ExecutiveAdminDashboardPage() {
       const now = Date.now();
       const createdAt = current.sessionCreatedAt || now;
       const lastActive = current.lastActivityAt || createdAt;
+      const remainingMs = ADMIN_IDLE_TIMEOUT_MS - (now - lastActive);
 
-      const idleElapsed = now - lastActive;
-      const totalElapsed = now - createdAt;
-
-      if (
-        idleElapsed >= ADMIN_IDLE_TIMEOUT_MS ||
-        totalElapsed >= ADMIN_ABSOLUTE_TIMEOUT_MS
-      ) {
+      if (remainingMs <= 0) {
+        setSessionWarningSecondsLeft(null);
         handleAdminLogout(
-          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+          "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
         );
+      } else if (remainingMs <= ADMIN_WARNING_BEFORE_EXPIRY_MS) {
+        setSessionWarningSecondsLeft(Math.ceil(remainingMs / 1000));
+      } else {
+        setSessionWarningSecondsLeft(null);
       }
     };
 
-    // فحص دوري كل 10 ثوانٍ
-    const intervalId = window.setInterval(checkSessionExpiry, 10000);
+    // فحص دوري كل 5 ثوانٍ لمتابعة التنبيه والانتهاء بدقة
+    const intervalId = window.setInterval(checkSessionExpiry, 5000);
 
-    // تحديث وقت النشاط عند تفاعل المشرف (مع Throttle كل 15 ثانية لتجنب كثرة التحديث)
     let lastRecordTime = Date.now();
+    let lastServerRefreshTime = Date.now();
     const handleUserActivity = () => {
       const current = adminSessionRef.current;
       if (!current) return;
@@ -517,17 +593,22 @@ export default function ExecutiveAdminDashboardPage() {
       const createdAt = current.sessionCreatedAt || now;
       const lastActive = current.lastActivityAt || createdAt;
 
-      if (
-        now - lastActive >= ADMIN_IDLE_TIMEOUT_MS ||
-        now - createdAt >= ADMIN_ABSOLUTE_TIMEOUT_MS
-      ) {
+      if (now - lastActive >= ADMIN_IDLE_TIMEOUT_MS) {
         handleAdminLogout(
-          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+          "انتهت جلسة المدير تلقائياً بعد ساعتين من الخمول التام، يرجى تسجيل الدخول مجدداً."
         );
         return;
       }
 
-      if (now - lastRecordTime >= 15000) {
+      const inWarningWindow =
+        ADMIN_IDLE_TIMEOUT_MS - (now - lastActive) <=
+        ADMIN_WARNING_BEFORE_EXPIRY_MS;
+
+      if (inWarningWindow) {
+        setSessionWarningSecondsLeft(null);
+      }
+
+      if (inWarningWindow || now - lastRecordTime >= 15000) {
         lastRecordTime = now;
         setAdminSession((prev) => {
           if (!prev) return null;
@@ -550,6 +631,12 @@ export default function ExecutiveAdminDashboardPage() {
           return updated;
         });
       }
+
+      // تجديد التوكن والكوكيز في الخلفية كل 5 دقائق من العمل النشط
+      if (now - lastServerRefreshTime >= 5 * 60 * 1000) {
+        lastServerRefreshTime = now;
+        void refreshAdminSession();
+      }
     };
 
     const events = [
@@ -559,6 +646,7 @@ export default function ExecutiveAdminDashboardPage() {
       "touchstart",
       "scroll",
       "click",
+      "input",
     ];
     events.forEach((evt) => {
       window.addEventListener(evt, handleUserActivity, { passive: true });
@@ -578,7 +666,7 @@ export default function ExecutiveAdminDashboardPage() {
       });
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isAuthenticated, handleAdminLogout]);
+  }, [isAuthenticated, handleAdminLogout, refreshAdminSession]);
 
   // فحص حالة القفل الزمني (Rate Limit) عند تغيير اسم المستخدم المدخل
   React.useEffect(() => {
@@ -4017,6 +4105,54 @@ export default function ExecutiveAdminDashboardPage() {
                 className="flex-1 rounded-xl bg-primary text-white"
               >
                 تأكيد الحذف
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* تنبيه لطيف قبل انتهاء الخمول بدقيقتين لإتاحة البقاء متصلاً */}
+      {sessionWarningSecondsLeft !== null && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl border border-amber-500/40 bg-[#12151F] p-6 text-white shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-amber-500/20 text-amber-400">
+                <Clock className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-white">
+                  تنبيه انتهاء الجلسة قريباً
+                </h3>
+                <p className="text-xs text-white/65">
+                  لم يُرصد أي نشاط منذ فترة. ستُنهى الجلسة تلقائياً خلال{" "}
+                  <span dir="ltr" className="font-mono font-black text-amber-300">
+                    {formatCountdown(sessionWarningSecondsLeft)}
+                  </span>
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <Button
+                type="button"
+                disabled={refreshingSession}
+                onClick={async () => {
+                  await refreshAdminSession();
+                  setSessionWarningSecondsLeft(null);
+                  showToast("تم تجديد الجلسة بنجاح ✓");
+                }}
+                className="flex-1 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 font-bold"
+              >
+                {refreshingSession ? "جاري التجديد..." : "البقاء متصلاً"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  handleAdminLogout("تم تسجيل الخروج بناءً على طلبك.")
+                }
+                className="rounded-xl border-white/20 bg-white/5 text-white"
+              >
+                تسجيل الخروج
               </Button>
             </div>
           </div>

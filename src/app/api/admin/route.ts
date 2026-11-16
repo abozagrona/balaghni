@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  createAdminSessionToken,
   verifyAdminAuthentication,
   verifyAdminActionPermission,
   verifyAdminSessionToken,
@@ -111,10 +112,19 @@ export async function GET(req: NextRequest) {
     }
 
     const overview = await getExecutiveAdminOverview();
+    const refreshedToken = createAdminSessionToken({
+      id: activeCheck.profile.id,
+      phone: activeCheck.profile.phone,
+      fullName: activeCheck.profile.fullName,
+      role: activeCheck.profile.role,
+      permissions: activeCheck.profile.permissions,
+      sessionCreatedAt: sessionCheck.payload.sessionCreatedAt,
+    });
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       ok: true,
       authenticated: true,
+      sessionToken: refreshedToken,
       adminProfile: activeCheck.profile,
       authStatus: {
         lockedUntilIso: authStatus.lockedUntilIso,
@@ -122,6 +132,8 @@ export async function GET(req: NextRequest) {
       },
       ...overview,
     });
+    attachAdminSessionCookie(response, refreshedToken);
+    return response;
   } catch {
     return NextResponse.json(
       { ok: false, error: "تعذر جلب بيانات لوحة الإدارة." },
@@ -363,6 +375,24 @@ export async function POST(req: NextRequest) {
     const effectiveAdminId = authCheck.profile.id;
     const effectiveAdminName =
       authCheck.profile.fullName || authCheck.profile.phone;
+
+    // تجديد الجلسة التلقائي مع النشاط (Sliding Session Refresh)
+    if (action === "refresh_session") {
+      const refreshedToken = createAdminSessionToken({
+        id: authCheck.profile.id,
+        phone: authCheck.profile.phone,
+        fullName: authCheck.profile.fullName,
+        role: authCheck.profile.role,
+        permissions: authCheck.profile.permissions,
+      });
+      const res = NextResponse.json({
+        ok: true,
+        sessionToken: refreshedToken,
+        lastActivityAt: Date.now(),
+      });
+      attachAdminSessionCookie(res, refreshedToken);
+      return res;
+    }
 
     // 2. إدارة دورة حياة الملصقات (تعديل المركبة، تبديل الحالة، ضبط المصنع، إعادة تعيين أمان المالك)
     if (
