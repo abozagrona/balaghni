@@ -25,7 +25,6 @@ import {
   LoaderCircle,
   Fingerprint,
   Sparkles,
-  Trash2,
 } from "lucide-react";
 import { SiteHeader } from "@/components/layout/site-header";
 import { SiteFooter } from "@/components/layout/site-footer";
@@ -423,37 +422,7 @@ function DashboardContent() {
     }
   };
 
-  const handleDisablePasskey = async () => {
-    if (!tagData || passkeyLoading) return;
-    setPasskeyError(null);
-    setPasskeySuccess(null);
-    setPasskeyLoading(true);
 
-    try {
-      const res = await fetch("/api/auth/passkey", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tagCode: tagData.tagCode }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setPasskeyError(data.error || "تعذر إلغاء تفعيل البصمة.");
-        return;
-      }
-
-      setTagData((prev) => (prev ? { ...prev, hasPasskey: false } : prev));
-      setPasskeySuccess("تم إلغاء ربط البصمة عن هذا الملصق بنجاح.");
-      window.dispatchEvent(
-        new CustomEvent("balaghni:passkey-updated", {
-          detail: { tagCode: tagData.tagCode, hasPasskey: false },
-        })
-      );
-    } catch {
-      setPasskeyError("تعذر الاتصال بالخادم أثناء إلغاء البصمة.");
-    } finally {
-      setPasskeyLoading(false);
-    }
-  };
 
 
 
@@ -643,6 +612,73 @@ function DashboardContent() {
           )}
 
 
+
+          {/* شريط إشعار مستمر لتفعيل البصمة (يظهر دائماً طالما أن البصمة غير مفعلة، ويختفي تلقائياً عند التفعيل) */}
+          {!tagData.hasPasskey && (
+            <div className="relative overflow-hidden rounded-3xl border border-amber-500/40 bg-gradient-to-l from-[#141721] via-[#171B28] to-[#1F1612] p-5 text-white shadow-card-soft sm:p-6">
+              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+                <div className="flex items-start gap-3.5">
+                  <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-amber-500/20 text-amber-400">
+                    <Fingerprint className="h-6 w-6" />
+                    <span className="absolute -top-1 -left-1 flex h-3 w-3">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                      <span className="relative inline-flex h-3 w-3 rounded-full bg-amber-500 ring-2 ring-[#141721]" />
+                    </span>
+                  </span>
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2.5 py-0.5 text-[11px] font-bold text-amber-300">
+                        <Sparkles className="h-3 w-3" />
+                        تنبيه أمان الحساب
+                      </span>
+                      <h2 className="text-base font-black text-white sm:text-lg">
+                        فعّل الدخول السريع بالبصمة (Passkey)
+                      </h2>
+                    </div>
+                    <p className="max-w-2xl text-xs leading-relaxed text-white/75 sm:text-sm">
+                      اربط بصمة الوجه أو الإصبع بهاتفك للدخول مباشرة إلى لوحة تحكم
+                      مركبتك في ثوانٍ بدون الحاجة لانتظار رمز التحقق في كل مرة.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 items-center">
+                  <Button
+                    type="button"
+                    size="lg"
+                    onClick={handleEnablePasskey}
+                    disabled={passkeyLoading}
+                    className="w-full rounded-2xl shadow-primary-glow sm:w-auto"
+                  >
+                    {passkeyLoading ? (
+                      <>
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                        <span>جاري التفعيل...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Fingerprint className="h-4 w-4" />
+                        <span>تفعيل البصمة الآن</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              {passkeyError && (
+                <p className="mt-3 rounded-xl border border-primary/40 bg-primary/15 px-3.5 py-2 text-xs font-bold text-primary-accent">
+                  {passkeyError}
+                </p>
+              )}
+            </div>
+          )}
+
+          {passkeySuccess && (
+            <div className="flex items-center gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 text-xs font-bold text-emerald-700">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{passkeySuccess}</span>
+            </div>
+          )}
 
           {/* 1. قسم مركبتي والملصق النشط (مجلوب حصراً من سجل الملصق في قاعدة البيانات) */}
           <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-[#0B0D13] p-6 text-white shadow-[0_24px_60px_rgba(11,13,19,0.22)] sm:p-8 lg:p-10">
@@ -1458,127 +1494,6 @@ function DashboardContent() {
           </>
           )}
 
-          {/* 5. قسم إعدادات الأمان والدخول السريع بالبصمة (Passkey) */}
-          <section className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                  <ShieldCheck className="h-5 w-5" />
-                </span>
-                <div>
-                  <h2 className="text-xl font-black text-foreground sm:text-2xl">
-                    إعدادات الأمان والدخول السريع
-                  </h2>
-                  <p className="text-xs text-muted-foreground">
-                    تفعيل وإدارة الدخول السريع ببصمة الوجه أو الإصبع (Passkey)
-                    لحساب مركبتك
-                  </p>
-                </div>
-              </div>
-
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-xs font-bold",
-                  tagData.hasPasskey
-                    ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                    : "border border-amber-500/30 bg-amber-500/10 text-amber-600"
-                )}
-              >
-                <span
-                  className={cn(
-                    "h-2 w-2 rounded-full",
-                    tagData.hasPasskey ? "bg-emerald-500" : "bg-amber-500"
-                  )}
-                />
-                {tagData.hasPasskey
-                  ? "البصمة مفعّلة ✓"
-                  : "البصمة غير مفعّلة"}
-              </span>
-            </div>
-
-            <div className="rounded-3xl border border-border bg-card p-6 shadow-card-soft sm:p-7">
-              <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-center">
-                <div className="flex items-start gap-3.5">
-                  <span
-                    className={cn(
-                      "flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl",
-                      tagData.hasPasskey
-                        ? "bg-emerald-500/15 text-emerald-600"
-                        : "bg-primary/10 text-primary"
-                    )}
-                  >
-                    <Fingerprint className="h-6 w-6" />
-                  </span>
-                  <div className="space-y-1">
-                    <h3 className="text-base font-black text-foreground">
-                      الدخول السريع بالبصمة (Passkey)
-                    </h3>
-                    <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-                      {tagData.hasPasskey
-                        ? "حسابك مرتبط ببصمة جهازك للدخول الفوري. يمكنك إعادة ربط جهاز جديد أو إلغاء التفعيل في أي وقت."
-                        : "اربط بصمة الوجه أو الإصبع بهاتفك للدخول مباشرة إلى لوحة التحكم بدون الحاجة لإدخال رمز التحقق في كل مرة."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2.5 sm:shrink-0">
-                  <Button
-                    type="button"
-                    size="lg"
-                    onClick={handleEnablePasskey}
-                    disabled={passkeyLoading}
-                    variant={tagData.hasPasskey ? "outline" : "default"}
-                    className="rounded-2xl"
-                  >
-                    {passkeyLoading ? (
-                      <>
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                        <span>جاري تسجيل البصمة...</span>
-                      </>
-                    ) : tagData.hasPasskey ? (
-                      <>
-                        <Fingerprint className="h-4 w-4 text-primary" />
-                        <span>إعادة ربط بصمة جهاز</span>
-                      </>
-                    ) : (
-                      <>
-                        <Fingerprint className="h-4 w-4" />
-                        <span>تفعيل الدخول بالبصمة (Passkey)</span>
-                      </>
-                    )}
-                  </Button>
-
-                  {tagData.hasPasskey && (
-                    <Button
-                      type="button"
-                      size="lg"
-                      variant="ghost"
-                      onClick={handleDisablePasskey}
-                      disabled={passkeyLoading}
-                      className="rounded-2xl text-red-600 hover:bg-red-500/10 hover:text-red-700"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      <span>إلغاء البصمة</span>
-                    </Button>
-                  )}
-                </div>
-              </div>
-
-              {passkeySuccess && (
-                <div className="mt-4 flex items-center gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 text-xs font-bold text-emerald-700">
-                  <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  <span>{passkeySuccess}</span>
-                </div>
-              )}
-
-              {passkeyError && (
-                <div className="mt-4 flex items-center gap-2 rounded-2xl border border-primary/40 bg-primary/10 px-4 py-3 text-xs font-bold text-primary">
-                  <AlertTriangle className="h-4 w-4 shrink-0" />
-                  <span>{passkeyError}</span>
-                </div>
-              )}
-            </div>
-          </section>
         </div>
       </main>
 
