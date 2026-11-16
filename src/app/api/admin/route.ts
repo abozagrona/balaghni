@@ -370,6 +370,7 @@ export async function POST(req: NextRequest) {
       action === "set_status" ||
       action === "factory_reset" ||
       action === "reset_owner_security" ||
+      action === "extend_subscription" ||
       action === "delete_tag"
     ) {
       const res = await adminManageTagLifecycle({
@@ -389,6 +390,10 @@ export async function POST(req: NextRequest) {
             ? body.planType
             : undefined,
         newOwnerPin: body.newOwnerPin,
+        extendDays:
+          typeof body.extendDays === "number"
+            ? body.extendDays
+            : Number(body.extendDays || 0) || undefined,
       });
       const overview = await getExecutiveAdminOverview();
       return NextResponse.json({

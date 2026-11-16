@@ -86,6 +86,7 @@ interface AdminTagRecord {
   tagCode: string;
   status: TagStatus;
   ownerPhone?: string | null;
+  ownerName?: string | null;
   vehicleInfo?: string;
   vehicleBrand: string;
   vehicleModel: string;
@@ -99,6 +100,8 @@ interface AdminTagRecord {
   activationSource?: string | null;
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
+  reportsCount?: number;
+  lastReportAt?: string | null;
 }
 
 interface AdminAuditLog {
@@ -197,9 +200,9 @@ export default function ExecutiveAdminDashboardPage() {
 
   // البحث والفلترة اللحظية في جدول الملصقات
   const [searchQuery, setSearchQuery] = React.useState("");
-  const [statusFilter, setStatusFilter] = React.useState<"ALL" | TagStatus>(
-    "ALL"
-  );
+  const [statusFilter, setStatusFilter] = React.useState<
+    "ALL" | "ACTIVE" | "LOCKED" | "EXPIRING_SOON"
+  >("ALL");
 
   // نافذة تعديل المركبة والباقة
   const [editingTag, setEditingTag] = React.useState<AdminTagRecord | null>(
@@ -212,10 +215,15 @@ export default function ExecutiveAdminDashboardPage() {
     React.useState<AlertChannel>("BOTH");
   const [editPlanType, setEditPlanType] = React.useState<PlanType>("basic");
 
-  // نافذة إعادة تعيين أمان المالك
+  // نافذة فك ربط البصمة (Passkey) الخاصة بالمالك
   const [securityModalTag, setSecurityModalTag] =
     React.useState<AdminTagRecord | null>(null);
-  const [newClientPin, setNewClientPin] = React.useState("");
+
+  // نافذة بطاقة تفاصيل الزبون والاشتراك
+  const [detailsModalTag, setDetailsModalTag] =
+    React.useState<AdminTagRecord | null>(null);
+  const [extendingSubscription, setExtendingSubscription] =
+    React.useState(false);
 
   // نافذة استعراض وتأكيد إعادة ضبط المصنع
   const [factoryResetModalTag, setFactoryResetModalTag] =
@@ -1136,7 +1144,6 @@ export default function ExecutiveAdminDashboardPage() {
         body: JSON.stringify({
           action: "reset_owner_security",
           tagCode: securityModalTag.tagCode,
-          newOwnerPin: newClientPin.trim() || undefined,
           adminId,
           adminName,
           sessionToken: adminSession?.sessionToken,
@@ -1153,15 +1160,62 @@ export default function ExecutiveAdminDashboardPage() {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
         setSecurityModalTag(null);
-        setNewClientPin("");
         showToast(
-          `تمت إعادة تعيين أمان المالك وفك ربط البصمة للملصق (${securityModalTag.tagCode}) ✓`
+          `تم فك ربط البصمة للملصق (${securityModalTag.tagCode}) بنجاح ✓`
         );
       } else {
-        showToast(data.error || "تعذر إعادة تعيين أمان المالك.");
+        showToast(data.error || "تعذر فك ربط البصمة.");
       }
     } catch {
-      showToast("تعذر إعادة تعيين أمان المالك نتيجة خطأ في الاتصال.");
+      showToast("تعذر فك ربط البصمة نتيجة خطأ في الاتصال.");
+    }
+  };
+
+  const handleExtendSubscription = async (
+    tagCode: string,
+    days: 30 | 365
+  ) => {
+    setExtendingSubscription(true);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          action: "extend_subscription",
+          tagCode,
+          extendDays: days,
+          adminId,
+          adminName,
+          sessionToken: adminSession?.sessionToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || data.sessionExpired) {
+        handleAdminLogout(
+          "انتهت جلسة المدير تلقائياً لأسباب أمنية، يرجى تسجيل الدخول مجدداً."
+        );
+        return;
+      }
+      if (res.ok && data.ok) {
+        const nextTags: AdminTagRecord[] = Array.isArray(data.tags)
+          ? data.tags
+          : [];
+        setTags(nextTags);
+        setAuditLogs(data.auditLogs || []);
+        const updatedItem = nextTags.find((item) => item.tagCode === tagCode);
+        if (updatedItem) {
+          setDetailsModalTag(updatedItem);
+        }
+        showToast(
+          `تم تمديد اشتراك الملصق (${tagCode}) لمدة +${days} يوماً بنجاح ✓`
+        );
+      } else {
+        showToast(data.error || "تعذر تمديد الاشتراك.");
+      }
+    } catch {
+      showToast("تعذر تمديد الاشتراك نتيجة خطأ في الاتصال.");
+    } finally {
+      setExtendingSubscription(false);
     }
   };
 
@@ -1631,12 +1685,19 @@ export default function ExecutiveAdminDashboardPage() {
 
   const filteredTags = React.useMemo(() => {
     return tags.filter((t) => {
-      if (statusFilter !== "ALL" && t.status !== statusFilter) return false;
+      if (statusFilter === "EXPIRING_SOON") {
+        if (t.status !== "ACTIVE" || !t.subscriptionExpiresAt) return false;
+        const days = computeCountdownDays(t.subscriptionExpiresAt);
+        if (days === null || days >= 15) return false;
+      } else if (statusFilter !== "ALL" && t.status !== statusFilter) {
+        return false;
+      }
       if (!searchQuery.trim()) return true;
       const q = searchQuery.trim().toLowerCase();
       return (
         t.tagCode.toLowerCase().includes(q) ||
         (t.ownerPhone || "").toLowerCase().includes(q) ||
+        (t.ownerName || "").toLowerCase().includes(q) ||
         (t.city || "").toLowerCase().includes(q) ||
         (t.vehicleInfo || "").toLowerCase().includes(q) ||
         t.status.toLowerCase().includes(q)
@@ -2262,25 +2323,35 @@ export default function ExecutiveAdminDashboardPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="ابحث بكود الملصق، رقم الهاتف، المدينة، نوع السيارة، أو الحالة..."
+                  placeholder="ابحث بكود الملصق، رقم الهاتف، اسم المالك، أو نوع السيارة..."
                   className="h-11 w-full rounded-2xl border border-white/15 bg-[#07090E] pr-10 pl-4 text-xs font-bold text-white placeholder:text-white/35 focus:border-primary focus:outline-none"
                 />
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {(["ALL", "ACTIVE", "LOCKED", "REVOKED"] as const).map((st) => (
+                {(
+                  [
+                    { id: "ALL", label: "الكل" },
+                    { id: "ACTIVE", label: "النشطة (ACTIVE)" },
+                    { id: "LOCKED", label: "غير المفعلة (LOCKED)" },
+                    {
+                      id: "EXPIRING_SOON",
+                      label: "قاربت على الانتهاء (أقل من 15 يوماً)",
+                    },
+                  ] as const
+                ).map((item) => (
                   <button
-                    key={st}
+                    key={item.id}
                     type="button"
-                    onClick={() => setStatusFilter(st)}
+                    onClick={() => setStatusFilter(item.id)}
                     className={cn(
                       "rounded-xl px-3.5 py-2 text-xs font-bold transition",
-                      statusFilter === st
+                      statusFilter === item.id
                         ? "bg-primary text-white"
                         : "border border-white/10 bg-[#07090E] text-white/70 hover:text-white"
                     )}
                   >
-                    {st === "ALL" ? "الكل" : st}
+                    {item.label}
                   </button>
                 ))}
               </div>
@@ -2293,9 +2364,9 @@ export default function ExecutiveAdminDashboardPage() {
                     <tr>
                       <th className="px-4 py-3.5">كود الملصق</th>
                       <th className="px-4 py-3.5">الحالة (تبديل فوري)</th>
-                      <th className="px-4 py-3.5">المركبة والمدينة</th>
+                      <th className="px-4 py-3.5">المالك والمركبة والمدينة</th>
                       <th className="px-4 py-3.5">هاتف المالك</th>
-                      <th className="px-4 py-3.5">قناة التنبيه</th>
+                      <th className="px-4 py-3.5">الباقة والاشتراك</th>
                       <th className="px-4 py-3.5">الأمان</th>
                       <th className="px-4 py-3.5">العمليات الإدارية</th>
                     </tr>
@@ -2316,7 +2387,11 @@ export default function ExecutiveAdminDashboardPage() {
                         </td>
                       </tr>
                     ) : (
-                      filteredTags.map((tag) => (
+                      filteredTags.map((tag) => {
+                        const remainingDays = tag.subscriptionExpiresAt
+                          ? computeCountdownDays(tag.subscriptionExpiresAt)
+                          : null;
+                        return (
                         <tr
                           key={tag.tagCode}
                           className="transition hover:bg-white/[0.02]"
@@ -2329,14 +2404,14 @@ export default function ExecutiveAdminDashboardPage() {
                               >
                                 {tag.tagCode}
                               </span>
-                              <Link
-                                href={`/s/${encodeURIComponent(tag.tagCode)}`}
-                                target="_blank"
-                                title="معاينة صفحة المسح"
-                                className="text-white/40 hover:text-primary"
+                              <button
+                                type="button"
+                                onClick={() => setDetailsModalTag(tag)}
+                                title="بطاقة تفاصيل الزبون والاشتراك"
+                                className="rounded-lg p-1 text-white/55 transition hover:bg-white/10 hover:text-primary"
                               >
-                                <Eye className="h-3.5 w-3.5" />
-                              </Link>
+                                <Eye className="h-4 w-4" />
+                              </button>
                             </div>
                           </td>
 
@@ -2358,7 +2433,7 @@ export default function ExecutiveAdminDashboardPage() {
                                           ? "bg-emerald-500 text-black"
                                           : st === "LOCKED"
                                           ? "bg-amber-500 text-black"
-                                          : "bg-primary text-white"
+                                          : "bg-red-500 text-white"
                                         : "text-white/45 hover:text-white"
                                     )}
                                   >
@@ -2370,10 +2445,13 @@ export default function ExecutiveAdminDashboardPage() {
                           </td>
 
                           <td className="px-4 py-3.5">
-                            <span className="block font-bold text-white">
+                            <span className="block text-xs font-black text-white">
+                              {tag.ownerName || "بدون اسم"}
+                            </span>
+                            <span className="block text-[11px] font-bold text-white/80">
                               {tag.vehicleInfo || "غير مرتبط بمركبة"}
                             </span>
-                            <span className="text-[11px] text-white/55">
+                            <span className="text-[11px] text-white/50">
                               {tag.city || "—"}
                             </span>
                           </td>
@@ -2390,10 +2468,7 @@ export default function ExecutiveAdminDashboardPage() {
                           <td className="px-4 py-3.5">
                             <div className="flex flex-col gap-1">
                               <div className="flex flex-wrap items-center gap-1">
-                                <span className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[11px] font-bold text-white">
-                                  {tag.alertChannel || "BOTH"}
-                                </span>
-                                {(tag.planType || tag.packageType) && (
+                                {(tag.planType || tag.packageType) ? (
                                   <span className="rounded-lg border border-sky-400/25 bg-sky-500/10 px-2 py-0.5 text-[10px] font-bold text-sky-200">
                                     {
                                       getPlanDisplayInfo(
@@ -2406,52 +2481,58 @@ export default function ExecutiveAdminDashboardPage() {
                                       ).packageName
                                     }
                                   </span>
+                                ) : (
+                                  <span className="text-[11px] text-white/45">
+                                    —
+                                  </span>
                                 )}
                                 {tag.activationSource && (
                                   <span className="rounded-lg border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-300">
                                     {tag.activationSource === "online"
                                       ? "أونلاين"
-                                      : tag.activationSource === "cod"
-                                        ? "عند الاستلام"
-                                        : tag.activationSource}
+                                      : tag.activationSource === "vendor_cash"
+                                        ? "نقطة بيع"
+                                        : tag.activationSource === "cod" ||
+                                          tag.activationSource === "cod_delivered"
+                                          ? "عند الاستلام"
+                                          : tag.activationSource === "gift_promo"
+                                            ? "هدية"
+                                            : tag.activationSource}
                                   </span>
                                 )}
                               </div>
-                              {tag.subscriptionExpiresAt && (
-                                <span className="text-[11px] font-bold text-emerald-300">
-                                  متبقي {computeCountdownDays(tag.subscriptionExpiresAt)} يوم
-                                  {" · "}
-                                  <span dir="ltr" className="font-mono text-slate-400">
-                                    {formatSlashDateYmd(tag.subscriptionExpiresAt)}
-                                  </span>
+                              {remainingDays !== null && (
+                                <span
+                                  className={cn(
+                                    "inline-flex w-fit items-center rounded-md border px-2 py-0.5 text-[10px] font-black",
+                                    remainingDays <= 0
+                                      ? "border-red-500/30 bg-red-500/15 text-red-400"
+                                      : remainingDays < 7
+                                      ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
+                                      : "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+                                  )}
+                                >
+                                  {remainingDays <= 0
+                                    ? "منتهي"
+                                    : remainingDays < 7
+                                    ? `باقي أقل من 7 أيام (${remainingDays} يوم)`
+                                    : `باقي ${remainingDays} يوماً`}
                                 </span>
                               )}
                             </div>
                           </td>
 
                           <td className="px-4 py-3.5">
-                            <div className="flex flex-wrap gap-1">
-                              <span
-                                className={cn(
-                                  "rounded-md px-2 py-0.5 text-[10px] font-bold",
-                                  tag.hasSecuritySetup
-                                    ? "bg-emerald-500/15 text-emerald-400"
-                                    : "bg-white/5 text-white/40"
-                                )}
-                              >
-                                PIN: {tag.hasSecuritySetup ? "مفعّل" : "—"}
-                              </span>
-                              <span
-                                className={cn(
-                                  "rounded-md px-2 py-0.5 text-[10px] font-bold",
-                                  tag.hasPasskey
-                                    ? "bg-emerald-500/15 text-emerald-400"
-                                    : "bg-white/5 text-white/40"
-                                )}
-                              >
-                                بصمة: {tag.hasPasskey ? "مفعّلة" : "—"}
-                              </span>
-                            </div>
+                            <span
+                              className={cn(
+                                "inline-block rounded-md px-2.5 py-1 text-[10px] font-bold",
+                                tag.hasPasskey
+                                  ? "bg-emerald-500/15 text-emerald-400"
+                                  : "bg-white/5 text-white/45"
+                              )}
+                            >
+                              {tag.hasPasskey ? "بصمة مفعّلة" : "غير مفعّلة"}
+                            </span>
                           </td>
 
                           <td className="px-4 py-3.5">
@@ -2486,12 +2567,11 @@ export default function ExecutiveAdminDashboardPage() {
                                 <span>تعديل المركبة</span>
                               </button>
 
-                              {/* 2. إعادة تعيين أمان المالك */}
+                              {/* 2. فك ربط البصمة */}
                               <button
                                 type="button"
                                 onClick={() => {
                                   setSecurityModalTag(tag);
-                                  setNewClientPin("");
                                 }}
                                 className="inline-flex items-center gap-1 rounded-xl border border-white/15 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-white hover:border-amber-400"
                               >
@@ -2525,7 +2605,8 @@ export default function ExecutiveAdminDashboardPage() {
                             </div>
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -3120,7 +3201,7 @@ export default function ExecutiveAdminDashboardPage() {
         </div>
       )}
 
-      {/* نافذة إعادة تعيين أمان المالك وفك ربط البصمة */}
+      {/* نافذة فك ربط البصمة (Passkey) الخاصة بالمالك */}
       {securityModalTag && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <form
@@ -3142,26 +3223,9 @@ export default function ExecutiveAdminDashboardPage() {
 
             <p className="text-xs leading-relaxed text-white/70">
               يؤدي هذا الإجراء إلى فك ربط البصمة (Passkey) الخاصة بالعميل في حال
-              فقدان جهازه، مع إمكانية تعيين رمز مرور (PIN من 6 أرقام) جديد له:
+              فقدان جهازه، ليتمكن من تسجيل الدخول عبر رمز التحقق (OTP) وإعادة
+              ربط بصمة جديدة.
             </p>
-
-            <div>
-              <label className="mb-1 block text-xs font-bold text-white/80">
-                رمز PIN جديد للعميل (اختياري - 6 أرقام)
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                dir="ltr"
-                maxLength={6}
-                value={newClientPin}
-                onChange={(e) =>
-                  setNewClientPin(e.target.value.replace(/\D/g, "").slice(0, 6))
-                }
-                placeholder="اتركه فارغاً لتصفير الرمز وفك البصمة فقط"
-                className="h-11 w-full rounded-xl border border-white/15 bg-[#07090E] px-3 font-mono text-xs font-bold text-white"
-              />
-            </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <Button
@@ -3173,12 +3237,304 @@ export default function ExecutiveAdminDashboardPage() {
                 إلغاء
               </Button>
               <Button type="submit" className="rounded-xl">
-                تأكيد إعادة تعيين الأمان
+                تأكيد فك ربط البصمة
               </Button>
             </div>
           </form>
         </div>
       )}
+
+      {/* نافذة بطاقة تفاصيل الزبون والاشتراك */}
+      {detailsModalTag && (() => {
+        const dTag = detailsModalTag;
+        const rawDigits = String(dTag.ownerPhone || "").replace(/\D/g, "");
+        const waPhone = rawDigits.startsWith("0")
+          ? `218${rawDigits.slice(1)}`
+          : rawDigits.startsWith("218")
+          ? rawDigits
+          : rawDigits
+          ? `218${rawDigits}`
+          : "";
+        const hasPlan = Boolean(dTag.planType || dTag.packageType);
+        const resolvedPlan = hasPlan
+          ? resolvePlanType({
+              planType: dTag.planType,
+              packageType: dTag.packageType,
+              activationSource: dTag.activationSource,
+              notificationChannel: dTag.alertChannel,
+            })
+          : null;
+        const planInfo = resolvedPlan ? getPlanDisplayInfo(resolvedPlan) : null;
+        const remainingDays = dTag.subscriptionExpiresAt
+          ? computeCountdownDays(dTag.subscriptionExpiresAt)
+          : null;
+        const sourceLabel =
+          dTag.activationSource === "online"
+            ? "دفع أونلاين"
+            : dTag.activationSource === "vendor_cash"
+            ? "نقطة بيع معتمدة"
+            : dTag.activationSource === "cod" ||
+              dTag.activationSource === "cod_delivered"
+            ? "كاش عند الاستلام"
+            : dTag.activationSource === "gift_promo"
+            ? "هدية شهر مجاني"
+            : dTag.activationSource || "—";
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl border border-white/15 bg-[#12151F] p-6 text-white shadow-2xl space-y-5">
+              {/* رأس البطاقة */}
+              <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-4">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-lg font-black text-white">
+                      بطاقة تفاصيل الزبون والاشتراك
+                    </h3>
+                    <span
+                      dir="ltr"
+                      className="rounded-lg border border-primary/40 bg-primary/15 px-2.5 py-0.5 font-mono text-xs font-black text-white"
+                    >
+                      {dTag.tagCode}
+                    </span>
+                    <span
+                      className={cn(
+                        "rounded-lg px-2.5 py-0.5 font-mono text-[10px] font-black",
+                        dTag.status === "ACTIVE"
+                          ? "bg-emerald-500/20 text-emerald-300"
+                          : dTag.status === "LOCKED"
+                          ? "bg-amber-500/20 text-amber-300"
+                          : "bg-red-500/20 text-red-300"
+                      )}
+                    >
+                      {dTag.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-white/55">
+                    عرض شامل لبيانات المالك، حالة الاشتراك، الإحصائيات، وإجراءات الإدارة السريعة
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDetailsModalTag(null)}
+                  className="rounded-full bg-white/5 p-2 text-white/60 hover:bg-white/10 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* 1. بيانات المالك والمركبة */}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-[#0B0D13] p-4 space-y-2.5">
+                  <p className="text-[11px] font-black text-primary">
+                    بيانات المالك والمركبة
+                  </p>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">الاسم الكامل:</span>
+                      <span className="font-black text-white">
+                        {dTag.ownerName || "بدون اسم"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">رقم الهاتف:</span>
+                      <div className="flex items-center gap-2">
+                        <span dir="ltr" className="font-mono font-bold text-white">
+                          {dTag.ownerPhone || "—"}
+                        </span>
+                        {waPhone && (
+                          <a
+                            href={`https://wa.me/${waPhone}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/30"
+                          >
+                            واتساب
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">نوع المركبة:</span>
+                      <span className="font-bold text-white">
+                        {dTag.vehicleInfo || "غير مرتبط بمركبة"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">المدينة:</span>
+                      <span className="font-bold text-white">
+                        {dTag.city || "—"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. بيانات الباقة والاشتراك */}
+                <div className="rounded-2xl border border-white/10 bg-[#0B0D13] p-4 space-y-2.5">
+                  <p className="text-[11px] font-black text-sky-400">
+                    بيانات الباقة والاشتراك
+                  </p>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">نوع الباقة:</span>
+                      <span className="font-black text-white">
+                        {planInfo ? planInfo.packageName : "غير مفعّلة"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">مصدر التفعيل:</span>
+                      <span className="font-bold text-white">{sourceLabel}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">تاريخ التفعيل:</span>
+                      <span dir="ltr" className="font-mono font-bold text-white/90">
+                        {dTag.subscriptionStartsAt || dTag.activatedAt
+                          ? formatSlashDateYmd(
+                              dTag.subscriptionStartsAt || dTag.activatedAt || ""
+                            )
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">تاريخ الانتهاء:</span>
+                      <span dir="ltr" className="font-mono font-bold text-white/90">
+                        {dTag.subscriptionExpiresAt
+                          ? formatSlashDateYmd(dTag.subscriptionExpiresAt)
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <span className="text-white/55">المدة المتبقية:</span>
+                      {remainingDays === null ? (
+                        <span className="text-white/50">—</span>
+                      ) : remainingDays <= 0 ? (
+                        <span className="rounded-lg border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-[11px] font-black text-red-400">
+                          منتهي
+                        </span>
+                      ) : remainingDays < 7 ? (
+                        <span className="rounded-lg border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[11px] font-black text-amber-300">
+                          باقي {remainingDays} أيام (أقل من 7 أيام)
+                        </span>
+                      ) : (
+                        <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-black text-emerald-300">
+                          باقي {remainingDays} يوماً
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. إحصائيات الملصق والأمان */}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-white/10 bg-[#0B0D13] p-3.5">
+                  <span className="block text-[11px] text-white/55">
+                    إجمالي البلاغات المستلمة
+                  </span>
+                  <span className="mt-1 block font-mono text-xl font-black text-white">
+                    {dTag.reportsCount ?? 0}
+                  </span>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-[#0B0D13] p-3.5">
+                  <span className="block text-[11px] text-white/55">
+                    تاريخ آخر بلاغ
+                  </span>
+                  <span
+                    dir="ltr"
+                    className="mt-1 block font-mono text-sm font-bold text-white/90"
+                  >
+                    {dTag.lastReportAt
+                      ? formatSlashDateYmd(dTag.lastReportAt)
+                      : "لا توجد بلاغات"}
+                  </span>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-[#0B0D13] p-3.5">
+                  <span className="block text-[11px] text-white/55">
+                    حالة تفعيل البصمة (Passkey)
+                  </span>
+                  <span
+                    className={cn(
+                      "mt-1 inline-block rounded-lg px-2.5 py-0.5 text-xs font-black",
+                      dTag.hasPasskey
+                        ? "bg-emerald-500/15 text-emerald-400"
+                        : "bg-white/5 text-white/50"
+                    )}
+                  >
+                    {dTag.hasPasskey ? "بصمة مفعّلة" : "غير مفعّلة"}
+                  </span>
+                </div>
+              </div>
+
+              {/* 4. أزرار إدارية سريعة */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={extendingSubscription}
+                    onClick={() => handleExtendSubscription(dTag.tagCode, 30)}
+                    className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-500"
+                  >
+                    {extendingSubscription
+                      ? "جاري التمديد..."
+                      : "تمديد الاشتراك (+30 يوماً)"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={extendingSubscription}
+                    onClick={() => handleExtendSubscription(dTag.tagCode, 365)}
+                    className="rounded-xl bg-sky-600 text-white hover:bg-sky-500"
+                  >
+                    {extendingSubscription
+                      ? "جاري التمديد..."
+                      : "تمديد الاشتراك (+365 يوماً)"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const currentPlan = resolvePlanType({
+                        planType: dTag.planType,
+                        packageType: dTag.packageType,
+                        activationSource: dTag.activationSource,
+                        notificationChannel: dTag.alertChannel,
+                      });
+                      setDetailsModalTag(null);
+                      setEditingTag(dTag);
+                      setEditVehicleInfo(dTag.vehicleInfo || "");
+                      setEditCity(dTag.city || "طرابلس");
+                      setEditOwnerPhone(dTag.ownerPhone || "");
+                      setEditPlanType(currentPlan);
+                      setEditAlertChannel(
+                        dTag.alertChannel ||
+                          (currentPlan === "basic"
+                            ? "WHATSAPP"
+                            : currentPlan === "gift"
+                            ? "SMS"
+                            : "BOTH")
+                      );
+                    }}
+                    className="rounded-xl border-white/20 bg-white/5 text-white hover:border-primary"
+                  >
+                    <Edit3 className="h-3.5 w-3.5 text-primary" />
+                    <span>تعديل بيانات المركبة</span>
+                  </Button>
+                </div>
+
+                <Link
+                  href={`/s/${encodeURIComponent(dTag.tagCode)}`}
+                  target="_blank"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-bold text-white/80 hover:border-primary hover:text-white"
+                >
+                  <Eye className="h-3.5 w-3.5 text-primary" />
+                  <span>معاينة صفحة المسح</span>
+                </Link>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* نافذة تأكيد إعادة ضبط المصنع الشاملة للملصق */}
       {factoryResetModalTag && (
@@ -3227,7 +3583,7 @@ export default function ExecutiveAdminDashboardPage() {
                   </strong>
                   ) نهائياً من سجلات الملصق.
                 </li>
-                <li>إلغاء وإتلاف كافة إعدادات الأمان (رمز PIN وبصمة المالك Passkey).</li>
+                <li>إلغاء وإتلاف كافة إعدادات الأمان (بصمة المالك Passkey).</li>
                 <li>حذف ومسح كافة البلاغات والتنبيهات المرتبطة بهذا الملصق من قاعدة البيانات.</li>
                 <li>
                   إرجاع حالة الملصق إلى{" "}

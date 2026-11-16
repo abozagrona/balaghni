@@ -81,6 +81,7 @@ export interface VehicleTagRecord {
   status: TagStatus;
   type: "car" | "generic";
   ownerPhone?: string | null;
+  ownerName?: string | null;
   vehicleInfo?: string;
   vehicleBrand: string;
   vehicleModel: string;
@@ -97,6 +98,8 @@ export interface VehicleTagRecord {
   activationSource?: string | null;
   subscriptionStartsAt?: string | null;
   subscriptionExpiresAt?: string | null;
+  reportsCount?: number;
+  lastReportAt?: string | null;
 }
 
 interface StoredTagRow {
@@ -249,6 +252,7 @@ function mapRowToRecord(row: StoredTagRow): VehicleTagRecord {
     status,
     type: "car",
     ownerPhone: row.owner_phone || null,
+    ownerName: row.owner_name || null,
     vehicleInfo: resolvedVehicleInfo,
     vehicleBrand:
       row.vehicle_brand ||
@@ -3021,7 +3025,7 @@ export async function getExecutiveAdminOverview(): Promise<{
     const { data: stickerRows, error: stickerErr } = await supabaseAdmin
       .from("stickers")
       .select(
-        "code,status,plan_type,package_type,activation_source,subscription_starts_at,subscription_expires_at"
+        "code,status,owner_name,plan_type,package_type,activation_source,subscription_starts_at,subscription_expires_at"
       );
     if (!stickerErr && Array.isArray(stickerRows)) {
       for (const s of stickerRows as Array<Record<string, unknown>>) {
@@ -3030,6 +3034,9 @@ export async function getExecutiveAdminOverview(): Promise<{
         if (code && localMap[code] && stickerStatus !== "unactivated") {
           localMap[code] = {
             ...localMap[code],
+            owner_name: s.owner_name
+              ? String(s.owner_name)
+              : localMap[code].owner_name,
             plan_type: s.plan_type
               ? String(s.plan_type)
               : localMap[code].plan_type,
@@ -3053,11 +3060,86 @@ export async function getExecutiveAdminOverview(): Promise<{
     // ignore
   }
 
-  const tags = Object.values(localMap)
-    .filter((r) => !LEGACY_TEST_CODES.has(r.tag_code.toUpperCase()))
-    .map(mapRowToRecord);
   const adminStore = loadAdminStore();
   const dashStore = loadDashboardStore();
+
+  // تجميع إحصائيات البلاغات (العدد الإجمالي وتاريخ آخر بلاغ) لكل ملصق
+  const reportStatsMap = new Map<
+    string,
+    { count: number; lastReportAt: string | null }
+  >();
+  for (const [code, list] of Object.entries(dashStore.reports || {})) {
+    const normCode = code.toUpperCase();
+    const sorted = [...list].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    reportStatsMap.set(normCode, {
+      count: sorted.length,
+      lastReportAt: sorted[0]?.createdAt || null,
+    });
+  }
+
+  try {
+    const { data: remoteReports, error: repErr } = await supabaseAdmin
+      .from("reports")
+      .select("tag_code,tag_id,created_at")
+      .order("created_at", { ascending: false })
+      .limit(2000);
+    if (!repErr && Array.isArray(remoteReports)) {
+      const remoteByCode = new Map<
+        string,
+        { count: number; lastReportAt: string | null }
+      >();
+      for (const r of remoteReports as Array<Record<string, unknown>>) {
+        const code = String(r.tag_code || r.tag_id || "")
+          .trim()
+          .toUpperCase();
+        if (!code) continue;
+        const createdAt = r.created_at ? String(r.created_at) : null;
+        const prev = remoteByCode.get(code) || {
+          count: 0,
+          lastReportAt: null,
+        };
+        const latest =
+          createdAt &&
+          (!prev.lastReportAt ||
+            new Date(createdAt).getTime() >
+              new Date(prev.lastReportAt).getTime())
+            ? createdAt
+            : prev.lastReportAt;
+        remoteByCode.set(code, { count: prev.count + 1, lastReportAt: latest });
+      }
+      for (const [code, stat] of remoteByCode.entries()) {
+        const local = reportStatsMap.get(code);
+        const latest =
+          local?.lastReportAt &&
+          (!stat.lastReportAt ||
+            new Date(local.lastReportAt).getTime() >
+              new Date(stat.lastReportAt).getTime())
+            ? local.lastReportAt
+            : stat.lastReportAt;
+        reportStatsMap.set(code, {
+          count: Math.max(stat.count, local?.count || 0),
+          lastReportAt: latest,
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const tags = Object.values(localMap)
+    .filter((r) => !LEGACY_TEST_CODES.has(r.tag_code.toUpperCase()))
+    .map((r) => {
+      const rec = mapRowToRecord(r);
+      const stat = reportStatsMap.get(rec.tagCode.toUpperCase());
+      return {
+        ...rec,
+        reportsCount: stat?.count ?? 0,
+        lastReportAt: stat?.lastReportAt ?? null,
+      };
+    });
 
   let auditLogs: AdminAuditLogRecord[] = [...adminStore.auditLogs];
   try {
@@ -3158,6 +3240,7 @@ export async function adminManageTagLifecycle(params: {
     | "set_status"
     | "factory_reset"
     | "reset_owner_security"
+    | "extend_subscription"
     | "delete_tag";
   tagCode: string;
   adminId?: string | null;
@@ -3169,6 +3252,7 @@ export async function adminManageTagLifecycle(params: {
   alertChannel?: AlertChannel;
   planType?: "basic" | "nabbihni" | "gift";
   newOwnerPin?: string;
+  extendDays?: number;
 }): Promise<{ ok: boolean; tag?: VehicleTagRecord; error?: string }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
   const localMap = loadSyncedStore();
@@ -3501,6 +3585,87 @@ export async function adminManageTagLifecycle(params: {
       actionType: "TAG_FACTORY_RESET",
       actionDetails:
         "ضبط مصنع كامل: مسح ربط السيارة، اسم وهاتف المالك، المدينة، الباقة وتواريخها، رمز PIN، بصمة Passkey، وحذف البلاغات، وإرجاع الملصق لحالة LOCKED كأنه خرج من المطبعة",
+      tagCode: normalizedCode,
+    });
+
+    return { ok: true, tag: mapRowToRecord(updated) };
+  }
+
+  if (params.action === "extend_subscription") {
+    const days =
+      typeof params.extendDays === "number" && params.extendDays > 0
+        ? Math.round(params.extendDays)
+        : 30;
+    const now = new Date();
+    const currentExpiry = targetRow.subscription_expires_at
+      ? new Date(targetRow.subscription_expires_at)
+      : null;
+    const baseDate =
+      currentExpiry &&
+      !Number.isNaN(currentExpiry.getTime()) &&
+      currentExpiry.getTime() > now.getTime()
+        ? currentExpiry
+        : now;
+    const newExpiresAt = new Date(
+      baseDate.getTime() + days * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const startsAt =
+      targetRow.subscription_starts_at ||
+      targetRow.activated_at ||
+      now.toISOString();
+
+    const updated: StoredTagRow = {
+      ...targetRow,
+      subscription_starts_at: startsAt,
+      subscription_expires_at: newExpiresAt,
+      last_sub_reminder_stage: null,
+      last_sub_reminder_sent_at: null,
+    } as StoredTagRow;
+
+    try {
+      await supabaseAdmin
+        .from("tags")
+        .update({
+          subscription_starts_at: startsAt,
+          subscription_expires_at: newExpiresAt,
+          last_sub_reminder_stage: null,
+          last_sub_reminder_sent_at: null,
+        })
+        .eq("tag_code", normalizedCode);
+    } catch {
+      // fallback without reminder columns
+      try {
+        await supabaseAdmin
+          .from("tags")
+          .update({
+            subscription_starts_at: startsAt,
+            subscription_expires_at: newExpiresAt,
+          })
+          .eq("tag_code", normalizedCode);
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      await supabaseAdmin
+        .from("stickers")
+        .update({
+          subscription_starts_at: startsAt,
+          subscription_expires_at: newExpiresAt,
+        })
+        .eq("code", normalizedCode);
+    } catch {
+      // ignore
+    }
+
+    saveToSyncedStore(updated);
+
+    await recordAdminAuditLog({
+      adminId: params.adminId,
+      adminName: params.adminName,
+      actionType: "TAG_SUBSCRIPTION_EXTENDED",
+      actionDetails: `تمديد اشتراك الملصق (+${days} يوماً) حتى ${newExpiresAt.slice(0, 10)}`,
       tagCode: normalizedCode,
     });
 
