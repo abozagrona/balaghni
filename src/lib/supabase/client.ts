@@ -2967,25 +2967,25 @@ export async function sendZeroLeakNotification(params: {
 
     const reportIdStr = String(addedReport.report?.id || "");
     const baseAppUrl = (
-      process.env.NEXT_PUBLIC_SITE_URL || "https://www.balaghni.ly"
-    ).replace(/\/+$/, "");
-    const replySig = reportIdStr
-      ? createReportReplySignature(reportIdStr, normalizedCode)
+      process.env.NEXT_PUBLIC_SITE_URL || "https://balaghni.ly"
+    )
+      .replace(/\/+$/, "")
+      .replace("://www.balaghni.ly", "://balaghni.ly");
+
+    const shortAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const randomBytes = crypto.randomBytes(6);
+    const shortCode = reportIdStr
+      ? Array.from(randomBytes)
+          .map((b) => shortAlphabet[b % shortAlphabet.length])
+          .join("")
       : "";
-    const quickReplyUrl =
-      reportIdStr && replySig
-        ? `${baseAppUrl}/api/notify/reply?reportId=${encodeURIComponent(
-            reportIdStr
-          )}&tagCode=${encodeURIComponent(normalizedCode)}&sig=${encodeURIComponent(
-            replySig
-          )}&reply=2min`
-        : null;
+    const quickReplyUrl = shortCode ? `${baseAppUrl}/r/${shortCode}` : null;
 
     const whatsappLines = [
       `(منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}): ${var2}، ${var3}، رقم المبلّغ (${formattedCaller}) للتواصل السريع`,
       ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
       ...(quickReplyUrl
-        ? [`✅ للرد السريع (أنا قادم خلال دقيقتين): ${quickReplyUrl}`]
+        ? [`✅ للرد السريع (أنا قادم الآن): ${quickReplyUrl}`]
         : []),
     ];
 
@@ -3008,32 +3008,61 @@ export async function sendZeroLeakNotification(params: {
       deliveredChannels = "WHATSAPP";
       if (reportIdStr && !reportIdStr.startsWith("rep_")) {
         try {
-          await supabaseAdmin
+          const { error: extErr } = await supabaseAdmin
             .from("reports")
-            .update({ reason_badge: "واتساب: تم الإرسال" })
+            .update({
+              reason_badge: "واتساب: تم الإرسال",
+              whatsapp_message_id: waResult.idMessage || null,
+              short_code: shortCode || null,
+            })
             .eq("id", reportIdStr);
+          if (extErr) {
+            await supabaseAdmin
+              .from("reports")
+              .update({ reason_badge: "واتساب: تم الإرسال" })
+              .eq("id", reportIdStr);
+          }
         } catch {
           // ignore
         }
       }
       try {
-        await supabaseAdmin.from("admin_audit_logs").insert({
-          admin_name: "منظومة الإشعارات",
-          action_type: "REPORT_DISPATCH",
-          target_item: reportIdStr || normalizedCode,
-          details: JSON.stringify({
-            reportId: reportIdStr,
-            tagCode: normalizedCode,
-            waMessageId: waResult.idMessage || null,
-            smsFallbackEnabled,
-            var1,
-            var2,
-            var3,
-            formattedCaller,
-            createdAt: new Date().toISOString(),
-          }),
-          created_at: new Date().toISOString(),
-        });
+        const nowIso = new Date().toISOString();
+        await supabaseAdmin.from("admin_audit_logs").insert([
+          {
+            admin_name: "منظومة الإشعارات",
+            action_type: "REPORT_DISPATCH",
+            target_item: reportIdStr || normalizedCode,
+            details: JSON.stringify({
+              reportId: reportIdStr,
+              tagCode: normalizedCode,
+              waMessageId: waResult.idMessage || null,
+              shortCode: shortCode || null,
+              smsFallbackEnabled,
+              var1,
+              var2,
+              var3,
+              formattedCaller,
+              createdAt: nowIso,
+            }),
+            created_at: nowIso,
+          },
+          ...(shortCode
+            ? [
+                {
+                  admin_name: "منظومة الإشعارات",
+                  action_type: "REPORT_SHORT_LINK",
+                  target_item: shortCode,
+                  details: JSON.stringify({
+                    reportId: reportIdStr,
+                    tagCode: normalizedCode,
+                    waMessageId: waResult.idMessage || null,
+                  }),
+                  created_at: nowIso,
+                },
+              ]
+            : []),
+        ]);
       } catch {
         // ignore
       }

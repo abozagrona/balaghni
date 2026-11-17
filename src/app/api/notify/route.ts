@@ -352,7 +352,7 @@ export async function GET(req: NextRequest) {
     });
   } catch {
     return NextResponse.json(
-      { ok: true, deliveryStatus: "delivered", ownerReply: null, isSmsFallback: false },
+      { ok: true, deliveryStatus: "sent", ownerReply: null, isSmsFallback: false },
       { status: 200 }
     );
   }

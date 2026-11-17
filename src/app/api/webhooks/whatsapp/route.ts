@@ -278,6 +278,69 @@ async function findLatestReportForPhone(
   return { report: null, tagCode, vehicleLabel: vehicleLabel || tagCode || "مركبتك" };
 }
 
+async function findReportByMessageId(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  messageId: string
+): Promise<{
+  report: Record<string, any> | null;
+  tagCode: string | null;
+  vehicleLabel: string;
+}> {
+  if (!messageId) {
+    return { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+  }
+
+  try {
+    const { data: directRows } = await supabase
+      .from("reports")
+      .select("*")
+      .eq("whatsapp_message_id", messageId)
+      .limit(1);
+    if (Array.isArray(directRows) && directRows.length > 0) {
+      const r = directRows[0];
+      const tc = String(r.tag_code || "").toUpperCase();
+      return { report: r, tagCode: tc || null, vehicleLabel: tc || "مركبتك" };
+    }
+  } catch {
+    // column whatsapp_message_id may not be migrated yet; fallback to audit logs
+  }
+
+  try {
+    const { data: logs } = await supabase
+      .from("admin_audit_logs")
+      .select("target_item, details")
+      .eq("action_type", "REPORT_DISPATCH")
+      .ilike("details", `%${messageId}%`)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const logRow = Array.isArray(logs) ? logs[0] : null;
+    if (logRow?.details) {
+      const parsed = JSON.parse(String(logRow.details));
+      const reportId = String(parsed.reportId || logRow.target_item || "").trim();
+      const tc = String(parsed.tagCode || "").toUpperCase();
+      if (reportId && !reportId.startsWith("rep_")) {
+        const { data: rep } = await supabase
+          .from("reports")
+          .select("*")
+          .eq("id", reportId)
+          .maybeSingle();
+        if (rep) {
+          return {
+            report: rep,
+            tagCode: tc || String(rep.tag_code || "").toUpperCase() || null,
+            vehicleLabel: String(parsed.var1 || tc || "مركبتك"),
+          };
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text().catch(() => "");
@@ -299,9 +362,14 @@ export async function POST(req: NextRequest) {
     for (const st of statuses) {
       console.info("[WhatsApp Webhook] تحديث حالة الرسالة:", st);
 
-      const { report, tagCode, vehicleLabel } = st.recipientPhone
-        ? await findLatestReportForPhone(supabase, st.recipientPhone)
+      let matched = st.messageId
+        ? await findReportByMessageId(supabase, st.messageId)
         : { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+
+      if (!matched.report && st.recipientPhone) {
+        matched = await findLatestReportForPhone(supabase, st.recipientPhone);
+      }
+      const { report, tagCode, vehicleLabel } = matched;
 
       const statusBadgeMap: Record<string, string> = {
         sent: "واتساب: تم الإرسال",

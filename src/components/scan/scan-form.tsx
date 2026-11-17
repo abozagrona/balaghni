@@ -141,6 +141,10 @@ export function ScanForm({
   const [arrivalCountdown, setArrivalCountdown] = React.useState<number | null>(
     null
   );
+  const [reminderStage, setReminderStage] = React.useState<0 | 1 | 2>(0);
+  const [isSendingReminder, setIsSendingReminder] =
+    React.useState<boolean>(false);
+  const [reminderError, setReminderError] = React.useState<string | null>(null);
 
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [moderationState, setModerationState] =
@@ -219,7 +223,7 @@ export function ScanForm({
         if (next.ownerReply) {
           setOwnerReply((prev) => {
             if (!prev) {
-              setArrivalCountdown(120);
+              setArrivalCountdown(300);
             }
             return next.ownerReply ?? null;
           });
@@ -274,14 +278,77 @@ export function ScanForm({
     };
   }, [isSuccess, tagCode, reportId]);
 
-  // العداد التنازلي الحقيقي لمدة دقيقتين عند استجابة صاحب السيارة
+  // استعادة حالة القفل النهائي في الجلسة إن وجدت
   React.useEffect(() => {
-    if (arrivalCountdown === null || arrivalCountdown <= 0) return;
+    try {
+      const lockKey = `balaghni_report_lock_${tagCode.trim().toUpperCase()}`;
+      if (window.sessionStorage.getItem(lockKey) === "locked") {
+        setReminderStage(2);
+      }
+    } catch {
+      // ignore storage access issues
+    }
+  }, [tagCode]);
+
+  // العداد التنازلي الحقيقي (5 دقائق = 300 ثانية) وقفل الجلسة بعد انتهاء التمديد الثاني
+  React.useEffect(() => {
+    if (arrivalCountdown === null) return;
+    if (arrivalCountdown <= 0) {
+      if (reminderStage === 1) {
+        setReminderStage(2);
+        try {
+          const lockKey = `balaghni_report_lock_${tagCode.trim().toUpperCase()}`;
+          window.sessionStorage.setItem(lockKey, "locked");
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
     const timer = window.setInterval(() => {
       setArrivalCountdown((prev) => (prev && prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [arrivalCountdown]);
+  }, [arrivalCountdown, reminderStage, tagCode]);
+
+  const handleRequestReminder = async () => {
+    if (isSendingReminder) return;
+    if (reminderStage !== 0) {
+      setReminderStage(2);
+      return;
+    }
+
+    setIsSendingReminder(true);
+    setReminderError(null);
+    try {
+      const res = await fetch("/api/notify/remind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tagCode, reportId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 429 || data.locked) {
+        setReminderStage(2);
+        try {
+          const lockKey = `balaghni_report_lock_${tagCode.trim().toUpperCase()}`;
+          window.sessionStorage.setItem(lockKey, "locked");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      if (!res.ok || !data.ok) {
+        setReminderError(data.error || "تعذر إرسال التنبيه التذكيري حالياً.");
+        return;
+      }
+      setReminderStage(1);
+      setArrivalCountdown(300);
+    } catch {
+      setReminderError("حدث خطأ في الاتصال. حاول مرة أخرى.");
+    } finally {
+      setIsSendingReminder(false);
+    }
+  };
 
   // التحكم في نوافذ <dialog>
   React.useEffect(() => {
@@ -336,6 +403,12 @@ export function ScanForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSending) return;
+    if (reminderStage === 2) {
+      setErrorMessage(
+        "ملاحظة: يرجى التواصل مع خدمة العملاء إذا لم توجد استجابة من صاحب السيارة، حيث انتهت مهلة الانتظار ولا يمكن إرسال تنبيهات إضافية."
+      );
+      return;
+    }
 
     const fullLibyaPhone = senderPhone.trim()
       ? formatFullLibyaE164(senderPhone)
@@ -608,19 +681,21 @@ export function ScanForm({
                         </p>
                       </div>
 
-                      {arrivalCountdown !== null && (
+                      {arrivalCountdown !== null && reminderStage < 2 && (
                         <div className="w-full rounded-2xl border border-emerald-500/40 bg-emerald-600 px-4 py-3 text-white shadow-md">
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex items-center gap-2">
                               <Clock className="h-5 w-5 animate-pulse text-emerald-100" />
                               <div>
                                 <p className="text-xs font-black">
-                                  صاحب السيارة في طريقه إليك الآن!
+                                  {reminderStage === 1
+                                    ? "تم إرسال التنبيه التذكيري (تمديد 5 دقائق أخيرة)"
+                                    : "صاحب السيارة في طريقه إليك الآن!"}
                                 </p>
                                 <p className="text-[11px] text-emerald-100">
                                   {arrivalCountdown > 0
                                     ? "الوقت المتبقي المتوقع للوصول"
-                                    : "من المفترض وصول صاحب السيارة الآن"}
+                                    : "انتهت المهلة ولم يصل صاحب السيارة بعد"}
                                 </p>
                               </div>
                             </div>
@@ -631,6 +706,55 @@ export function ScanForm({
                               {mins}:{secs}
                             </span>
                           </div>
+                        </div>
+                      )}
+
+                      {arrivalCountdown === 0 && reminderStage === 0 && (
+                        <div className="w-full space-y-2">
+                          <button
+                            type="button"
+                            onClick={handleRequestReminder}
+                            disabled={isSendingReminder}
+                            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 text-xs font-black text-slate-950 shadow-md transition hover:bg-amber-400 disabled:opacity-60"
+                          >
+                            {isSendingReminder ? (
+                              <>
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                                جارٍ إرسال التنبيه التذكيري...
+                              </>
+                            ) : (
+                              <>
+                                <BellRing className="h-4 w-4" />
+                                طلب تنبيه تذكيري (تمديد 5 دقائق أخيرة)
+                              </>
+                            )}
+                          </button>
+                          {reminderError && (
+                            <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
+                              {reminderError}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {reminderStage === 2 && (
+                        <div className="w-full space-y-3 rounded-2xl border border-amber-500/40 bg-amber-50 p-4 text-slate-900 shadow-md dark:bg-amber-950/50 dark:text-amber-50">
+                          <p className="text-xs font-bold leading-relaxed">
+                            ملاحظة: يرجى التواصل مع خدمة العملاء إذا لم توجد استجابة من صاحب السيارة، حيث انتهت مهلة الانتظار ولا يمكن إرسال تنبيهات إضافية.
+                          </p>
+                          <a
+                            href={`https://wa.me/${(
+                              process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "218910000000"
+                            ).replace(/[^\d]/g, "")}?text=${encodeURIComponent(
+                              `مرحباً خدمة عملاء بَلِّغْنِي، انتهت مهلة الانتظار (10 دقائق) ولم يستجب صاحب المركبة للملصق (${tagCode}).`
+                            )}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-sm transition hover:bg-[#1fb857]"
+                          >
+                            <MessageCircle className="h-4 w-4" />
+                            التواصل مع خدمة العملاء
+                          </a>
                         </div>
                       )}
                     </div>
