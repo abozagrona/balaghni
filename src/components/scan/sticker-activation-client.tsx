@@ -18,6 +18,23 @@ import { PACKAGES, type PackageType } from "@/lib/packages";
 import { cn, formatFullLibyaE164 } from "@/lib/utils";
 import { saveOwnerSession } from "@/lib/auth-session";
 
+const LIBYA_CITIES = [
+  "طرابلس",
+  "بنغازي",
+  "مصراتة",
+  "الزاوية",
+  "زليتن",
+  "البيضاء",
+  "طبرق",
+  "سبها",
+  "الخمس",
+  "صبراتة",
+  "غريان",
+  "درنة",
+  "سرت",
+  "أجدابيا",
+];
+
 interface StickerActivationClientProps {
   code: string;
   initialMode: "unactivated" | "gift_ready" | "prepaid_ready" | "expired";
@@ -34,6 +51,8 @@ export function StickerActivationClient({
   const [phoneDigits, setPhoneDigits] = React.useState("");
   const [ownerName, setOwnerName] = React.useState("");
   const [vehicleInfo, setVehicleInfo] = React.useState("");
+  const [vehicleColor, setVehicleColor] = React.useState("");
+  const [city, setCity] = React.useState("طرابلس");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [unassignedOrderId, setUnassignedOrderId] = React.useState<string | null>(
@@ -57,6 +76,13 @@ export function StickerActivationClient({
     if (!fullPhone) {
       setError("يرجى إدخال رقم هاتف ليبي صحيح (091 / 092 / 093 / 094 / 095).");
       return;
+    }
+
+    if (mode === "prepaid_ready") {
+      if (!ownerName.trim() || !vehicleInfo.trim() || !vehicleColor.trim() || !city.trim()) {
+        setError("يرجى تعبئة اسم المالك، نوع وموديل السيارة، لون السيارة، والمدينة لإتمام الربط.");
+        return;
+      }
     }
 
     setPhoneForOtp(fullPhone);
@@ -88,8 +114,10 @@ export function StickerActivationClient({
             packageType: selectedPkg,
             phone: finalPhone,
             otpProofToken: otpProofToken || "",
-            ownerName,
-            vehicleInfo,
+            ownerName: ownerName.trim(),
+            vehicleInfo: vehicleInfo.trim(),
+            vehicleColor: vehicleColor.trim(),
+            city: city.trim(),
             allowExpiredRenewal: mode === "expired",
           }),
         }
@@ -110,8 +138,8 @@ export function StickerActivationClient({
 
       saveOwnerSession({
         tagCode: code,
-        vehicleInfo: vehicleInfo.trim() || "مركبة مفعلة",
-        city: "طرابلس",
+        vehicleInfo: [vehicleInfo.trim(), vehicleColor.trim()].filter(Boolean).join(" - ") || "مركبة مفعلة",
+        city: city.trim() || "طرابلس",
         ownerPhone: finalPhone,
         activatedAt: new Date().toISOString(),
       });
@@ -290,10 +318,11 @@ export function StickerActivationClient({
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs font-bold text-foreground">
-              الاسم (اختياري)
+              اسم المالك {mode === "prepaid_ready" ? "*" : "(اختياري)"}
             </label>
             <input
               type="text"
+              required={mode === "prepaid_ready"}
               value={ownerName}
               onChange={(e) => setOwnerName(e.target.value)}
               placeholder="محمد العلي"
@@ -302,15 +331,45 @@ export function StickerActivationClient({
           </div>
           <div>
             <label className="mb-1 block text-xs font-bold text-foreground">
-              نوع السيارة (اختياري)
+              نوع وموديل السيارة {mode === "prepaid_ready" ? "*" : "(اختياري)"}
             </label>
             <input
               type="text"
+              required={mode === "prepaid_ready"}
               value={vehicleInfo}
               onChange={(e) => setVehicleInfo(e.target.value)}
-              placeholder="كيا اوتيما بيضاء"
+              placeholder="مثال: كيا اوبتيما 2019"
               className="w-full rounded-xl border border-border bg-white px-3 py-2 text-sm outline-none focus:border-primary"
             />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-bold text-foreground">
+              لون السيارة {mode === "prepaid_ready" ? "*" : "(اختياري)"}
+            </label>
+            <input
+              type="text"
+              required={mode === "prepaid_ready"}
+              value={vehicleColor}
+              onChange={(e) => setVehicleColor(e.target.value)}
+              placeholder="مثال: أبيض لؤلؤي"
+              className="w-full rounded-xl border border-border bg-white px-3 py-2 text-sm outline-none focus:border-primary"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-bold text-foreground">
+              المدينة {mode === "prepaid_ready" ? "*" : "(اختياري)"}
+            </label>
+            <select
+              value={city}
+              onChange={(e) => setCity(e.target.value)}
+              className="w-full rounded-xl border border-border bg-white px-3 py-2 text-sm font-bold outline-none focus:border-primary"
+            >
+              {LIBYA_CITIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 

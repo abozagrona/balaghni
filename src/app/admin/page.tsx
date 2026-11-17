@@ -102,6 +102,13 @@ interface AdminTagRecord {
   subscriptionExpiresAt?: string | null;
   isCodReserved?: boolean;
   isGiftExpired?: boolean;
+  vehicleColor?: string;
+  buyerName?: string | null;
+  buyerPhone?: string | null;
+  deliveryCity?: string | null;
+  deliveryAddress?: string | null;
+  orderId?: string | null;
+  purchaseMethod?: string | null;
   reportsCount?: number;
   lastReportAt?: string | null;
 }
@@ -2542,8 +2549,9 @@ export default function ExecutiveAdminDashboardPage() {
                     <tr>
                       <th className="px-4 py-3.5">كود الملصق</th>
                       <th className="px-4 py-3.5">الحالة (تبديل فوري)</th>
-                      <th className="px-4 py-3.5">المالك والمركبة والمدينة</th>
+                      <th className="px-4 py-3.5">بيانات المالك والمركبة</th>
                       <th className="px-4 py-3.5">هاتف المالك</th>
+                      <th className="px-4 py-3.5">بيانات الشراء والتوصيل</th>
                       <th className="px-4 py-3.5">الباقة والاشتراك</th>
                       <th className="px-4 py-3.5">الأمان</th>
                       <th className="px-4 py-3.5">العمليات الإدارية</th>
@@ -2552,13 +2560,13 @@ export default function ExecutiveAdminDashboardPage() {
                   <tbody className="divide-y divide-white/10">
                     {loadingData ? (
                       <tr>
-                        <td colSpan={7} className="py-10 text-center text-white/60">
+                        <td colSpan={8} className="py-10 text-center text-white/60">
                           جاري تحميل الملصقات...
                         </td>
                       </tr>
                     ) : filteredTags.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-10 text-center text-white/60">
+                        <td colSpan={8} className="py-10 text-center text-white/60">
                           {tags.length === 0
                             ? "لا توجد ملصقات مسجلة حالياً"
                             : "لا توجد ملصقات مطابقة للبحث."}
@@ -2635,15 +2643,24 @@ export default function ExecutiveAdminDashboardPage() {
                           </td>
 
                           <td className="px-4 py-3.5">
-                            <span className="block text-xs font-black text-white">
-                              {tag.ownerName || "بدون اسم"}
-                            </span>
-                            <span className="block text-[11px] font-bold text-white/80">
-                              {tag.vehicleInfo || "غير مرتبط بمركبة"}
-                            </span>
-                            <span className="text-[11px] text-white/50">
-                              {tag.city || "—"}
-                            </span>
+                            {tag.ownerPhone && tag.ownerPhone.trim() && tag.ownerPhone.trim() !== "-" ? (
+                              <>
+                                <span className="block text-xs font-black text-white">
+                                  {tag.ownerName || "بدون اسم"}
+                                </span>
+                                <span className="block text-[11px] font-bold text-white/80">
+                                  {tag.vehicleInfo || "غير مرتبط بمركبة"}
+                                  {tag.vehicleColor ? ` (${tag.vehicleColor})` : ""}
+                                </span>
+                                <span className="text-[11px] text-white/50">
+                                  {tag.city || "—"}
+                                </span>
+                              </>
+                            ) : (
+                              <span className="inline-flex items-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-300">
+                                بانتظار ربط المركبة من المالك
+                              </span>
+                            )}
                           </td>
 
                           <td className="px-4 py-3.5">
@@ -2651,8 +2668,40 @@ export default function ExecutiveAdminDashboardPage() {
                               dir="ltr"
                               className="font-mono font-bold text-white/90"
                             >
-                              {tag.ownerPhone || "—"}
+                              {tag.ownerPhone && tag.ownerPhone.trim() !== "-" ? tag.ownerPhone : "—"}
                             </span>
+                          </td>
+
+                          <td className="px-4 py-3.5">
+                            {tag.buyerName || tag.buyerPhone || tag.deliveryCity ? (
+                              <div className="space-y-0.5">
+                                <span className="block text-xs font-black text-white">
+                                  {tag.buyerName || "—"}
+                                </span>
+                                <span
+                                  dir="ltr"
+                                  className="block font-mono text-[11px] font-bold text-sky-300"
+                                >
+                                  {tag.buyerPhone || "—"}
+                                </span>
+                                <span className="block text-[11px] text-white/60">
+                                  {[tag.deliveryCity, tag.deliveryAddress].filter(Boolean).join(" — ") || "—"}
+                                </span>
+                                {(tag.purchaseMethod || tag.activationSource) && (
+                                  <span className="inline-block rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold text-white/75">
+                                    {tag.purchaseMethod === "cod" || tag.isCodReserved
+                                      ? "كاش عند الاستلام"
+                                      : tag.purchaseMethod === "online" || tag.activationSource === "online"
+                                      ? "دفع أونلاين"
+                                      : tag.activationSource === "cod_delivered"
+                                      ? "كاش عند الاستلام (مستلم)"
+                                      : "طلب مباشر"}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-white/40">—</span>
+                            )}
                           </td>
 
                           <td className="px-4 py-3.5">
@@ -3519,21 +3568,28 @@ export default function ExecutiveAdminDashboardPage() {
               {/* 1. بيانات المالك والمركبة */}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/10 bg-[#0B0D13] p-4 space-y-2.5">
-                  <p className="text-[11px] font-black text-primary">
-                    بيانات المالك والمركبة
-                  </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-black text-primary">
+                      بيانات المالك والمركبة
+                    </p>
+                    {(!dTag.ownerPhone || dTag.ownerPhone.trim() === "-") && (
+                      <span className="rounded-md border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-black text-amber-300">
+                        بانتظار ربط المركبة من المالك
+                      </span>
+                    )}
+                  </div>
                   <div className="space-y-1.5 text-xs">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-white/55">الاسم الكامل:</span>
                       <span className="font-black text-white">
-                        {dTag.ownerName || "بدون اسم"}
+                        {dTag.ownerName || (dTag.ownerPhone && dTag.ownerPhone.trim() !== "-" ? "بدون اسم" : "بانتظار ربط المركبة من المالك")}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-white/55">رقم الهاتف:</span>
                       <div className="flex items-center gap-2">
                         <span dir="ltr" className="font-mono font-bold text-white">
-                          {dTag.ownerPhone || "—"}
+                          {dTag.ownerPhone && dTag.ownerPhone.trim() !== "-" ? dTag.ownerPhone : "—"}
                         </span>
                         {waPhone && (
                           <a
@@ -3551,6 +3607,7 @@ export default function ExecutiveAdminDashboardPage() {
                       <span className="text-white/55">نوع المركبة:</span>
                       <span className="font-bold text-white">
                         {dTag.vehicleInfo || "غير مرتبط بمركبة"}
+                        {dTag.vehicleColor ? ` (${dTag.vehicleColor})` : ""}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
@@ -3616,6 +3673,63 @@ export default function ExecutiveAdminDashboardPage() {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              {/* بيانات الشراء والتوصيل (منفصلة تماماً عن بيانات مالك المركبة) */}
+              <div className="rounded-2xl border border-sky-500/20 bg-[#0B0D13] p-4 space-y-2.5">
+                <p className="text-[11px] font-black text-sky-300">
+                  بيانات الشراء والتوصيل
+                </p>
+                {dTag.buyerName || dTag.buyerPhone || dTag.deliveryCity || dTag.deliveryAddress ? (
+                  <div className="grid gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">اسم المشتري:</span>
+                      <span className="font-black text-white">
+                        {dTag.buyerName || "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">هاتف المشتري:</span>
+                      <div className="flex items-center gap-2">
+                        <span dir="ltr" className="font-mono font-bold text-sky-300">
+                          {dTag.buyerPhone || "—"}
+                        </span>
+                        {dTag.buyerPhone && (
+                          <a
+                            href={`https://wa.me/${dTag.buyerPhone.replace(/[^\d]/g, "")}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/30"
+                          >
+                            واتساب
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">مدينة وعنوان التوصيل:</span>
+                      <span className="font-bold text-white">
+                        {[dTag.deliveryCity, dTag.deliveryAddress].filter(Boolean).join(" — ") || "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/55">طريقة الشراء:</span>
+                      <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 font-bold text-white/90">
+                        {dTag.purchaseMethod === "cod" || dTag.isCodReserved
+                          ? "الدفع كاش عند الاستلام"
+                          : dTag.purchaseMethod === "online" || dTag.activationSource === "online"
+                          ? "دفع أونلاين فوري"
+                          : dTag.activationSource === "cod_delivered"
+                          ? "كاش عند الاستلام (مستلم)"
+                          : "تفعيل مباشر"}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-white/45">
+                    لا توجد بيانات شراء أو توصيل مسجلة لهذا الملصق.
+                  </p>
+                )}
               </div>
 
               {/* 3. إحصائيات الملصق والأمان */}

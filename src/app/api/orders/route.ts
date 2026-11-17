@@ -11,11 +11,7 @@ import {
   normalizePackageType,
 } from "@/lib/packages";
 import { formatFullLibyaE164 } from "@/lib/utils";
-import {
-  verifyAndConsumeOtpProof,
-  createOwnerSessionToken,
-  attachOwnerSessionCookie,
-} from "@/lib/security-tokens";
+import { verifyAndConsumeOtpProof } from "@/lib/security-tokens";
 import {
   checkOrderRateLimit,
   recordOrderAttempt,
@@ -86,45 +82,57 @@ export async function POST(req: NextRequest) {
     recordOrderAttempt(phone, ip);
 
     const adminPhone = getAdminWhatsappNumber();
+    const orderId = `ORD-${Date.now().toString(36).toUpperCase()}`;
 
     if (paymentMethod === "cod") {
-      // مسار الدفع كاش عند الاستلام: حجز الملصق فقط دون تفعيله أو بدء عداد الاشتراك
-      const reserveRes = await pullAndReserveCodTag({
-        planType: pkgType === "basic" ? "basic" : "nabbihni",
-        packageType: pkgType,
-        ownerPhone: phone,
-        ownerName: fullName,
-        vehicleInfo: vehicleModel,
-        city,
-      });
+      const reservedCodes: string[] = [];
+      let lastReserveError = "";
+      for (let i = 0; i < quantity; i++) {
+        const reserveRes = await pullAndReserveCodTag({
+          planType: pkgType === "basic" ? "basic" : "nabbihni",
+          packageType: pkgType,
+          buyerName: fullName,
+          buyerPhone: phone,
+          deliveryCity: city,
+          deliveryAddress: address,
+          orderId,
+          excludeCodes: reservedCodes,
+        });
+        if (!reserveRes.ok || !reserveRes.stickerCode) {
+          lastReserveError = reserveRes.error || "";
+          break;
+        }
+        reservedCodes.push(reserveRes.stickerCode);
+      }
 
-      if (!reserveRes.ok || !reserveRes.stickerCode) {
+      if (reservedCodes.length === 0) {
         return NextResponse.json(
           {
             ok: false,
             error:
-              reserveRes.error ||
+              lastReserveError ||
               "لا توجد ملصقات متاحة (LOCKED) في المخزن حالياً. يرجى استيراد دفعة جديدة من لوحة الأدمن.",
           },
           { status: 409 }
         );
       }
 
-      const reservedStickerCode = reserveRes.stickerCode;
+      const primaryCode = reservedCodes[0];
+      const joinedCodes = reservedCodes.join(", ");
 
       await recordMarketplaceOrder({
-        orderCode: reservedStickerCode,
+        orderCode: primaryCode,
         packageType: pkgType,
-        quantity,
+        quantity: reservedCodes.length,
         customerName: fullName,
         customerPhone: phone,
         city,
         address,
-        vehicleModel,
+        vehicleModel: null,
         totalLyd,
         paymentMethod: "cod",
         paymentStatus: "pending_cod",
-        assignedTagCode: reservedStickerCode,
+        assignedTagCode: joinedCodes,
         status: "pending_delivery",
         subscriptionStartsAt: null,
         subscriptionExpiresAt: null,
@@ -132,21 +140,18 @@ export async function POST(req: NextRequest) {
 
       await sendWhatsappAlertMessage(
         adminPhone,
-        `🛒 طلب جديد (دفع كاش عند الاستلام 💵 — بانتظار التوصيل)\nالكود المحجوز: ${reservedStickerCode}\nالباقة: ${pkgConfig.name}\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمركبة: ${vehicleModel || "—"}\nالمدينة: ${city} - ${address}\nالإجمالي: ${totalLyd} د.ل`
+        `🛒 طلب جديد (دفع كاش عند الاستلام 💵 — بانتظار التوصيل)\nالأكواد المحجوزة (${reservedCodes.length}): ${joinedCodes}\nالباقة: ${pkgConfig.name}\nالمستلم: ${fullName}\nهاتف المستلم: ${phone}\nالمدينة: ${city} - ${address}\nالإجمالي: ${totalLyd} د.ل`
       );
 
       await sendWhatsappAlertMessage(
         phone,
-        `📦 مرحباً ${fullName}، تم استلام طلبك لملصق «بَلِّغْنِي» بنجاح!\nكود الملصق المحجوز: ${reservedStickerCode}\nالباقة: ${pkgConfig.name}\nطريقة الدفع: كاش عند الاستلام (${totalLyd} د.ل)\nحالة الطلب: بانتظار التوصيل والدفع\nسيتم التواصل معك قريباً لتنسيق التوصيل وتفعيل الملصق عند الاستلام.`
+        `📦 مرحباً ${fullName}، تم استلام طلبك لملصق «بَلِّغْنِي» بنجاح!\n${reservedCodes.length > 1 ? `أكواد الملصقات المحجوزة (${reservedCodes.length})` : "كود الملصق المحجوز"}: ${joinedCodes}\nالباقة: ${pkgConfig.name}\nطريقة الدفع: كاش عند الاستلام (${totalLyd} د.ل)\nحالة الطلب: بانتظار التوصيل والدفع\nسيتم التواصل معك قريباً لتنسيق التوصيل، وبعد الاستلام يمكنك ربط الملصق بسيارتك.`
       );
 
-      const codOwnerToken = createOwnerSessionToken({
-        tagCode: reservedStickerCode,
-        ownerPhone: phone,
-      });
-      const codResponse = NextResponse.json({
+      return NextResponse.json({
         ok: true,
-        stickerCode: reservedStickerCode,
+        stickerCode: primaryCode,
+        stickerCodes: reservedCodes,
         packageType: pkgType,
         packageName: pkgConfig.name,
         paymentMethod: "cod",
@@ -155,55 +160,65 @@ export async function POST(req: NextRequest) {
         subscriptionStartsAt: null,
         subscriptionExpiresAt: null,
       });
-      attachOwnerSessionCookie(codResponse, codOwnerToken, reservedStickerCode);
-      return codResponse;
     }
 
-    // مسار الدفع الإلكتروني الأونلاين الناجح: تفعيل فوري تلقائي للملصق وبدء عداد 365 يوماً
+    // مسار الدفع الإلكتروني الأونلاين الناجح: تفعيل فوري للملصقات لتكون جاهزة للربط دون ربطها بمالك بعد
     const startsAt = new Date().toISOString();
     const exp = new Date(startsAt);
     exp.setUTCDate(exp.getUTCDate() + 365);
     const expiresAt = exp.toISOString();
 
-    const pullRes = await pullAndActivateLockedTag({
-      planType: pkgType === "basic" ? "basic" : "nabbihni",
-      packageType: pkgType,
-      ownerPhone: phone,
-      ownerName: fullName,
-      vehicleInfo: vehicleModel,
-      city,
-      paymentMethod: "online",
-      startsAt,
-      expiresAt,
-    });
+    const activatedCodes: string[] = [];
+    let lastActivateError = "";
+    for (let i = 0; i < quantity; i++) {
+      const pullRes = await pullAndActivateLockedTag({
+        planType: pkgType === "basic" ? "basic" : "nabbihni",
+        packageType: pkgType,
+        buyerName: fullName,
+        buyerPhone: phone,
+        deliveryCity: city,
+        deliveryAddress: address,
+        orderId,
+        excludeCodes: activatedCodes,
+        paymentMethod: "online",
+        startsAt,
+        expiresAt,
+      });
+      if (!pullRes.ok || !pullRes.stickerCode) {
+        lastActivateError = pullRes.error || "";
+        break;
+      }
+      activatedCodes.push(pullRes.stickerCode);
+    }
 
-    if (!pullRes.ok || !pullRes.stickerCode) {
+    if (activatedCodes.length === 0) {
       return NextResponse.json(
         {
           ok: false,
           error:
-            pullRes.error ||
+            lastActivateError ||
             "لا توجد ملصقات متاحة (LOCKED) في المخزن حالياً. يرجى استيراد دفعة جديدة من لوحة الأدمن.",
         },
         { status: 409 }
       );
     }
 
-    const assignedStickerCode = pullRes.stickerCode;
+    const primaryAssignedCode = activatedCodes[0];
+    const joinedAssignedCodes = activatedCodes.join(", ");
 
     await recordMarketplaceOrder({
-      orderCode: assignedStickerCode,
+      orderCode: primaryAssignedCode,
       packageType: pkgType,
-      quantity,
+      quantity: activatedCodes.length,
       customerName: fullName,
       customerPhone: phone,
       city,
       address,
-      vehicleModel,
+      vehicleModel: null,
       totalLyd,
       paymentMethod: "online",
       paymentStatus,
-      assignedTagCode: assignedStickerCode,
+      assignedTagCode: joinedAssignedCodes,
       status: "completed",
       subscriptionStartsAt: startsAt,
       subscriptionExpiresAt: expiresAt,
@@ -211,21 +226,18 @@ export async function POST(req: NextRequest) {
 
     await sendWhatsappAlertMessage(
       adminPhone,
-      `🛒 طلب وتفعيل ملصق جديد (${assignedStickerCode})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: دفع أونلاين ✅ (مدفوع)\nالاسم: ${fullName}\nالهاتف: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${quantity}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء: ${expiresAt.slice(0, 10)}`
+      `🛒 طلب وتفعيل ملصق جديد (${joinedAssignedCodes})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: دفع أونلاين ✅ (مدفوع - جاهز للربط)\nالمستلم: ${fullName}\nهاتف المستلم: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${activatedCodes.length}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء: ${expiresAt.slice(0, 10)}`
     );
 
     await sendWhatsappAlertMessage(
       phone,
-      `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ملصق «بَلِّغْنِي» الخاص بك!\nكود الملصق: ${assignedStickerCode}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+      `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ${activatedCodes.length > 1 ? "ملصقات" : "ملصق"} «بَلِّغْنِي»!\n${activatedCodes.length > 1 ? `أكواد الملصقات (${activatedCodes.length})` : "كود الملصق"}: ${joinedAssignedCodes}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nعند استلام الملصق، امسح رمز QR أو ادخل لصفحة «تفعيل وربط ملصق جديد» لربطه بسيارتك: https://www.balaghni.ly/activate`
     );
 
-    const ownerToken = createOwnerSessionToken({
-      tagCode: assignedStickerCode,
-      ownerPhone: phone,
-    });
-    const response = NextResponse.json({
+    return NextResponse.json({
       ok: true,
-      stickerCode: assignedStickerCode,
+      stickerCode: primaryAssignedCode,
+      stickerCodes: activatedCodes,
       packageType: pkgType,
       packageName: pkgConfig.name,
       paymentMethod: "online",
@@ -234,8 +246,6 @@ export async function POST(req: NextRequest) {
       subscriptionStartsAt: startsAt,
       subscriptionExpiresAt: expiresAt,
     });
-    attachOwnerSessionCookie(response, ownerToken, assignedStickerCode);
-    return response;
   } catch {
     return NextResponse.json(
       { ok: false, error: "تعذر تسجيل الطلب حالياً." },

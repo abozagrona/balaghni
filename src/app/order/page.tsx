@@ -16,7 +16,6 @@ import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
 import { SmartOtpModal } from "@/components/auth/smart-otp-modal";
 import { cn, formatFullLibyaE164 } from "@/lib/utils";
-import { saveOwnerSession } from "@/lib/auth-session";
 
 const TIERS = [
   { id: "basic", name: "الباقة الأساسية", price: 50, badge: "واتساب فقط • 50 د.ل" },
@@ -53,13 +52,13 @@ export default function OrderPage() {
   const [phoneDigits, setPhoneDigits] = React.useState("");
   const [city, setCity] = React.useState("طرابلس");
   const [address, setAddress] = React.useState("");
-  const [vehicleModel, setVehicleModel] = React.useState("");
 
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [otpModalOpen, setOtpModalOpen] = React.useState(false);
   const [phoneForOtp, setPhoneForOtp] = React.useState("");
   const [activatedOrder, setActivatedOrder] = React.useState<{
     stickerCode: string;
+    stickerCodes: string[];
     packageName: string;
     paymentMethod: "online" | "cod";
     expiresAt: string;
@@ -121,7 +120,6 @@ export default function OrderPage() {
           phone: verifiedPhone,
           city,
           address: address.trim(),
-          vehicleModel: vehicleModel.trim(),
           totalLyd,
           otpProofToken,
         }),
@@ -136,16 +134,13 @@ export default function OrderPage() {
         return;
       }
 
-      saveOwnerSession({
-        tagCode: data.stickerCode,
-        vehicleInfo: vehicleModel.trim() || fullName.trim(),
-        city,
-        ownerPhone: verifiedPhone,
-        activatedAt: data.subscriptionStartsAt || new Date().toISOString(),
-      });
+      const codes: string[] = Array.isArray(data.stickerCodes) && data.stickerCodes.length > 0
+        ? data.stickerCodes
+        : [data.stickerCode];
 
       setActivatedOrder({
         stickerCode: data.stickerCode,
+        stickerCodes: codes,
         packageName: data.packageName || activeTierObj.name,
         paymentMethod: data.paymentMethod === "online" ? "online" : "cod",
         expiresAt: data.subscriptionExpiresAt || "",
@@ -191,7 +186,7 @@ export default function OrderPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               {activatedOrder.paymentMethod === "online" ? (
                 <>
-                  تم تفعيل ملصقك بنجاح وربطه برقم هاتفك، ويمكنك الآن الانتقال إلى لوحة تحكم سيارتي لإكمال إعداد البصمة وبيانات السيارة.
+                  تم تفعيل {activatedOrder.stickerCodes.length > 1 ? "ملصقاتك" : "ملصقك"} بنجاح وهي جاهزة للربط. عند استلام الملصق، امسح رمز QR أو اضغط على «تفعيل وربط ملصق جديد» لربطه برقم هاتف المالك وبيانات السيارة.
                 </>
               ) : (
                 <>
@@ -204,12 +199,24 @@ export default function OrderPage() {
               <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-4 text-emerald-800">
                 <p className="text-xs font-bold">
                   {activatedOrder.paymentMethod === "online"
-                    ? "كود الملصق المفعّل (365 يوماً):"
-                    : "كود الملصق المخصص لطلبك:"}
+                    ? activatedOrder.stickerCodes.length > 1
+                      ? `أكواد الملصقات المفعّلة والجاهزة للربط (${activatedOrder.stickerCodes.length}):`
+                      : "كود الملصق المفعّل والجاهز للربط (365 يوماً):"
+                    : activatedOrder.stickerCodes.length > 1
+                      ? `أكواد الملصقات المحجوزة لطلبك (${activatedOrder.stickerCodes.length}):`
+                      : "كود الملصق المخصص لطلبك:"}
                 </p>
-                <p dir="ltr" className="mt-1 font-mono text-xl font-black tracking-wider">
-                  {activatedOrder.stickerCode}
-                </p>
+                <div className="mt-1.5 space-y-1">
+                  {activatedOrder.stickerCodes.map((codeItem) => (
+                    <p
+                      key={codeItem}
+                      dir="ltr"
+                      className="font-mono text-xl font-black tracking-wider"
+                    >
+                      {codeItem}
+                    </p>
+                  ))}
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-bold text-foreground text-start">
                 <div>
@@ -232,7 +239,7 @@ export default function OrderPage() {
                   <span className="text-muted-foreground">حالة الطلب:</span>{" "}
                   <span>
                     {activatedOrder.paymentMethod === "online"
-                      ? "مفعّل فوراً"
+                      ? "مفعّل وجاهز للربط"
                       : "بانتظار التوصيل"}
                   </span>
                 </div>
@@ -260,11 +267,11 @@ export default function OrderPage() {
                 <>
                   <Button asChild size="lg" className="w-full rounded-2xl">
                     <Link
-                      href={`/dashboard?tag=${encodeURIComponent(
+                      href={`/activate?tag=${encodeURIComponent(
                         activatedOrder.stickerCode
                       )}`}
                     >
-                      الانتقال إلى لوحة تحكم سيارتي
+                      تفعيل وربط الملصق بسيارتي الآن
                     </Link>
                   </Button>
                   <Button
@@ -279,12 +286,8 @@ export default function OrderPage() {
               ) : (
                 <>
                   <Button asChild size="lg" className="w-full rounded-2xl">
-                    <Link
-                      href={`/dashboard?tag=${encodeURIComponent(
-                        activatedOrder.stickerCode
-                      )}`}
-                    >
-                      متابعة الطلب في لوحة تحكم سيارتي
+                    <Link href="/activate">
+                      تفعيل وربط ملصق عند الاستلام
                     </Link>
                   </Button>
                   <Button
@@ -382,15 +385,15 @@ export default function OrderPage() {
                 </div>
               </div>
 
-              {/* 3. بيانات التوصيل ورقم الهاتف الليبي (+218) */}
+              {/* 3. بيانات المستلم والتوصيل (+218) */}
               <div className="space-y-4 pt-2">
                 <h2 className="text-sm font-bold text-foreground">
-                  3. بيانات المستلم ورقم الهاتف (+218)
+                  3. بيانات المستلم والتوصيل (+218)
                 </h2>
 
                 <div>
                   <label className="mb-1.5 block text-xs font-bold text-foreground">
-                    الاسم الكامل *
+                    الاسم الكامل للمستلم *
                   </label>
                   <input
                     type="text"
@@ -407,7 +410,7 @@ export default function OrderPage() {
                     htmlFor="order-libya-phone"
                     className="mb-1.5 block text-xs font-bold text-foreground"
                   >
-                    رقم الهاتف الليبي (سيتم ربط الملصق به) *
+                    رقم هاتف المستلم (مربوط بالواتساب لتأكيد الطلب والتوصيل) *
                   </label>
                   <LibyaPhoneInput
                     id="order-libya-phone"
@@ -437,30 +440,17 @@ export default function OrderPage() {
 
                   <div>
                     <label className="mb-1.5 block text-xs font-bold text-foreground">
-                      نوع وموديل السيارة (اختياري)
+                      العنوان بالتفصيل *
                     </label>
                     <input
                       type="text"
-                      value={vehicleModel}
-                      onChange={(e) => setVehicleModel(e.target.value)}
-                      placeholder="مثال: Hyundai Elantra"
+                      required
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      placeholder="المنطقة، الشارع، أقرب نقطة دالة..."
                       className="h-12 w-full rounded-2xl border border-input bg-surface px-4 text-sm text-foreground focus:border-primary focus:outline-none"
                     />
                   </div>
-                </div>
-
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold text-foreground">
-                    العنوان بالتفصيل *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                    placeholder="المنطقة، الشارع، أقرب نقطة دالة..."
-                    className="h-12 w-full rounded-2xl border border-input bg-surface px-4 text-sm text-foreground focus:border-primary focus:outline-none"
-                  />
                 </div>
               </div>
 
@@ -590,8 +580,8 @@ export default function OrderPage() {
         phone={phoneForOtp}
         onClose={() => setOtpModalOpen(false)}
         onVerified={handleOrderOtpVerified}
-        title="تأكيد رقم الهاتف لإتمام الطلب"
-        subtitle="سيتم ربط الملصق برقم هاتفك فور التحقق منه عبر واتساب أو رسالة SMS"
+        title="تأكيد رقم هاتف المستلم لإتمام الطلب"
+        subtitle="سيتم تأكيد طلبك عبر واتساب أو رسالة SMS دون ربط الملصق بالسيارة بعد"
       />
     </div>
   );

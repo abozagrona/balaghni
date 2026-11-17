@@ -84,7 +84,7 @@ export default function OwnerLoginPage() {
       if (!res.ok || !data.ok || !data.exists) {
         setError(
           data.error ||
-            "رقم الهاتف هذا غير مرتبط بأي ملصق في النظام. هل قمت بتفعيل ملصقك الجديد؟"
+            "هذا الرقم غير مرتبط بمركبة بعد، يرجى الضغط على \"تفعيل وربط ملصق جديد\" بالأسفل لربط ملصقك أولاً"
         );
         setLoading(false);
         return;

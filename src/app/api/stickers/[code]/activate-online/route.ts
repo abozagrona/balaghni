@@ -78,6 +78,8 @@ export async function POST(
 
     const ownerName = String(body.ownerName || "").trim();
     const vehicleInfo = String(body.vehicleInfo || "").trim();
+    const vehicleColor = String(body.vehicleColor || "").trim();
+    const city = String(body.city || "طرابلس").trim();
 
     if (mode === "link_prepaid") {
       const linkRes = await linkPrepaidSticker({
@@ -85,6 +87,8 @@ export async function POST(
         phone: formattedPhone,
         ownerName,
         vehicleInfo,
+        vehicleColor,
+        city,
       });
 
       if (!linkRes.ok) {
