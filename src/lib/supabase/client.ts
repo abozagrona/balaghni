@@ -3144,6 +3144,87 @@ export async function getExecutiveAdminOverview(): Promise<{
     // ignore
   }
 
+  try {
+    const { data: auditOrderRows, error: auditOrdErr } = await supabaseAdmin
+      .from("admin_audit_logs")
+      .select("action_type,details,created_at")
+      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED"])
+      .order("created_at", { ascending: true })
+      .limit(500);
+
+    if (!auditOrdErr && Array.isArray(auditOrderRows)) {
+      const auditOrderMap = new Map<string, Record<string, unknown>>();
+      for (const row of auditOrderRows as Array<Record<string, unknown>>) {
+        try {
+          const parsed = JSON.parse(String(row.details || "{}"));
+          const actionType = String(row.action_type || "");
+          if (actionType === "MARKETPLACE_ORDER" && parsed?.orderCode) {
+            auditOrderMap.set(String(parsed.orderCode), parsed);
+          } else if (actionType === "ORDER_STATUS_UPDATED" && parsed?.orderCode) {
+            const prev = auditOrderMap.get(String(parsed.orderCode));
+            if (prev) {
+              auditOrderMap.set(String(parsed.orderCode), { ...prev, ...parsed });
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      for (const o of auditOrderMap.values()) {
+        const rawAssigned = String(o.assignedTagCode || o.orderCode || "").toUpperCase();
+        const matchedCodes = rawAssigned
+          .split(",")
+          .map((c) => c.trim())
+          .filter((c) => c.startsWith("LY-"));
+        const st = String(o.status || "").toLowerCase();
+        const ps = String(o.paymentStatus || "").toLowerCase();
+        const pm = String(o.paymentMethod || (ps === "pending_cod" ? "cod" : "online")).toLowerCase();
+        const isPendingCod = st === "pending_delivery" || ps === "pending_cod";
+
+        for (const code of matchedCodes) {
+          if (isPendingCod) {
+            pendingCodSet.add(code);
+          }
+          if (localMap[code] && st !== "cancelled") {
+            localMap[code] = {
+              ...localMap[code],
+              buyer_name:
+                localMap[code].buyer_name ||
+                (o.customerName ? String(o.customerName) : null),
+              buyer_phone:
+                localMap[code].buyer_phone ||
+                (o.customerPhone ? String(o.customerPhone) : null),
+              delivery_city:
+                localMap[code].delivery_city ||
+                (o.city ? String(o.city) : null),
+              delivery_address:
+                localMap[code].delivery_address ||
+                (o.address ? String(o.address) : null),
+              order_id:
+                localMap[code].order_id ||
+                (o.orderCode ? String(o.orderCode) : o.id ? String(o.id) : null),
+              purchase_method:
+                localMap[code].purchase_method || pm,
+              plan_type:
+                localMap[code].plan_type || (o.packageType ? String(o.packageType) : null),
+              package_type:
+                localMap[code].package_type || (o.packageType ? String(o.packageType) : null),
+              subscription_starts_at:
+                localMap[code].subscription_starts_at ||
+                (o.subscriptionStartsAt ? String(o.subscriptionStartsAt) : null),
+              subscription_expires_at:
+                localMap[code].subscription_expires_at ||
+                (o.subscriptionExpiresAt ? String(o.subscriptionExpiresAt) : null),
+            };
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   const adminStore = loadAdminStore();
   const dashStore = loadDashboardStore();
 

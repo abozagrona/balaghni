@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
       const primaryCode = reservedCodes[0];
       const joinedCodes = reservedCodes.join(", ");
 
-      await recordMarketplaceOrder({
+      const codOrderRes = await recordMarketplaceOrder({
         orderCode: primaryCode,
         packageType: pkgType,
         quantity: reservedCodes.length,
@@ -137,6 +137,18 @@ export async function POST(req: NextRequest) {
         subscriptionStartsAt: null,
         subscriptionExpiresAt: null,
       });
+
+      if (!codOrderRes.supabaseSaved) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              (codOrderRes as { error?: string }).error ||
+              "تعذر حفظ طلب الدفع عند الاستلام في قاعدة البيانات، يرجى المحاولة مرة أخرى.",
+          },
+          { status: 500 }
+        );
+      }
 
       await sendWhatsappAlertMessage(
         adminPhone,
@@ -206,7 +218,7 @@ export async function POST(req: NextRequest) {
     const primaryAssignedCode = activatedCodes[0];
     const joinedAssignedCodes = activatedCodes.join(", ");
 
-    await recordMarketplaceOrder({
+    const onlineOrderRes = await recordMarketplaceOrder({
       orderCode: primaryAssignedCode,
       packageType: pkgType,
       quantity: activatedCodes.length,
@@ -223,6 +235,18 @@ export async function POST(req: NextRequest) {
       subscriptionStartsAt: startsAt,
       subscriptionExpiresAt: expiresAt,
     });
+
+    if (!onlineOrderRes.supabaseSaved) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            (onlineOrderRes as { error?: string }).error ||
+            "تعذر حفظ الطلب في قاعدة البيانات، يرجى المحاولة مرة أخرى.",
+        },
+        { status: 500 }
+      );
+    }
 
     await sendWhatsappAlertMessage(
       adminPhone,

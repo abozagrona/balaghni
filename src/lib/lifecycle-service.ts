@@ -1872,11 +1872,35 @@ export async function recordMarketplaceOrder(params: {
     createdAt: nowIso,
   };
 
+  let auditErrorMsg = "";
+  try {
+    const auditRes = await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_name: params.customerName || "بوابة الطلبات",
+      action_type: "MARKETPLACE_ORDER",
+      target_item: finalOrderCode,
+      details: JSON.stringify(order),
+      created_at: nowIso,
+    });
+    if (!auditRes.error) {
+      supabaseSaved = true;
+    } else {
+      auditErrorMsg = auditRes.error.message || String(auditRes.error);
+      console.error("[recordMarketplaceOrder] admin_audit_logs insert failed:", auditRes.error);
+    }
+  } catch (err) {
+    auditErrorMsg = err instanceof Error ? err.message : String(err);
+  }
+
   const store = loadStore();
   store.orders.unshift(order);
   saveStore(store);
 
-  return { ok: true, order, supabaseSaved };
+  return {
+    ok: supabaseSaved,
+    order,
+    supabaseSaved,
+    ...(supabaseSaved ? {} : { error: auditErrorMsg || "فشل حفظ الطلب في قاعدة البيانات" }),
+  } as { ok: boolean; order: OrderRecord; supabaseSaved: boolean; error?: string };
 }
 
 export async function listAllOrders(): Promise<OrderRecord[]> {
@@ -1962,34 +1986,83 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
     // ignore
   }
 
-  // ضمان ظهور أي ملصق حالته LOCKED ويحتوي على رقم هاتف زبون (وليس هدية منتهية) في تبويب «الطلبات الواردة»
+  try {
+    const { data: auditOrders, error: auditErr } = await supabaseAdmin
+      .from("admin_audit_logs")
+      .select("action_type,target_item,details,created_at")
+      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED"])
+      .order("created_at", { ascending: true })
+      .limit(500);
+
+    if (!auditErr && Array.isArray(auditOrders)) {
+      for (const row of auditOrders as Array<Record<string, unknown>>) {
+        try {
+          const parsed = JSON.parse(String(row.details || "{}"));
+          const actionType = String(row.action_type || "");
+          if (actionType === "MARKETPLACE_ORDER" && parsed?.orderCode) {
+            const codeKey = String(parsed.orderCode);
+            if (!byCode.has(codeKey)) {
+              byCode.set(codeKey, parsed as OrderRecord);
+            }
+          } else if (actionType === "ORDER_STATUS_UPDATED" && parsed?.orderCode) {
+            const codeKey = String(parsed.orderCode);
+            const existing = byCode.get(codeKey);
+            if (existing) {
+              byCode.set(codeKey, {
+                ...existing,
+                status: parsed.status ?? existing.status,
+                paymentStatus: parsed.paymentStatus ?? existing.paymentStatus,
+                assignedTagCode: parsed.assignedTagCode ?? existing.assignedTagCode,
+                subscriptionStartsAt:
+                  parsed.subscriptionStartsAt !== undefined
+                    ? parsed.subscriptionStartsAt
+                    : existing.subscriptionStartsAt,
+                subscriptionExpiresAt:
+                  parsed.subscriptionExpiresAt !== undefined
+                    ? parsed.subscriptionExpiresAt
+                    : existing.subscriptionExpiresAt,
+              });
+            }
+          }
+        } catch {
+          // ignore malformed json
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // ضمان ظهور أي ملصق حالته LOCKED ويحتوي على رقم هاتف مشتري أو مالك (وليس هدية منتهية) في تبويب «الطلبات الواردة»
   try {
     const existingAssignedSet = new Set<string>();
     for (const ord of byCode.values()) {
-      if (
-        ord.status === "pending_delivery" ||
-        ord.paymentStatus === "pending_cod"
-      ) {
-        const c = String(ord.assignedTagCode || ord.orderCode || "")
-          .trim()
-          .toUpperCase();
-        if (c) existingAssignedSet.add(c);
+      const rawCodes = String(ord.assignedTagCode || ord.orderCode || "");
+      for (const part of rawCodes.split(",")) {
+        const clean = part.trim().toUpperCase();
+        if (clean) existingAssignedSet.add(clean);
       }
     }
 
-    const { data: lockedWithPhone } = await supabaseAdmin
+    const { data: lockedTags } = await supabaseAdmin
       .from("tags")
       .select("*")
       .eq("status", "LOCKED")
-      .not("owner_phone", "is", null)
-      .limit(200);
+      .limit(300);
 
-    if (Array.isArray(lockedWithPhone)) {
+    if (Array.isArray(lockedTags)) {
       const nowMs = Date.now();
-      for (const row of lockedWithPhone as Array<Record<string, unknown>>) {
+      for (const row of lockedTags as Array<Record<string, unknown>>) {
         const code = String(row.tag_code || "").trim().toUpperCase();
-        const phone = String(row.owner_phone || "").trim();
-        if (!code || !phone || phone === "-" || existingAssignedSet.has(code)) {
+        const buyerPhone = String(row.buyer_phone || "").trim();
+        const ownerPhone = String(row.owner_phone || "").trim();
+        const phone =
+          buyerPhone && buyerPhone !== "-"
+            ? buyerPhone
+            : ownerPhone && ownerPhone !== "-"
+            ? ownerPhone
+            : "";
+        if (!code || !phone || existingAssignedSet.has(code)) {
           continue;
         }
         const pkgRaw = String(row.package_type || row.plan_type || "").toLowerCase();
@@ -2009,16 +2082,12 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
           id: `tag_${code}`,
           orderCode: code,
           customerName: String(
-            row.owner_name || row.vehicle_make_model || row.vehicle_info || phone
+            row.buyer_name || row.owner_name || row.vehicle_make_model || row.vehicle_info || phone
           ),
           customerPhone: phone,
-          city: String(row.city || row.vehicle_city || "طرابلس"),
-          address: String(row.city || row.vehicle_city || "—"),
-          vehicleModel: row.vehicle_make_model
-            ? String(row.vehicle_make_model)
-            : row.vehicle_info
-            ? String(row.vehicle_info)
-            : null,
+          city: String(row.delivery_city || row.city || row.vehicle_city || "طرابلس"),
+          address: String(row.delivery_address || row.city || row.vehicle_city || "—"),
+          vehicleModel: null,
           packageType: pkgType,
           quantity: 1,
           totalLyd: Number(pkgCfg.priceLyd || 100),
@@ -2597,6 +2666,25 @@ export async function confirmCodOrderDelivery(params: {
     // ignore
   }
 
+  try {
+    await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_name: "إدارة الطلبات",
+      action_type: "ORDER_STATUS_UPDATED",
+      target_item: target.orderCode,
+      details: JSON.stringify({
+        orderCode: target.orderCode,
+        status: "completed",
+        paymentStatus: "paid",
+        assignedTagCode: tagCodes.join(", "),
+        subscriptionStartsAt: startsAt,
+        subscriptionExpiresAt: expiresAt,
+      }),
+      created_at: startsAt,
+    });
+  } catch {
+    // ignore
+  }
+
   await sendWhatsappAlertMessage(
     target.customerPhone,
     `✅ مرحباً ${target.customerName}، تم تأكيد استلام الدفع وتفعيل ${tagCodes.length > 1 ? "ملصقات" : "ملصق"} «بَلِّغْنِي» الخاص بك بنجاح!\nكود الملصق: ${tagCodes.join(" , ")}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nيمكنك الآن ربط الملصق بالسيارة عبر مسح رمز QR أو الدخول لصفحة التفعيل: https://www.balaghni.ly/activate`
@@ -2640,6 +2728,24 @@ export async function cancelCodOrder(params: {
         subscription_expires_at: null,
       })
       .eq("order_code", target.orderCode);
+  } catch {
+    // ignore
+  }
+
+  try {
+    await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_name: "إدارة الطلبات",
+      action_type: "ORDER_STATUS_UPDATED",
+      target_item: target.orderCode,
+      details: JSON.stringify({
+        orderCode: target.orderCode,
+        status: "cancelled",
+        paymentStatus: "cancelled",
+        subscriptionStartsAt: null,
+        subscriptionExpiresAt: null,
+      }),
+      created_at: new Date().toISOString(),
+    });
   } catch {
     // ignore
   }
