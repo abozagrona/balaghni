@@ -273,7 +273,40 @@ export function ScanForm({
       })
       .subscribe();
 
+    let stopped = false;
+    const silentFallbackInterval = window.setInterval(async () => {
+      if (stopped) return;
+      try {
+        const res = await fetch(
+          `/api/notify?tagCode=${encodeURIComponent(
+            normalizedTag
+          )}&reportId=${encodeURIComponent(reportId || "")}`,
+          { cache: "no-store" }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) return;
+
+        applyRealtimeState({
+          deliveryStatus: data.deliveryStatus,
+          ownerReply: data.ownerReply ?? null,
+          isSmsFallback: Boolean(data.isSmsFallback),
+        });
+
+        if (
+          data.deliveryStatus === "replied" ||
+          Boolean(data.ownerReply)
+        ) {
+          stopped = true;
+          window.clearInterval(silentFallbackInterval);
+        }
+      } catch {
+        // ignore transient fallback fetch error
+      }
+    }, 4000);
+
     return () => {
+      stopped = true;
+      window.clearInterval(silentFallbackInterval);
       void supabaseRealtime.removeChannel(channel);
     };
   }, [isSuccess, tagCode, reportId]);

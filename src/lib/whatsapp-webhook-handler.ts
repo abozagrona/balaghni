@@ -373,6 +373,7 @@ function normalizeStatusRank(badge: string): number {
 export async function processWhatsappWebhookPayload(
   body: Record<string, any>
 ): Promise<{ processedStatuses: number; processedMessages: number }> {
+  console.log("[WhatsApp Webhook Incoming]:", JSON.stringify(body));
   const { statuses, messages } = extractWebhookEvents(body);
 
   for (const st of statuses) {
@@ -381,6 +382,12 @@ export async function processWhatsappWebhookPayload(
     let matched = st.messageId
       ? await findReportByMessageId(st.messageId)
       : { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+
+    // معالجة حالة التزامن (Race Condition): انتظار 800ms وإعادة البحث عن idMessage إذا وصل الـ Webhook قبل إتمام الحفظ
+    if (!matched.report && st.messageId) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      matched = await findReportByMessageId(st.messageId);
+    }
 
     if (!matched.report && st.recipientPhone) {
       matched = await findLatestReportForPhone(st.recipientPhone);

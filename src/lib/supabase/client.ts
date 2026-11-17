@@ -3006,66 +3006,72 @@ export async function sendZeroLeakNotification(params: {
 
     if (waOk) {
       deliveredChannels = "WHATSAPP";
-      if (reportIdStr && !reportIdStr.startsWith("rep_")) {
-        try {
-          const { error: extErr } = await supabaseAdmin
-            .from("reports")
-            .update({
-              reason_badge: "واتساب: تم الإرسال",
-              whatsapp_message_id: waResult.idMessage || null,
-              short_code: shortCode || null,
-            })
-            .eq("id", reportIdStr);
-          if (extErr) {
-            await supabaseAdmin
-              .from("reports")
-              .update({ reason_badge: "واتساب: تم الإرسال" })
-              .eq("id", reportIdStr);
+      const nowIso = new Date().toISOString();
+      await Promise.all([
+        reportIdStr && !reportIdStr.startsWith("rep_")
+          ? (async () => {
+              try {
+                const { error: extErr } = await supabaseAdmin
+                  .from("reports")
+                  .update({
+                    reason_badge: "واتساب: تم الإرسال",
+                    whatsapp_message_id: waResult.idMessage || null,
+                    short_code: shortCode || null,
+                  })
+                  .eq("id", reportIdStr);
+                if (extErr) {
+                  await supabaseAdmin
+                    .from("reports")
+                    .update({ reason_badge: "واتساب: تم الإرسال" })
+                    .eq("id", reportIdStr);
+                }
+              } catch {
+                // ignore
+              }
+            })()
+          : Promise.resolve(),
+        (async () => {
+          try {
+            await supabaseAdmin.from("admin_audit_logs").insert([
+              {
+                admin_name: "منظومة الإشعارات",
+                action_type: "REPORT_DISPATCH",
+                target_item: reportIdStr || normalizedCode,
+                details: JSON.stringify({
+                  reportId: reportIdStr,
+                  tagCode: normalizedCode,
+                  waMessageId: waResult.idMessage || null,
+                  shortCode: shortCode || null,
+                  smsFallbackEnabled,
+                  var1,
+                  var2,
+                  var3,
+                  formattedCaller,
+                  createdAt: nowIso,
+                }),
+                created_at: nowIso,
+              },
+              ...(shortCode
+                ? [
+                    {
+                      admin_name: "منظومة الإشعارات",
+                      action_type: "REPORT_SHORT_LINK",
+                      target_item: shortCode,
+                      details: JSON.stringify({
+                        reportId: reportIdStr,
+                        tagCode: normalizedCode,
+                        waMessageId: waResult.idMessage || null,
+                      }),
+                      created_at: nowIso,
+                    },
+                  ]
+                : []),
+            ]);
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
-        }
-      }
-      try {
-        const nowIso = new Date().toISOString();
-        await supabaseAdmin.from("admin_audit_logs").insert([
-          {
-            admin_name: "منظومة الإشعارات",
-            action_type: "REPORT_DISPATCH",
-            target_item: reportIdStr || normalizedCode,
-            details: JSON.stringify({
-              reportId: reportIdStr,
-              tagCode: normalizedCode,
-              waMessageId: waResult.idMessage || null,
-              shortCode: shortCode || null,
-              smsFallbackEnabled,
-              var1,
-              var2,
-              var3,
-              formattedCaller,
-              createdAt: nowIso,
-            }),
-            created_at: nowIso,
-          },
-          ...(shortCode
-            ? [
-                {
-                  admin_name: "منظومة الإشعارات",
-                  action_type: "REPORT_SHORT_LINK",
-                  target_item: shortCode,
-                  details: JSON.stringify({
-                    reportId: reportIdStr,
-                    tagCode: normalizedCode,
-                    waMessageId: waResult.idMessage || null,
-                  }),
-                  created_at: nowIso,
-                },
-              ]
-            : []),
-        ]);
-      } catch {
-        // ignore
-      }
+        })(),
+      ]);
     } else if (smsFallbackEnabled) {
       // في باقة نَبِّهْنِي فقط: إذا تعذر إرسال واتساب مباشرة يتم التحويل الحصري لـ SMS
       const smsResult = await sendSmsAlertMessage(
