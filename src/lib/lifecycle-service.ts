@@ -2010,7 +2010,7 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
     const { data: auditOrders, error: auditErr } = await supabaseAdmin
       .from("admin_audit_logs")
       .select("action_type,target_item,details,created_at")
-      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED"])
+      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED", "TAG_BUYER_CLEARED"])
       .order("created_at", { ascending: true })
       .limit(500);
 
@@ -2021,9 +2021,7 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
           const actionType = String(row.action_type || "");
           if (actionType === "MARKETPLACE_ORDER" && parsed?.orderCode) {
             const codeKey = String(parsed.orderCode);
-            if (!byCode.has(codeKey)) {
-              byCode.set(codeKey, parsed as OrderRecord);
-            }
+            byCode.set(codeKey, parsed as OrderRecord);
           } else if (actionType === "ORDER_STATUS_UPDATED" && parsed?.orderCode) {
             const codeKey = String(parsed.orderCode);
             const existing = byCode.get(codeKey);
@@ -2042,6 +2040,28 @@ export async function listAllOrders(): Promise<OrderRecord[]> {
                     ? parsed.subscriptionExpiresAt
                     : existing.subscriptionExpiresAt,
               });
+            }
+          } else if (actionType === "TAG_BUYER_CLEARED" && parsed?.tagCode) {
+            const clearedCode = String(parsed.tagCode).trim().toUpperCase();
+            for (const [ordKey, ordVal] of byCode.entries()) {
+              const rawCodes = String(ordVal.assignedTagCode || ordVal.orderCode || "").toUpperCase();
+              const parts = rawCodes.split(",").map((c) => c.trim()).filter(Boolean);
+              if (parts.includes(clearedCode)) {
+                const remaining = parts.filter((c) => c !== clearedCode);
+                if (remaining.length === 0) {
+                  byCode.set(ordKey, {
+                    ...ordVal,
+                    status: "cancelled",
+                    paymentStatus: "cancelled",
+                    assignedTagCode: null,
+                  });
+                } else {
+                  byCode.set(ordKey, {
+                    ...ordVal,
+                    assignedTagCode: remaining.join(", "),
+                  });
+                }
+              }
             }
           }
         } catch {

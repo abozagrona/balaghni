@@ -3153,7 +3153,7 @@ export async function getExecutiveAdminOverview(): Promise<{
     const { data: auditOrderRows, error: auditOrdErr } = await supabaseAdmin
       .from("admin_audit_logs")
       .select("action_type,details,created_at")
-      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED", "OWNER_PROFILE_UPDATED"])
+      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED", "OWNER_PROFILE_UPDATED", "TAG_BUYER_CLEARED"])
       .order("created_at", { ascending: true })
       .limit(500);
 
@@ -3178,6 +3178,32 @@ export async function getExecutiveAdminOverview(): Promise<{
                 ...(parsed.ownerName !== undefined
                   ? { owner_name: parsed.ownerName ? String(parsed.ownerName) : null }
                   : {}),
+              };
+            }
+          } else if (actionType === "TAG_BUYER_CLEARED" && parsed?.tagCode) {
+            const clearedCode = String(parsed.tagCode).trim().toUpperCase();
+            for (const [ordKey, ordVal] of auditOrderMap.entries()) {
+              const rawAssigned = String(ordVal.assignedTagCode || ordVal.orderCode || "").toUpperCase();
+              const parts = rawAssigned.split(",").map((c) => c.trim()).filter(Boolean);
+              if (parts.includes(clearedCode)) {
+                const remaining = parts.filter((c) => c !== clearedCode);
+                if (remaining.length === 0) {
+                  auditOrderMap.delete(ordKey);
+                } else {
+                  auditOrderMap.set(ordKey, { ...ordVal, assignedTagCode: remaining.join(", ") });
+                }
+              }
+            }
+            if (localMap[clearedCode]) {
+              localMap[clearedCode] = {
+                ...localMap[clearedCode],
+                owner_name: null,
+                buyer_name: null,
+                buyer_phone: null,
+                delivery_city: null,
+                delivery_address: null,
+                order_id: null,
+                purchase_method: null,
               };
             }
           }
@@ -3727,6 +3753,7 @@ export async function adminManageTagLifecycle(params: {
       car_model: null,
       vehicle_brand: "",
       vehicle_model: "",
+      vehicle_color: undefined,
       city: "",
       vehicle_city: null,
       alert_channel: "BOTH",
@@ -3736,6 +3763,12 @@ export async function adminManageTagLifecycle(params: {
       activation_source: null,
       subscription_starts_at: null,
       subscription_expires_at: null,
+      buyer_name: null,
+      buyer_phone: null,
+      delivery_city: null,
+      delivery_address: null,
+      order_id: null,
+      purchase_method: null,
     };
 
     // دالة مساعدة لتحديث الأعمدة مع تجاهل الأعمدة غير الموجودة في مخطط الجدول الحي
@@ -3782,7 +3815,7 @@ export async function adminManageTagLifecycle(params: {
       // ignore
     }
 
-    // 2. تصفير كافة الحقول الإضافية (المركبة، المالك، المدينة، الباقة، التواريخ، الأمان) في جدول tags
+    // 2. تصفير كافة الحقول الإضافية (المركبة، المالك، المشتري والتوصيل، المدينة، الباقة، التواريخ، الأمان) في جدول tags
     await resilientUpdate("tags", "tag_code", normalizedCode, {
       vehicle_info: null,
       vehicle_make_model: null,
@@ -3794,6 +3827,19 @@ export async function adminManageTagLifecycle(params: {
       owner_name: null,
       city: null,
       vehicle_city: null,
+      buyer_name: null,
+      buyer_phone: null,
+      delivery_city: null,
+      delivery_address: null,
+      order_id: null,
+      purchase_method: null,
+      payment_method: null,
+      order_status: null,
+      selected_plan: null,
+      plan: null,
+      is_gift: null,
+      trial_ends_at: null,
+      expires_at: null,
       recovery_key_hash: null,
       emergency_recovery_hash: null,
       has_emergency_contacts: false,
@@ -3823,6 +3869,36 @@ export async function adminManageTagLifecycle(params: {
       subscription_starts_at: null,
       subscription_expires_at: null,
     });
+
+    // 3ب. إلغاء أو تنظيف أي طلبات مرتبطة بهذا الملصق في جدول orders
+    try {
+      await supabaseAdmin
+        .from("orders")
+        .update({
+          status: "cancelled",
+          payment_status: "cancelled",
+          subscription_starts_at: null,
+          subscription_expires_at: null,
+        })
+        .ilike("assigned_tag_code", `%${normalizedCode}%`);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await supabaseAdmin.from("admin_audit_logs").insert({
+        admin_name: params.adminName || "إدارة الملصقات",
+        action_type: "TAG_BUYER_CLEARED",
+        target_item: normalizedCode,
+        details: JSON.stringify({
+          tagCode: normalizedCode,
+          clearedAt: new Date().toISOString(),
+        }),
+        created_at: new Date().toISOString(),
+      });
+    } catch {
+      // ignore
+    }
 
     // 4. حذف جميع البلاغات والتنبيهات والوثائق وسجلات الصيانة وأي مفاتيح مرور/جلسات مرتبطة بهذا الملصق
     const deleteWhereEq = async (table: string, col: string, val: string) => {

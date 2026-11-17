@@ -1181,6 +1181,25 @@ export default function ExecutiveAdminDashboardPage() {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
         setFactoryResetModalTag(null);
+        setDetailsModalTag((prev) =>
+          prev && prev.tagCode === tagCode
+            ? (data.tags || []).find((t: AdminTagRecord) => t.tagCode === tagCode) || null
+            : prev
+        );
+        fetch("/api/admin/lifecycle", { headers: getAdminHeaders() })
+          .then((r) => r.json())
+          .then((lc) => {
+            if (lc?.ok && Array.isArray(lc.orders)) {
+              const pending = lc.orders.filter(
+                (o: { status?: string; paymentStatus?: string }) =>
+                  o.status === "pending_delivery" ||
+                  o.paymentStatus === "pending_cod" ||
+                  o.status === "pending_assignment"
+              ).length;
+              setPendingOrdersCount(pending);
+            }
+          })
+          .catch(() => {});
         showToast(
           `تمت إعادة ضبط المصنع للملصق (${tagCode}) وإرجاعه لحالة LOCKED بنجاح ✓`
         );
