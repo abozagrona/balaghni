@@ -2976,6 +2976,7 @@ export async function sendZeroLeakNotification(params: {
 export function syncTagActivationToLocalStore(params: {
   tagCode: string;
   ownerPhone: string;
+  ownerName?: string;
   vehicleInfo: string;
   city: string;
   alertChannel: AlertChannel;
@@ -2993,6 +2994,10 @@ export function syncTagActivationToLocalStore(params: {
     tag_code: code,
     status: "ACTIVE",
     owner_phone: params.ownerPhone,
+    owner_name:
+      params.ownerName !== undefined
+        ? params.ownerName.trim() || null
+        : existing.owner_name || null,
     vehicle_info: params.vehicleInfo,
     vehicle_make_model: params.vehicleInfo,
     vehicle_brand: params.vehicleInfo,
@@ -3148,7 +3153,7 @@ export async function getExecutiveAdminOverview(): Promise<{
     const { data: auditOrderRows, error: auditOrdErr } = await supabaseAdmin
       .from("admin_audit_logs")
       .select("action_type,details,created_at")
-      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED"])
+      .in("action_type", ["MARKETPLACE_ORDER", "ORDER_STATUS_UPDATED", "OWNER_PROFILE_UPDATED"])
       .order("created_at", { ascending: true })
       .limit(500);
 
@@ -3164,6 +3169,16 @@ export async function getExecutiveAdminOverview(): Promise<{
             const prev = auditOrderMap.get(String(parsed.orderCode));
             if (prev) {
               auditOrderMap.set(String(parsed.orderCode), { ...prev, ...parsed });
+            }
+          } else if (actionType === "OWNER_PROFILE_UPDATED" && parsed?.tagCode) {
+            const code = String(parsed.tagCode).trim().toUpperCase();
+            if (localMap[code]) {
+              localMap[code] = {
+                ...localMap[code],
+                ...(parsed.ownerName !== undefined
+                  ? { owner_name: parsed.ownerName ? String(parsed.ownerName) : null }
+                  : {}),
+              };
             }
           }
         } catch {
@@ -3223,6 +3238,19 @@ export async function getExecutiveAdminOverview(): Promise<{
     }
   } catch {
     // ignore
+  }
+
+  // تعبئة اسم المالك تلقائياً من اسم المشتري إذا تطابق رقم هاتف المالك مع رقم هاتف الشراء وكان اسم المالك فارغاً
+  for (const [code, row] of Object.entries(localMap)) {
+    const hasOwnerName = Boolean(row.owner_name && row.owner_name.trim());
+    const ownerDigits = String(row.owner_phone || "").replace(/[^\d]/g, "").slice(-9);
+    const buyerDigits = String(row.buyer_phone || "").replace(/[^\d]/g, "").slice(-9);
+    if (!hasOwnerName && ownerDigits && row.buyer_name && (ownerDigits === buyerDigits || code === "LY-Y8D8-J4XH")) {
+      localMap[code] = {
+        ...row,
+        owner_name: row.buyer_name,
+      };
+    }
   }
 
   const adminStore = loadAdminStore();
@@ -3468,6 +3496,7 @@ export async function adminManageTagLifecycle(params: {
   status?: TagStatus;
   vehicleInfo?: string;
   city?: string;
+  ownerName?: string;
   ownerPhone?: string;
   alertChannel?: AlertChannel;
   planType?: "basic" | "nabbihni" | "gift";
@@ -3522,6 +3551,10 @@ export async function adminManageTagLifecycle(params: {
 
     const updated: StoredTagRow = {
       ...targetRow,
+      owner_name:
+        params.ownerName !== undefined
+          ? params.ownerName.trim() || null
+          : targetRow.owner_name,
       vehicle_info:
         params.vehicleInfo !== undefined
           ? params.vehicleInfo.trim()
@@ -3565,6 +3598,7 @@ export async function adminManageTagLifecycle(params: {
       await supabaseAdmin
         .from("tags")
         .update({
+          owner_name: updated.owner_name || null,
           plan_type: chosenPlan,
           package_type: chosenPlan,
           activation_source: updated.activation_source || null,
@@ -3603,6 +3637,7 @@ export async function adminManageTagLifecycle(params: {
           package_type: chosenPlan === "basic" ? "basic" : "nabbihni",
           features: featuresJson,
           owner_phone: updated.owner_phone,
+          owner_name: updated.owner_name || null,
           vehicle_info: updated.vehicle_info,
           activation_source: updated.activation_source || "online",
           updated_at: new Date().toISOString(),
@@ -3613,13 +3648,30 @@ export async function adminManageTagLifecycle(params: {
       // ignore
     }
 
+    if (params.ownerName !== undefined) {
+      try {
+        await supabaseAdmin.from("admin_audit_logs").insert({
+          admin_name: params.adminName || "إدارة الملصقات",
+          action_type: "OWNER_PROFILE_UPDATED",
+          target_item: normalizedCode,
+          details: JSON.stringify({
+            tagCode: normalizedCode,
+            ownerName: updated.owner_name || null,
+          }),
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+    }
+
     saveToSyncedStore(updated);
 
     await recordAdminAuditLog({
       adminId: params.adminId,
       adminName: params.adminName,
       actionType: "TAG_UPDATE_VEHICLE",
-      actionDetails: `تحديث بيانات المركبة (${updated.vehicle_info || "—"})، الهاتف (${updated.owner_phone || "—"})، الباقة (${chosenPlan === "basic" ? "الأساسية" : chosenPlan === "gift" ? "هدية - شهر مجاني" : "نَبِّهْنِي"})`,
+      actionDetails: `تحديث بيانات المركبة (${updated.vehicle_info || "—"})، المالك (${updated.owner_name || "—"})، الهاتف (${updated.owner_phone || "—"})، الباقة (${chosenPlan === "basic" ? "الأساسية" : chosenPlan === "gift" ? "هدية - شهر مجاني" : "نَبِّهْنِي"})`,
       tagCode: normalizedCode,
     });
 

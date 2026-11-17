@@ -411,6 +411,7 @@ export async function POST(req: NextRequest) {
         status: body.status as TagStatus | undefined,
         vehicleInfo: body.vehicleInfo,
         city: body.city,
+        ownerName: body.ownerName,
         ownerPhone: body.ownerPhone,
         alertChannel: body.alertChannel as AlertChannel | undefined,
         planType:

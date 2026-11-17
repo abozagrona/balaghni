@@ -473,9 +473,26 @@ async function syncTagActivationRecord(params: {
   } catch {
     // ignore if remote tags columns differ
   }
+  if (params.ownerName !== undefined) {
+    try {
+      await supabaseAdmin.from("admin_audit_logs").insert({
+        admin_name: params.ownerName || "ربط ملصق",
+        action_type: "OWNER_PROFILE_UPDATED",
+        target_item: params.code,
+        details: JSON.stringify({
+          tagCode: params.code,
+          ownerName: params.ownerName ? params.ownerName.trim() : null,
+        }),
+        created_at: new Date().toISOString(),
+      });
+    } catch {
+      // ignore
+    }
+  }
   syncTagActivationToLocalStore({
     tagCode: params.code,
     ownerPhone: params.ownerPhone,
+    ownerName: params.ownerName,
     vehicleInfo: vehicleLabel,
     city: resolvedCity,
     alertChannel,
@@ -592,6 +609,7 @@ export async function activateStickerAtomic(params: {
           packageType: pkg,
           features,
           ownerPhone: params.ownerPhone,
+          ownerName: params.ownerName,
           vehicleInfo: params.vehicleInfo,
           startsAt,
           expiresAt,
@@ -768,6 +786,7 @@ export async function activateStickerAtomic(params: {
     packageType: pkg,
     features,
     ownerPhone: params.ownerPhone,
+    ownerName: params.ownerName,
     vehicleInfo: params.vehicleInfo,
     startsAt,
     expiresAt,
@@ -862,6 +881,7 @@ export async function redeemGiftSticker(params: {
     packageType: "nabbihni",
     features: NABBIHNI_FEATURES,
     ownerPhone: params.phone,
+    ownerName: params.ownerName,
     vehicleInfo: params.vehicleInfo,
     startsAt: nowIso,
     expiresAt,

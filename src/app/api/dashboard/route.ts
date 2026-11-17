@@ -153,6 +153,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "update_owner_profile") {
+      const ownerName =
+        body.ownerName !== undefined ? String(body.ownerName).trim() : undefined;
       const vehicleInfo =
         body.vehicleInfo !== undefined ? String(body.vehicleInfo).trim() : undefined;
       const city = body.city !== undefined ? String(body.city).trim() : undefined;
@@ -183,10 +185,36 @@ export async function POST(request: NextRequest) {
           .eq("tag_code", tagCode);
       }
 
+      if (ownerName !== undefined) {
+        try {
+          await supabaseAdmin
+            .from("tags")
+            .update({ owner_name: ownerName || null })
+            .eq("tag_code", tagCode);
+        } catch {
+          // ignore if column missing
+        }
+        try {
+          await supabaseAdmin.from("admin_audit_logs").insert({
+            admin_name: ownerName || "مالك المركبة",
+            action_type: "OWNER_PROFILE_UPDATED",
+            target_item: tagCode,
+            details: JSON.stringify({
+              tagCode,
+              ownerName: ownerName || null,
+            }),
+            created_at: new Date().toISOString(),
+          });
+        } catch {
+          // ignore
+        }
+      }
+
       try {
         const stickerUpdate: Record<string, unknown> = {
           updated_at: new Date().toISOString(),
         };
+        if (ownerName !== undefined) stickerUpdate.owner_name = ownerName || null;
         if (vehicleInfo !== undefined) stickerUpdate.vehicle_info = vehicleInfo;
         if (ownerPhone !== undefined && ownerPhone.length > 0) {
           stickerUpdate.owner_phone = ownerPhone;
@@ -199,12 +227,13 @@ export async function POST(request: NextRequest) {
         // ignore
       }
 
-      if (vehicleInfo || city || ownerPhone) {
+      if (ownerName !== undefined || vehicleInfo || city || ownerPhone) {
         const existingLifecycle = await getStickerLifecycle(tagCode);
         const planType = existingLifecycle?.planType || "basic";
         syncTagActivationToLocalStore({
           tagCode,
           ownerPhone: ownerPhone || existingLifecycle?.ownerPhone || "",
+          ownerName: ownerName !== undefined ? ownerName : existingLifecycle?.ownerName || undefined,
           vehicleInfo: vehicleInfo || existingLifecycle?.vehicleInfo || "مركبة مسجلة",
           city: city || "طرابلس",
           alertChannel:

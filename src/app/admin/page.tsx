@@ -228,6 +228,7 @@ export default function ExecutiveAdminDashboardPage() {
   const [editingTag, setEditingTag] = React.useState<AdminTagRecord | null>(
     null
   );
+  const [editOwnerName, setEditOwnerName] = React.useState("");
   const [editVehicleInfo, setEditVehicleInfo] = React.useState("");
   const [editCity, setEditCity] = React.useState("طرابلس");
   const [editOwnerPhone, setEditOwnerPhone] = React.useState("");
@@ -1242,6 +1243,7 @@ export default function ExecutiveAdminDashboardPage() {
         body: JSON.stringify({
           action: "update_vehicle",
           tagCode: editingTag.tagCode,
+          ownerName: editOwnerName,
           vehicleInfo: editVehicleInfo,
           city: editCity,
           ownerPhone: editOwnerPhone,
@@ -2787,6 +2789,7 @@ export default function ExecutiveAdminDashboardPage() {
                                     notificationChannel: tag.alertChannel,
                                   });
                                   setEditingTag(tag);
+                                  setEditOwnerName(tag.ownerName || "");
                                   setEditVehicleInfo(tag.vehicleInfo || "");
                                   setEditCity(tag.city || "طرابلس");
                                   setEditOwnerPhone(tag.ownerPhone || "");
@@ -3347,6 +3350,19 @@ export default function ExecutiveAdminDashboardPage() {
 
             <div>
               <label className="mb-1 block text-xs font-bold text-white/80">
+                اسم المالك
+              </label>
+              <input
+                type="text"
+                value={editOwnerName}
+                onChange={(e) => setEditOwnerName(e.target.value)}
+                placeholder="مثال: محمد السنوسي"
+                className="h-11 w-full rounded-xl border border-white/15 bg-[#07090E] px-3 text-xs font-bold text-white"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-bold text-white/80">
                 نوع وموديل ولون السيارة
               </label>
               <input
@@ -3839,6 +3855,7 @@ export default function ExecutiveAdminDashboardPage() {
                       });
                       setDetailsModalTag(null);
                       setEditingTag(dTag);
+                      setEditOwnerName(dTag.ownerName || "");
                       setEditVehicleInfo(dTag.vehicleInfo || "");
                       setEditCity(dTag.city || "طرابلس");
                       setEditOwnerPhone(dTag.ownerPhone || "");

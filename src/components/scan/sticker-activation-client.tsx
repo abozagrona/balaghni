@@ -78,9 +78,14 @@ export function StickerActivationClient({
       return;
     }
 
+    if (!ownerName.trim()) {
+      setError("يرجى إدخال الاسم الكامل لمالك المركبة.");
+      return;
+    }
+
     if (mode === "prepaid_ready") {
-      if (!ownerName.trim() || !vehicleInfo.trim() || !vehicleColor.trim() || !city.trim()) {
-        setError("يرجى تعبئة اسم المالك، نوع وموديل السيارة، لون السيارة، والمدينة لإتمام الربط.");
+      if (!vehicleInfo.trim() || !vehicleColor.trim() || !city.trim()) {
+        setError("يرجى تعبئة نوع وموديل السيارة، لون السيارة، والمدينة لإتمام الربط.");
         return;
       }
     }
@@ -318,11 +323,11 @@ export function StickerActivationClient({
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs font-bold text-foreground">
-              اسم المالك {mode === "prepaid_ready" ? "*" : "(اختياري)"}
+              الاسم الكامل لمالك المركبة *
             </label>
             <input
               type="text"
-              required={mode === "prepaid_ready"}
+              required
               value={ownerName}
               onChange={(e) => setOwnerName(e.target.value)}
               placeholder="محمد العلي"
