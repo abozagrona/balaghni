@@ -2676,8 +2676,8 @@ export async function confirmCodOrderDelivery(params: {
       operationType: "new_sale",
       packageType: pkgType,
       amountLyd:
-        Number(target.amountLyd || 0) > 0 && tagCodes.length === 1
-          ? Number(target.amountLyd)
+        Number(target.totalLyd || 0) > 0 && tagCodes.length === 1
+          ? Number(target.totalLyd)
           : getPackagePriceLyd(pkgType),
       paymentMethod: "cash",
     });
@@ -3148,8 +3148,8 @@ export async function syncCodOrderToTreasury(params: {
       operationType: "new_sale",
       packageType: pkgType,
       amountLyd:
-        Number(target.amountLyd || 0) > 0 && targets.length === 1
-          ? Number(target.amountLyd)
+        Number(target.totalLyd || 0) > 0 && targets.length === 1
+          ? Number(target.totalLyd)
           : getPackagePriceLyd(pkgType),
       paymentMethod: "cash",
       adminName: params.adminName,
@@ -3255,8 +3255,8 @@ export async function getSalesAndTreasurySummary(): Promise<{
             operationType: "new_sale",
             packageType: pkgType,
             amountLyd:
-              Number(ord.amountLyd || 0) > 0 && targets.length === 1
-                ? Number(ord.amountLyd)
+              Number(ord.totalLyd || 0) > 0 && targets.length === 1
+                ? Number(ord.totalLyd)
                 : getPackagePriceLyd(pkgType),
             paymentMethod: "cash",
             custodyStatus: "open",
