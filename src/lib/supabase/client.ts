@@ -10,6 +10,7 @@ import {
   signSecurityToken,
   verifySecurityToken,
   extractRawCredentialId,
+  createReportReplySignature,
   type BaseTokenPayload,
 } from "@/lib/security-tokens";
 
@@ -2902,12 +2903,11 @@ export async function sendZeroLeakNotification(params: {
         ).slice(0, 15)
       : "غير مرفق";
 
-    const whatsappLines = [
-      `(منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}): ${var2}، ${var3}، رقم المبلّغ (${formattedCaller}) للتواصل السريع`,
-      ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
-    ];
-
-    let smsFallbackEnabled = true;
+    const isBasicPlan =
+      tag.planType === "basic" ||
+      tag.packageType === "basic" ||
+      tag.alertChannel === "WHATSAPP";
+    let smsFallbackEnabled = !isBasicPlan;
     let photoAttachmentsEnabled = true;
     try {
       const { data: stickerRow } = await supabaseAdmin
@@ -2917,7 +2917,9 @@ export async function sendZeroLeakNotification(params: {
         .maybeSingle();
       if (stickerRow?.features && typeof stickerRow.features === "object") {
         const f = stickerRow.features as Record<string, unknown>;
-        if (typeof f.sms_fallback === "boolean") smsFallbackEnabled = f.sms_fallback;
+        if (!isBasicPlan && typeof f.sms_fallback === "boolean") {
+          smsFallbackEnabled = f.sms_fallback;
+        }
         if (typeof f.photo_attachments === "boolean") {
           photoAttachmentsEnabled = f.photo_attachments;
         }
@@ -2926,13 +2928,38 @@ export async function sendZeroLeakNotification(params: {
       // ignore if stickers table not migrated yet
     }
 
+    const reportIdStr = String(addedReport.report?.id || "");
+    const baseAppUrl = (
+      process.env.NEXT_PUBLIC_SITE_URL || "https://www.balaghni.ly"
+    ).replace(/\/+$/, "");
+    const replySig = reportIdStr
+      ? createReportReplySignature(reportIdStr, normalizedCode)
+      : "";
+    const quickReplyUrl =
+      reportIdStr && replySig
+        ? `${baseAppUrl}/api/notify/reply?reportId=${encodeURIComponent(
+            reportIdStr
+          )}&tagCode=${encodeURIComponent(normalizedCode)}&sig=${encodeURIComponent(
+            replySig
+          )}&reply=2min`
+        : null;
+
+    const whatsappLines = [
+      `(منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}): ${var2}، ${var3}، رقم المبلّغ (${formattedCaller}) للتواصل السريع`,
+      ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
+      ...(quickReplyUrl
+        ? [`✅ للرد السريع (أنا قادم خلال دقيقتين): ${quickReplyUrl}`]
+        : []),
+    ];
+
     const effectivePhotoUrl = photoAttachmentsEnabled ? params.photoUrl : null;
 
+    // 1. إرسال واتساب أولاً بشكل فوري دون إرسال SMS في نفس اللحظة أبداً
     const waResult = await sendWhatsappAlertMessage(
       tag.ownerPhone,
       whatsappLines.join("\n"),
       effectivePhotoUrl,
-      { verifyDelivery: smsFallbackEnabled }
+      { verifyDelivery: false }
     );
     const waOk = waResult.ok;
 
@@ -2940,7 +2967,41 @@ export async function sendZeroLeakNotification(params: {
     let smsStatus: number | undefined;
     let smsError: string | undefined;
 
-    if (!waOk && smsFallbackEnabled) {
+    if (waOk) {
+      deliveredChannels = "WHATSAPP";
+      if (reportIdStr && !reportIdStr.startsWith("rep_")) {
+        try {
+          await supabaseAdmin
+            .from("reports")
+            .update({ reason_badge: "واتساب: تم الإرسال" })
+            .eq("id", reportIdStr);
+        } catch {
+          // ignore
+        }
+      }
+      try {
+        await supabaseAdmin.from("admin_audit_logs").insert({
+          admin_name: "منظومة الإشعارات",
+          action_type: "REPORT_DISPATCH",
+          target_item: reportIdStr || normalizedCode,
+          details: JSON.stringify({
+            reportId: reportIdStr,
+            tagCode: normalizedCode,
+            waMessageId: waResult.idMessage || null,
+            smsFallbackEnabled,
+            var1,
+            var2,
+            var3,
+            formattedCaller,
+            createdAt: new Date().toISOString(),
+          }),
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+    } else if (smsFallbackEnabled) {
+      // في باقة نَبِّهْنِي فقط: إذا تعذر إرسال واتساب مباشرة يتم التحويل الحصري لـ SMS
       const smsResult = await sendSmsAlertMessage(
         tag.ownerPhone,
         var1,
@@ -2951,24 +3012,34 @@ export async function sendZeroLeakNotification(params: {
       smsOk = smsResult.ok;
       smsStatus = smsResult.status;
       smsError = smsResult.error;
+      if (smsOk) {
+        deliveredChannels = "SMS";
+        if (reportIdStr && !reportIdStr.startsWith("rep_")) {
+          try {
+            await supabaseAdmin
+              .from("reports")
+              .update({ reason_badge: "تم الإشعار عبر SMS (بديل تلقائي)" })
+              .eq("id", reportIdStr);
+          } catch {
+            // ignore
+          }
+        }
+      }
     }
 
     console.log(
-      `[Report Delivery ${normalizedCode}] WhatsApp=${
-        waOk ? "OK" : waResult.error
+      `[Report Delivery ${normalizedCode}] Plan=${isBasicPlan ? "BASIC(WA_ONLY)" : "NABBIHNI"} | WhatsApp=${
+        waOk ? "SENT" : waResult.error
       } | SMS=${
         !smsFallbackEnabled
-          ? "DISABLED BY PACKAGE"
+          ? "BLOCKED_BY_BASIC_PLAN"
           : !waOk
           ? smsOk
-            ? "OK"
+            ? "FALLBACK_OK"
             : `${smsStatus || ""} ${smsError || ""}`
-          : "SKIPPED (WA OK)"
+          : "DEFERRED_35S_FALLBACK"
       }`
     );
-
-    if (waOk) deliveredChannels = "WHATSAPP";
-    else if (smsOk) deliveredChannels = "SMS";
   }
 
   adminStore.notifyCooldowns[normalizedCode] = new Date().toISOString();

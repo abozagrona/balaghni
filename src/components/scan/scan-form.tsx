@@ -197,17 +197,9 @@ export function ScanForm({
     }
   }, [isSending, isSuccess, onCompactStateChange]);
 
-  // مراقبة حالة التسليم والقراءة ورد صاحب السيارة كل 10 ثوانٍ بعد نجاح الإرسال
+  // مراقبة حالة التسليم والقراءة ورد صاحب السيارة كل 5 ثوانٍ بعد نجاح الإرسال
   React.useEffect(() => {
     if (!isSuccess) return;
-
-    const deliverTimer = window.setTimeout(() => {
-      setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
-    }, 1500);
-
-    const smsFallbackTimer = window.setTimeout(() => {
-      setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
-    }, 30000);
 
     const pollStatus = async () => {
       try {
@@ -243,13 +235,16 @@ export function ScanForm({
       }
     };
 
+    const initialTimer = window.setTimeout(() => {
+      void pollStatus();
+    }, 2500);
+
     const pollInterval = window.setInterval(() => {
       void pollStatus();
-    }, 10000);
+    }, 5000);
 
     return () => {
-      window.clearTimeout(deliverTimer);
-      window.clearTimeout(smsFallbackTimer);
+      window.clearTimeout(initialTimer);
       window.clearInterval(pollInterval);
     };
   }, [isSuccess, tagCode, reportId]);
@@ -618,7 +613,7 @@ export function ScanForm({
                     <div className="rounded-xl bg-white/75 px-3 py-2 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
                       {isReadOrReplied
                         ? "بانتظار استجابة صاحب السيارة... سيتم إشعارك هنا فور رده."
-                        : "يتم فحص حالة التسليم والقراءة تلقائياً كل 10 ثوانٍ دون كشف أرقام الهواتف."}
+                        : "يتم فحص حالة التسليم والقراءة تلقائياً كل 5 ثوانٍ دون كشف أرقام الهواتف."}
                     </div>
                   )}
                 </div>

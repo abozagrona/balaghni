@@ -295,6 +295,69 @@ async function verifyGreenApiDelivery(
   return { delivered: false, statusMessage: lastStatus };
 }
 
+export async function checkGreenApiMessageStatus(
+  phone: string,
+  idMessage: string
+): Promise<"sent" | "delivered" | "read" | "failed" | "unknown"> {
+  if (!GREEN_API_TOKEN || !GREEN_API_INSTANCE || !idMessage) return "unknown";
+  const cleanPhone = phone.replace(/[^\d]/g, "");
+  if (!cleanPhone) return "unknown";
+  const baseUrl = (GREEN_API_URL || "https://7107.api.greenapi.com").replace(/\/$/, "");
+  const chatId = `${cleanPhone}@c.us`;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(
+      `${baseUrl}/waInstance${GREEN_API_INSTANCE}/getMessage/${GREEN_API_TOKEN}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId, idMessage }),
+        signal: controller.signal,
+      }
+    ).finally(() => clearTimeout(timeout));
+
+    let status = "";
+    if (res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        statusMessage?: string;
+      };
+      status = String(data?.statusMessage || "").trim().toLowerCase();
+    }
+
+    if (!status) {
+      const listController = new AbortController();
+      const listTimeout = setTimeout(() => listController.abort(), 3500);
+      const listRes = await fetch(
+        `${baseUrl}/waInstance${GREEN_API_INSTANCE}/lastOutgoingMessages/${GREEN_API_TOKEN}?minutes=5`,
+        { signal: listController.signal }
+      ).finally(() => clearTimeout(listTimeout));
+
+      if (listRes.ok) {
+        const items = (await listRes.json().catch(() => [])) as Array<{
+          idMessage?: string;
+          statusMessage?: string;
+        }>;
+        const match = Array.isArray(items)
+          ? items.find((m) => m.idMessage === idMessage)
+          : undefined;
+        if (match?.statusMessage) {
+          status = String(match.statusMessage).trim().toLowerCase();
+        }
+      }
+    }
+
+    if (status === "read") return "read";
+    if (status === "delivered") return "delivered";
+    if (status === "sent") return "sent";
+    if (status === "failed" || status === "noaccount") return "failed";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function sendWhatsappAlertMessage(
   phone: string,
   message: string,

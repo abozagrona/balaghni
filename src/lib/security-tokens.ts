@@ -936,3 +936,28 @@ export function verifyWebAuthnAssertion(input: {
 function clientDataBufFromCheck(buf: Buffer): Buffer {
   return buf;
 }
+
+export function createReportReplySignature(
+  reportId: string,
+  tagCode: string
+): string {
+  const secret = getSigningSecretKey();
+  return crypto
+    .createHmac("sha256", secret)
+    .update(`report_reply:${reportId}:${tagCode.toUpperCase().trim()}`, "utf8")
+    .digest("hex")
+    .slice(0, 24);
+}
+
+export function verifyReportReplySignature(
+  reportId: string,
+  tagCode: string,
+  sig: string
+): boolean {
+  if (!reportId || !tagCode || !sig) return false;
+  const expected = createReportReplySignature(reportId, tagCode);
+  const a = Buffer.from(sig.trim(), "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}

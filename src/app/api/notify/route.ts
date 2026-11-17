@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  getVehicleTagByCode,
   sendZeroLeakNotification,
   supabaseAdmin,
   uploadReportPhoto,
   validateScanTargetAndCooldown,
 } from "@/lib/supabase/client";
+import {
+  checkGreenApiMessageStatus,
+  sendSmsAlertMessage,
+} from "@/lib/otp-service";
 import {
   checkReportIpRateLimit,
   getClientIp,
@@ -183,8 +188,9 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const badge = String(reportRow?.reason_badge || "");
+    let badge = String(reportRow?.reason_badge || "");
     const message = String(reportRow?.message || "");
+    const resolvedReportId = String(reportRow?.id || reportId || "");
 
     let ownerReply: string | null = null;
     const replyMarker = "[رد المالك عبر واتساب]:";
@@ -195,7 +201,85 @@ export async function GET(req: NextRequest) {
       ownerReply = badge.replace("رد المالك:", "").trim() || null;
     }
 
-    let deliveryStatus: "sent" | "delivered" | "read" | "replied" = "delivered";
+    // إذا كانت الحالة ما زالت "تم الإرسال" ولم تُسلَّم أو تُقرأ بعد، نفحص Green-API ونجري التحويل البديل لـ SMS بعد 35 ثانية (لباقة نَبِّهْنِي فقط)
+    if (
+      !ownerReply &&
+      !badge.includes("تمت القراءة") &&
+      !badge.includes("تم التسليم") &&
+      !badge.includes("SMS") &&
+      resolvedReportId
+    ) {
+      try {
+        const { data: dispatchRows } = await supabaseAdmin
+          .from("admin_audit_logs")
+          .select("details,created_at")
+          .eq("action_type", "REPORT_DISPATCH")
+          .eq("target_item", resolvedReportId)
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        const dispatchRow = Array.isArray(dispatchRows) ? dispatchRows[0] : null;
+        if (dispatchRow?.details) {
+          const meta = JSON.parse(String(dispatchRow.details));
+          const targetCode = String(meta.tagCode || tagCode || "").toUpperCase();
+          const tagRecord = targetCode ? await getVehicleTagByCode(targetCode) : null;
+          const ownerPhone = tagRecord?.ownerPhone || "";
+
+          if (ownerPhone && meta.waMessageId) {
+            const waState = await checkGreenApiMessageStatus(
+              ownerPhone,
+              String(meta.waMessageId)
+            );
+            if (waState === "read") {
+              badge = "واتساب: تمت القراءة";
+              await supabaseAdmin
+                .from("reports")
+                .update({ reason_badge: badge })
+                .eq("id", resolvedReportId);
+            } else if (waState === "delivered") {
+              badge = "واتساب: تم التسليم";
+              await supabaseAdmin
+                .from("reports")
+                .update({ reason_badge: badge })
+                .eq("id", resolvedReportId);
+            } else {
+              const createdMs = new Date(
+                String(meta.createdAt || reportRow?.created_at || Date.now())
+              ).getTime();
+              const elapsedMs = Date.now() - createdMs;
+              const isBasic =
+                tagRecord?.planType === "basic" ||
+                tagRecord?.packageType === "basic" ||
+                tagRecord?.alertChannel === "WHATSAPP";
+
+              if (
+                elapsedMs >= 35000 &&
+                Boolean(meta.smsFallbackEnabled) &&
+                !isBasic
+              ) {
+                badge = "تم الإشعار عبر SMS (بديل تلقائي)";
+                await supabaseAdmin
+                  .from("reports")
+                  .update({ reason_badge: badge })
+                  .eq("id", resolvedReportId);
+
+                await sendSmsAlertMessage(
+                  ownerPhone,
+                  String(meta.var1 || targetCode),
+                  String(meta.var2 || "تنبيه عاجل"),
+                  String(meta.var3 || "يرجى مراجعة مركبتك"),
+                  String(meta.formattedCaller || "غير مرفق")
+                );
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore transient check failure
+      }
+    }
+
+    let deliveryStatus: "sent" | "delivered" | "read" | "replied" = "sent";
     if (ownerReply) {
       deliveryStatus = "replied";
     } else if (badge.includes("تمت القراءة")) {
