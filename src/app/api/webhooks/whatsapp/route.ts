@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
-import { supabaseAdmin } from "@/lib/supabase/client";
+import {
+  supabaseAdmin,
+  broadcastReportRealtimeUpdate,
+} from "@/lib/supabase/client";
 import { sendSmsAlertMessage } from "@/lib/otp-service";
 
 export const dynamic = "force-dynamic";
@@ -315,6 +318,17 @@ export async function POST(req: NextRequest) {
             reason_badge: badgeLabel,
           })
           .eq("id", report.id);
+
+        if (st.status === "read" || st.status === "delivered") {
+          await broadcastReportRealtimeUpdate({
+            reportId: String(report.id),
+            tagCode,
+            deliveryStatus: st.status === "read" ? "read" : "delivered",
+            ownerReply: null,
+            isSmsFallback: false,
+            reasonBadge: badgeLabel,
+          });
+        }
       }
 
       // في حال فشل تسليم إشعار الواتساب (failed): التحويل التلقائي إلى SMS كخطة بديلة
@@ -348,12 +362,22 @@ export async function POST(req: NextRequest) {
           );
 
           if (smsFallback.ok) {
+            const smsBadge = "تم الإشعار عبر SMS (بديل تلقائي)";
             await supabase
               .from("reports")
               .update({
-                reason_badge: "تم الإشعار عبر SMS (بديل تلقائي)",
+                reason_badge: smsBadge,
               })
               .eq("id", report.id);
+
+            await broadcastReportRealtimeUpdate({
+              reportId: String(report.id),
+              tagCode,
+              deliveryStatus: "delivered",
+              ownerReply: null,
+              isSmsFallback: true,
+              reasonBadge: smsBadge,
+            });
           }
         }
       }
@@ -379,14 +403,24 @@ export async function POST(req: NextRequest) {
         const updatedMessage = previousMessage.includes(msg.text)
           ? previousMessage
           : `${previousMessage}${replyLine}`.trim();
+        const replyBadge = `رد المالك: ${msg.text.slice(0, 40)}`;
 
         await supabase
           .from("reports")
           .update({
-            reason_badge: `رد المالك: ${msg.text.slice(0, 40)}`,
+            reason_badge: replyBadge,
             message: updatedMessage,
           })
           .eq("id", report.id);
+
+        await broadcastReportRealtimeUpdate({
+          reportId: String(report.id),
+          tagCode,
+          deliveryStatus: "replied",
+          ownerReply: msg.text,
+          isSmsFallback: false,
+          reasonBadge: replyBadge,
+        });
       } else if (tagCode) {
         await supabase.from("reports").insert({
           tag_code: tagCode,

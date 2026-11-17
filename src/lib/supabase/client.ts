@@ -74,6 +74,43 @@ export const supabaseAdmin = createClient(
   }
 );
 
+export async function broadcastReportRealtimeUpdate(params: {
+  reportId?: string | null;
+  tagCode?: string | null;
+  deliveryStatus: "sent" | "delivered" | "read" | "replied";
+  ownerReply?: string | null;
+  isSmsFallback?: boolean;
+  reasonBadge?: string;
+}): Promise<void> {
+  const reportId = String(params.reportId || "").trim();
+  const tagCode = String(params.tagCode || "").trim().toUpperCase();
+  const payload = {
+    reportId: reportId || undefined,
+    tagCode: tagCode || undefined,
+    deliveryStatus: params.deliveryStatus,
+    ownerReply: params.ownerReply ?? null,
+    isSmsFallback: Boolean(params.isSmsFallback),
+    reasonBadge: params.reasonBadge,
+  };
+
+  const channels = [
+    reportId ? `report-live:${reportId}` : null,
+    tagCode ? `report-tag:${tagCode}` : null,
+  ].filter(Boolean) as string[];
+
+  await Promise.all(
+    channels.map(async (channelName) => {
+      try {
+        const ch = supabaseAdmin.channel(channelName);
+        await ch.httpSend("report_update", payload);
+        await supabaseAdmin.removeChannel(ch);
+      } catch {
+        // ignore transient realtime broadcast failure
+      }
+    })
+  );
+}
+
 export type TagStatus = "LOCKED" | "ACTIVE" | "REVOKED";
 export type AlertChannel = "SMS" | "WHATSAPP" | "BOTH";
 

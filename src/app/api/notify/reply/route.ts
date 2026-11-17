@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/client";
+import {
+  supabaseAdmin,
+  broadcastReportRealtimeUpdate,
+} from "@/lib/supabase/client";
 import { verifyReportReplySignature } from "@/lib/security-tokens";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
@@ -49,6 +52,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const reasonBadge = `رد المالك: ${replyText}`;
     if (reportRow?.id) {
       const prevMsg = String(reportRow.message || "").trim();
       const marker = `[رد المالك عبر واتساب]: ${replyText}`;
@@ -59,10 +63,28 @@ export async function GET(req: NextRequest) {
       await supabaseAdmin
         .from("reports")
         .update({
-          reason_badge: `رد المالك: ${replyText}`,
+          reason_badge: reasonBadge,
           message: nextMsg,
         })
         .eq("id", reportRow.id);
+
+      await broadcastReportRealtimeUpdate({
+        reportId: String(reportRow.id),
+        tagCode,
+        deliveryStatus: "replied",
+        ownerReply: replyText,
+        isSmsFallback: false,
+        reasonBadge,
+      });
+    } else {
+      await broadcastReportRealtimeUpdate({
+        reportId,
+        tagCode,
+        deliveryStatus: "replied",
+        ownerReply: replyText,
+        isSmsFallback: false,
+        reasonBadge,
+      });
     }
   } catch {
     // ignore

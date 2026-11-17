@@ -26,6 +26,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
 import {
+  supabaseRealtime,
+  parseReportStatusFromRow,
+  type ReportRealtimePayload,
+} from "@/lib/supabase/realtime";
+import {
   FlaggedNotePreview,
   type FlaggedSpan,
 } from "@/components/scan/flagged-note-preview";
@@ -197,55 +202,75 @@ export function ScanForm({
     }
   }, [isSending, isSuccess, onCompactStateChange]);
 
-  // مراقبة حالة التسليم والقراءة ورد صاحب السيارة كل 5 ثوانٍ بعد نجاح الإرسال
+  // الاتصال الحي الفوري (Supabase Realtime WebSockets) لمراقبة حالة القراءة والرد فورياً دون Polling
   React.useEffect(() => {
     if (!isSuccess) return;
 
-    const pollStatus = async () => {
-      try {
-        const res = await fetch(
-          `/api/notify?tagCode=${encodeURIComponent(tagCode)}&reportId=${encodeURIComponent(
-            reportId || ""
-          )}`,
-          { cache: "no-store" }
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) return;
-
-        if (data.isSmsFallback) {
-          setIsSmsFallback(true);
+    const applyRealtimeState = (next: {
+      deliveryStatus?: "sent" | "delivered" | "read" | "replied";
+      ownerReply?: string | null;
+      isSmsFallback?: boolean;
+    }) => {
+      if (next.isSmsFallback) {
+        setIsSmsFallback(true);
+      }
+      if (next.deliveryStatus === "replied" || next.ownerReply) {
+        setDeliveryStatus("replied");
+        if (next.ownerReply) {
+          setOwnerReply((prev) => {
+            if (!prev) {
+              setArrivalCountdown(120);
+            }
+            return next.ownerReply ?? null;
+          });
         }
-        if (data.deliveryStatus === "replied" || data.ownerReply) {
-          setDeliveryStatus("replied");
-          if (data.ownerReply) {
-            setOwnerReply((prev) => {
-              if (!prev) {
-                setArrivalCountdown(120);
-              }
-              return data.ownerReply;
-            });
-          }
-        } else if (data.deliveryStatus === "read") {
-          setDeliveryStatus((prev) => (prev === "replied" ? prev : "read"));
-        } else if (data.deliveryStatus === "delivered") {
-          setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
-        }
-      } catch {
-        // ignore transient polling error
+      } else if (next.deliveryStatus === "read") {
+        setDeliveryStatus((prev) => (prev === "replied" ? prev : "read"));
+      } else if (next.deliveryStatus === "delivered") {
+        setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
       }
     };
 
-    const initialTimer = window.setTimeout(() => {
-      void pollStatus();
-    }, 2500);
+    const hasRealReportId = Boolean(reportId && !reportId.startsWith("rep_"));
+    const normalizedTag = tagCode.trim().toUpperCase();
+    const channelName = hasRealReportId
+      ? `report-live:${reportId}`
+      : `report-tag:${normalizedTag}`;
+    const pgFilter = hasRealReportId
+      ? `id=eq.${reportId}`
+      : `tag_code=eq.${normalizedTag}`;
 
-    const pollInterval = window.setInterval(() => {
-      void pollStatus();
-    }, 5000);
+    const channel = supabaseRealtime
+      .channel(channelName)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "reports",
+          filter: pgFilter,
+        },
+        (payload) => {
+          const row = (payload.new || {}) as Record<string, unknown>;
+          const parsed = parseReportStatusFromRow(
+            typeof row.reason_badge === "string" ? row.reason_badge : null,
+            typeof row.message === "string" ? row.message : null
+          );
+          applyRealtimeState(parsed);
+        }
+      )
+      .on("broadcast", { event: "report_update" }, ({ payload }) => {
+        const data = (payload || {}) as Partial<ReportRealtimePayload>;
+        applyRealtimeState({
+          deliveryStatus: data.deliveryStatus,
+          ownerReply: data.ownerReply ?? null,
+          isSmsFallback: Boolean(data.isSmsFallback),
+        });
+      })
+      .subscribe();
 
     return () => {
-      window.clearTimeout(initialTimer);
-      window.clearInterval(pollInterval);
+      void supabaseRealtime.removeChannel(channel);
     };
   }, [isSuccess, tagCode, reportId]);
 
@@ -613,7 +638,7 @@ export function ScanForm({
                     <div className="rounded-xl bg-white/75 px-3 py-2 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
                       {isReadOrReplied
                         ? "بانتظار استجابة صاحب السيارة... سيتم إشعارك هنا فور رده."
-                        : "يتم فحص حالة التسليم والقراءة تلقائياً كل 5 ثوانٍ دون كشف أرقام الهواتف."}
+                        : "اتصال حي مباشر • سيتم تحديث علامات الصح وظهور رد المالك فورياً دون كشف أرقام الهواتف."}
                     </div>
                   )}
                 </div>
