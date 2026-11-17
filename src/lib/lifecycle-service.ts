@@ -166,6 +166,7 @@ export interface OrderRecord {
 export interface SalesLedgerEntry {
   id: string;
   tagCode: string;
+  orderCode?: string | null;
   customerName: string;
   operationType: "new_sale" | "gift_upgrade" | "gift_free";
   packageType: PackageType | "gift";
@@ -2668,11 +2669,16 @@ export async function confirmCodOrderDelivery(params: {
     };
 
     await recordSaleTransaction({
+      id: `sale_cod_${target.id}_${tagCode}`,
       tagCode,
+      orderCode: target.orderCode || null,
       customerName: target.customerName || target.customerPhone,
       operationType: "new_sale",
       packageType: pkgType,
-      amountLyd: getPackagePriceLyd(pkgType),
+      amountLyd:
+        Number(target.amountLyd || 0) > 0 && tagCodes.length === 1
+          ? Number(target.amountLyd)
+          : getPackagePriceLyd(pkgType),
       paymentMethod: "cash",
     });
   }
@@ -3063,18 +3069,24 @@ export async function wipeAllOldData(): Promise<{
 // ============================================================================
 
 export async function recordSaleTransaction(params: {
+  id?: string;
   tagCode: string;
+  orderCode?: string | null;
   customerName?: string | null;
   operationType: "new_sale" | "gift_upgrade" | "gift_free";
   packageType: PackageType | "gift";
   amountLyd: number;
   paymentMethod: "cash" | "online" | "free";
   adminName?: string;
+  createdAt?: string;
 }): Promise<SalesLedgerEntry> {
-  const nowIso = new Date().toISOString();
+  const nowIso = params.createdAt || new Date().toISOString();
   const entry: SalesLedgerEntry = {
-    id: `sale_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    id:
+      params.id ||
+      `sale_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     tagCode: formatBalaghniTagCode(params.tagCode) || params.tagCode.toUpperCase(),
+    orderCode: params.orderCode || null,
     customerName: String(params.customerName || "").trim() || "بدون اسم",
     operationType: params.operationType,
     packageType: params.packageType,
@@ -3097,9 +3109,56 @@ export async function recordSaleTransaction(params: {
   }
 
   const store = loadStore();
-  store.salesLedger = [entry, ...(store.salesLedger || [])].slice(0, 1000);
+  const deduped = (store.salesLedger || []).filter((e) => e.id !== entry.id);
+  store.salesLedger = [entry, ...deduped].slice(0, 1000);
   saveStore(store);
   return entry;
+}
+
+export async function syncCodOrderToTreasury(params: {
+  orderId?: string;
+  orderCode?: string;
+  adminName?: string;
+}): Promise<{ ok: boolean; entriesAdded: number; error?: string }> {
+  const allOrders = await listAllOrders();
+  const target = allOrders.find(
+    (o) =>
+      (params.orderId && o.id === params.orderId) ||
+      (params.orderCode && o.orderCode === params.orderCode)
+  );
+  if (!target) {
+    return { ok: false, entriesAdded: 0, error: "الطلب غير موجود." };
+  }
+
+  const pkgType = normalizePackageType(target.packageType);
+  const rawAssigned = String(target.assignedTagCode || target.orderCode || "").trim();
+  const tagCodes = rawAssigned
+    .split(",")
+    .map((c) => c.trim().toUpperCase())
+    .filter((c) => c.startsWith("LY-"));
+  const targets = tagCodes.length > 0 ? tagCodes : [target.orderCode || target.id];
+
+  let entriesAdded = 0;
+  for (const code of targets) {
+    await recordSaleTransaction({
+      id: `sale_cod_${target.id}_${code}`,
+      tagCode: code,
+      orderCode: target.orderCode || null,
+      customerName: target.customerName || target.customerPhone,
+      operationType: "new_sale",
+      packageType: pkgType,
+      amountLyd:
+        Number(target.amountLyd || 0) > 0 && targets.length === 1
+          ? Number(target.amountLyd)
+          : getPackagePriceLyd(pkgType),
+      paymentMethod: "cash",
+      adminName: params.adminName,
+      createdAt: target.createdAt || new Date().toISOString(),
+    });
+    entriesAdded += 1;
+  }
+
+  return { ok: true, entriesAdded };
 }
 
 export async function getSalesAndTreasurySummary(): Promise<{
@@ -3128,14 +3187,14 @@ export async function getSalesAndTreasurySummary(): Promise<{
   try {
     const { data, error } = await supabaseAdmin
       .from("admin_audit_logs")
-      .select("id,action_type,details,action_details,created_at")
+      .select("id,action_type,details,created_at")
       .in("action_type", ["SALE_RECORDED", "CUSTODY_CLOSED"])
       .order("created_at", { ascending: false })
       .limit(1000);
 
     if (!error && Array.isArray(data)) {
       for (const row of data as Array<Record<string, unknown>>) {
-        const rawJson = String(row.details || row.action_details || "");
+        const rawJson = String(row.details || "");
         if (!rawJson.startsWith("{")) continue;
         try {
           const parsed = JSON.parse(rawJson);
@@ -3146,6 +3205,63 @@ export async function getSalesAndTreasurySummary(): Promise<{
           }
         } catch {
           // ignore non-json audit rows
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // مزامنة تلقائية لأي طلبات كاش مكتملة/مدفوعة في قاعدة البيانات غير مسجلة بعد في سجل المبيعات والعُهد
+  try {
+    const allOrders = await listAllOrders();
+    const existingTagOrderKeys = new Set<string>();
+    for (const e of entryMap.values()) {
+      if (e.orderCode) existingTagOrderKeys.add(`ord:${e.orderCode}`);
+      if (e.tagCode && e.operationType === "new_sale" && e.paymentMethod === "cash") {
+        existingTagOrderKeys.add(`tag:${e.tagCode.toUpperCase()}`);
+      }
+    }
+
+    for (const ord of allOrders) {
+      const isCod =
+        ord.paymentMethod === "cod" ||
+        String(ord.paymentMethod || "").toLowerCase() === "cash";
+      const isCompletedOrPaid =
+        ord.status === "completed" ||
+        ord.status === "delivered" ||
+        ord.paymentStatus === "paid";
+
+      if (!isCod || !isCompletedOrPaid) continue;
+      if (ord.orderCode && existingTagOrderKeys.has(`ord:${ord.orderCode}`)) continue;
+
+      const pkgType = normalizePackageType(ord.packageType);
+      const rawAssigned = String(ord.assignedTagCode || "").trim();
+      const tagCodes = rawAssigned
+        .split(",")
+        .map((c) => c.trim().toUpperCase())
+        .filter((c) => c.startsWith("LY-"));
+      const targets = tagCodes.length > 0 ? tagCodes : [ord.orderCode || ord.id];
+
+      for (const code of targets) {
+        if (existingTagOrderKeys.has(`tag:${code.toUpperCase()}`)) continue;
+        const deterministicId = `sale_cod_${ord.id}_${code}`;
+        if (!entryMap.has(deterministicId)) {
+          entryMap.set(deterministicId, {
+            id: deterministicId,
+            tagCode: code,
+            orderCode: ord.orderCode || null,
+            customerName: String(ord.customerName || ord.customerPhone || "بدون اسم"),
+            operationType: "new_sale",
+            packageType: pkgType,
+            amountLyd:
+              Number(ord.amountLyd || 0) > 0 && targets.length === 1
+                ? Number(ord.amountLyd)
+                : getPackagePriceLyd(pkgType),
+            paymentMethod: "cash",
+            custodyStatus: "open",
+            createdAt: ord.subscriptionStartsAt || ord.createdAt || new Date().toISOString(),
+          });
         }
       }
     }

@@ -135,6 +135,7 @@ export function AdminLifecyclePanel({
     entries: Array<{
       id: string;
       tagCode: string;
+      orderCode?: string | null;
       customerName: string;
       operationType: "new_sale" | "gift_upgrade" | "gift_free";
       packageType: string;
@@ -693,6 +694,42 @@ export function AdminLifecyclePanel({
                       </Button>
                     </div>
                   )}
+
+                  {!isPendingCod &&
+                    !isCancelled &&
+                    ord.paymentMethod === "cod" &&
+                    (ord.status === "completed" ||
+                      ord.status === "delivered" ||
+                      ord.paymentStatus === "paid") &&
+                    !treasury.entries.some(
+                      (e) =>
+                        (e.orderCode && e.orderCode === ord.orderCode) ||
+                        (ord.assignedTagCode &&
+                          ord.assignedTagCode
+                            .split(",")
+                            .map((c) => c.trim().toUpperCase())
+                            .includes(e.tagCode.toUpperCase()))
+                    ) && (
+                      <div className="flex flex-wrap items-center gap-2 border-t border-emerald-500/20 pt-3">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={busyAction === `sync-${ord.id}`}
+                          onClick={() =>
+                            runAction(`sync-${ord.id}`, {
+                              action: "sync_cod_to_treasury",
+                              orderId: ord.id,
+                              orderCode: ord.orderCode,
+                            })
+                          }
+                          className="rounded-xl bg-emerald-600 text-white hover:bg-emerald-500"
+                        >
+                          {busyAction === `sync-${ord.id}`
+                            ? "جاري الترحيل..."
+                            : "تأكيد استلام الكاش وترحيله للخزينة"}
+                        </Button>
+                      </div>
+                    )}
 
                   {!ord.assignedTagCode && !isCancelled && (
                     <div className="flex flex-wrap items-center gap-2 border-t border-white/10 pt-3">

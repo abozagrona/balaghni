@@ -21,6 +21,7 @@ import {
   listUnassignedPaidOrders,
   listVendors,
   settleVendorMonth,
+  syncCodOrderToTreasury,
   wipeAllOldData,
 } from "@/lib/lifecycle-service";
 import type { PackageFeatures } from "@/lib/packages";
@@ -322,6 +323,23 @@ export async function POST(req: NextRequest) {
           ...res,
           message: res.ok
             ? `تم إغلاق العهدة النقدية وتصفية الكاش (${res.closure?.totalLyd || 0} د.ل) بنجاح ✓`
+            : res.error,
+        },
+        { status: res.ok ? 200 : 400 }
+      );
+    }
+
+    if (action === "sync_cod_to_treasury") {
+      const res = await syncCodOrderToTreasury({
+        orderId: body.orderId ? String(body.orderId) : undefined,
+        orderCode: body.orderCode ? String(body.orderCode) : undefined,
+        adminName: auth.adminName,
+      });
+      return NextResponse.json(
+        {
+          ...res,
+          message: res.ok
+            ? "تم تأكيد استلام الكاش وترحيل المعاملة إلى الخزينة وعهدة الكاش ✓"
             : res.error,
         },
         { status: res.ok ? 200 : 400 }
