@@ -2981,9 +2981,15 @@ export async function sendZeroLeakNotification(params: {
       : "";
     const quickReplyUrl = shortCode ? `${baseAppUrl}/r/${shortCode}` : null;
 
+    const fullTitle = meta.title.trim();
+    const fullDescription = meta.description.trim();
     const whatsappLines = [
-      `(منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}): ${var2}، ${var3}، رقم المبلّغ (${formattedCaller}) للتواصل السريع`,
-      ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
+      `🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}):`,
+      `• ${fullTitle}${fullDescription ? ` — ${fullDescription}` : ""}`,
+      ...(noteText ? [`• ملاحظة إضافية: ${noteText}`] : []),
+      ...(formattedCaller && formattedCaller !== "غير مرفق"
+        ? [`📞 للتواصل مع المُبلِّغ: ${formattedCaller}`]
+        : []),
       ...(quickReplyUrl
         ? [`✅ للرد السريع (أنا قادم الآن): ${quickReplyUrl}`]
         : []),

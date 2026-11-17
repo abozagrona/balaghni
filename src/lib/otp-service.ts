@@ -358,6 +358,14 @@ export async function checkGreenApiMessageStatus(
   }
 }
 
+function formatWhatsappCaption(raw: string, maxLen = 1024): string {
+  const cleaned = String(raw || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+  if (cleaned.length <= maxLen) return cleaned;
+  return `${cleaned.slice(0, maxLen - 3).trim()}...`;
+}
+
 export async function sendWhatsappAlertMessage(
   phone: string,
   message: string,
@@ -369,6 +377,92 @@ export async function sendWhatsappAlertMessage(
   deliveryStatus?: string;
   error?: string;
 }> {
+  const safeCaption = formatWhatsappCaption(message, 1024);
+  const trimmedPhoto = String(photoUrl || "").trim();
+  const hasPhoto = /^https?:\/\//i.test(trimmedPhoto);
+
+  // دعم اختياري لـ Twilio WhatsApp (عند تفعيله بدلاً من Green API)
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const twilioFrom = process.env.TWILIO_WHATSAPP_FROM?.trim();
+  if (!GREEN_API_TOKEN && twilioSid && twilioToken && twilioFrom) {
+    try {
+      const cleanPhone = phone.replace(/[^\d]/g, "");
+      const form = new URLSearchParams();
+      form.set("From", twilioFrom.startsWith("whatsapp:") ? twilioFrom : `whatsapp:${twilioFrom}`);
+      form.set("To", `whatsapp:+${cleanPhone}`);
+      form.set("Body", safeCaption);
+      if (hasPhoto) {
+        form.set("MediaUrl", trimmedPhoto);
+      }
+      const res = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: form.toString(),
+        }
+      );
+      const data = (await res.json().catch(() => ({}))) as { sid?: string; message?: string };
+      if (!res.ok) {
+        return { ok: false, error: data.message || `Twilio error: ${res.status}` };
+      }
+      return { ok: true, idMessage: data.sid };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Twilio send error" };
+    }
+  }
+
+  // دعم اختياري لـ Meta WhatsApp Cloud API (عند تفعيله بدلاً من Green API)
+  const metaToken = (
+    process.env.WHATSAPP_ACCESS_TOKEN ||
+    process.env.META_WHATSAPP_TOKEN ||
+    ""
+  ).trim();
+  const metaPhoneId = process.env.WHATSAPP_PHONE_NUMBER_ID?.trim();
+  if (!GREEN_API_TOKEN && metaToken && metaPhoneId) {
+    try {
+      const cleanPhone = phone.replace(/[^\d]/g, "");
+      const payload = hasPhoto
+        ? {
+            messaging_product: "whatsapp",
+            to: cleanPhone,
+            type: "image",
+            image: { link: trimmedPhoto, caption: safeCaption },
+          }
+        : {
+            messaging_product: "whatsapp",
+            to: cleanPhone,
+            type: "text",
+            text: { body: safeCaption },
+          };
+      const res = await fetch(
+        `https://graph.facebook.com/v20.0/${metaPhoneId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${metaToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        messages?: Array<{ id?: string }>;
+        error?: { message?: string };
+      };
+      if (!res.ok) {
+        return { ok: false, error: data.error?.message || `Meta error: ${res.status}` };
+      }
+      return { ok: true, idMessage: data.messages?.[0]?.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Meta send error" };
+    }
+  }
+
   if (!GREEN_API_TOKEN || !GREEN_API_INSTANCE) {
     return { ok: false, error: "Green-API credentials are not configured" };
   }
@@ -384,11 +478,10 @@ export async function sendWhatsappAlertMessage(
       ""
     );
     const chatId = `${cleanPhone}@c.us`;
-    const trimmedPhoto = String(photoUrl || "").trim();
     let idMessage: string | undefined;
     let sent = false;
 
-    if (/^https?:\/\//i.test(trimmedPhoto)) {
+    if (hasPhoto) {
       const fileController = new AbortController();
       const fileTimeout = setTimeout(() => fileController.abort(), 8000);
       try {
@@ -401,7 +494,7 @@ export async function sendWhatsappAlertMessage(
               chatId,
               urlFile: trimmedPhoto,
               fileName: "balaghni-report.jpg",
-              caption: message,
+              caption: safeCaption,
             }),
             signal: fileController.signal,
           }
@@ -429,7 +522,7 @@ export async function sendWhatsappAlertMessage(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chatId,
-          message,
+          message: safeCaption,
         }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timeout));
