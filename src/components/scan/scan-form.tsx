@@ -18,6 +18,10 @@ import {
   LockKeyhole,
   Sparkles,
   ArrowLeft,
+  Check,
+  CheckCheck,
+  Clock,
+  MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
@@ -121,6 +125,17 @@ export function ScanForm({
     React.useState<SendingStage>("sending");
   const [sendProgress, setSendProgress] = React.useState<number>(0);
   const [isSuccess, setIsSuccess] = React.useState<boolean>(false);
+  const [reportId, setReportId] = React.useState<string | null>(null);
+  const [sentAtLabel, setSentAtLabel] = React.useState<string>("");
+  const [deliveryStatus, setDeliveryStatus] = React.useState<
+    "sent" | "delivered" | "read" | "replied"
+  >("sent");
+  const [deliveredChannel, setDeliveredChannel] = React.useState<string>("BOTH");
+  const [isSmsFallback, setIsSmsFallback] = React.useState<boolean>(false);
+  const [ownerReply, setOwnerReply] = React.useState<string | null>(null);
+  const [arrivalCountdown, setArrivalCountdown] = React.useState<number | null>(
+    null
+  );
 
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [moderationState, setModerationState] =
@@ -181,6 +196,72 @@ export function ScanForm({
       });
     }
   }, [isSending, isSuccess, onCompactStateChange]);
+
+  // مراقبة حالة التسليم والقراءة ورد صاحب السيارة كل 10 ثوانٍ بعد نجاح الإرسال
+  React.useEffect(() => {
+    if (!isSuccess) return;
+
+    const deliverTimer = window.setTimeout(() => {
+      setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
+    }, 1500);
+
+    const smsFallbackTimer = window.setTimeout(() => {
+      setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
+    }, 30000);
+
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(
+          `/api/notify?tagCode=${encodeURIComponent(tagCode)}&reportId=${encodeURIComponent(
+            reportId || ""
+          )}`,
+          { cache: "no-store" }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) return;
+
+        if (data.isSmsFallback) {
+          setIsSmsFallback(true);
+        }
+        if (data.deliveryStatus === "replied" || data.ownerReply) {
+          setDeliveryStatus("replied");
+          if (data.ownerReply) {
+            setOwnerReply((prev) => {
+              if (!prev) {
+                setArrivalCountdown(120);
+              }
+              return data.ownerReply;
+            });
+          }
+        } else if (data.deliveryStatus === "read") {
+          setDeliveryStatus((prev) => (prev === "replied" ? prev : "read"));
+        } else if (data.deliveryStatus === "delivered") {
+          setDeliveryStatus((prev) => (prev === "sent" ? "delivered" : prev));
+        }
+      } catch {
+        // ignore transient polling error
+      }
+    };
+
+    const pollInterval = window.setInterval(() => {
+      void pollStatus();
+    }, 10000);
+
+    return () => {
+      window.clearTimeout(deliverTimer);
+      window.clearTimeout(smsFallbackTimer);
+      window.clearInterval(pollInterval);
+    };
+  }, [isSuccess, tagCode, reportId]);
+
+  // العداد التنازلي الحقيقي لمدة دقيقتين عند استجابة صاحب السيارة
+  React.useEffect(() => {
+    if (arrivalCountdown === null || arrivalCountdown <= 0) return;
+    const timer = window.setInterval(() => {
+      setArrivalCountdown((prev) => (prev && prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [arrivalCountdown]);
 
   // التحكم في نوافذ <dialog>
   React.useEffect(() => {
@@ -291,6 +372,17 @@ export function ScanForm({
       setSendProgress(100);
       await new Promise((r) => setTimeout(r, 220));
       clearScanDraft(tagCode);
+      setReportId(notifyData.report_id || null);
+      setDeliveredChannel(notifyData.delivered_channel || "BOTH");
+      setSentAtLabel(
+        new Date().toLocaleTimeString("ar-LY", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      );
+      setDeliveryStatus("sent");
+      setOwnerReply(null);
+      setArrivalCountdown(null);
       setIsSending(false);
       setIsSuccess(true);
     } catch {
@@ -358,27 +450,181 @@ export function ScanForm({
           </div>
         </div>
       ) : isSuccess ? (
-        /* شاشة النجاح الفوري + عرض تسويقي لطلب ملصق «بَلِّغْنِي» */
+        /* شاشة نجاح الإبلاغ على شكل محادثة واتساب حقيقية مع علامات الصح الحية والعداد التنازلي */
         <div
           ref={statusCardRef}
           className="my-2 space-y-4 animate-in fade-in duration-300"
         >
-          <div className="flex flex-col items-center justify-center rounded-3xl border border-emerald-500/25 bg-card px-6 py-8 text-center shadow-card-soft">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
-              <CheckCircle2 className="h-9 w-9" strokeWidth={2.3} />
-            </div>
-            <span className="mt-3 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-bold text-emerald-700 dark:text-emerald-300">
-              تم الإبلاغ بنجاح
-            </span>
-            <h2 className="mt-2.5 text-2xl font-bold text-foreground">
-              وصل تنبيهك لصاحب السيارة!
-            </h2>
-            <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-muted-foreground">
-              تم إرسال إشعار فوري عبر الرسائل القصيرة (SMS) وواتساب إلى مالك{" "}
-              <strong className="text-foreground">{vehicleName}</strong> دون كشف
-              هوية أو رقم أي طرف.
-            </p>
-          </div>
+          {(() => {
+            const selectedReasonObj =
+              CAR_REASONS.find((r) => r.id === reason) || CAR_REASONS[0];
+            const isReadOrReplied =
+              deliveryStatus === "read" || deliveryStatus === "replied";
+            const isDeliveredOrAbove =
+              deliveryStatus === "delivered" || isReadOrReplied;
+            const mins = String(
+              Math.floor((arrivalCountdown ?? 0) / 60)
+            ).padStart(2, "0");
+            const secs = String((arrivalCountdown ?? 0) % 60).padStart(2, "0");
+
+            return (
+              <div className="overflow-hidden rounded-3xl border border-emerald-600/25 shadow-card-soft">
+                {/* ترويسة واتساب الرسمية */}
+                <div className="flex items-center justify-between bg-[#075E54] px-4 py-3 text-white dark:bg-[#202C33]">
+                  <div className="flex items-center gap-3">
+                    <div className="relative flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-white">
+                      <CarFront className="h-5 w-5" />
+                      <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[#075E54] bg-[#25D366] dark:border-[#202C33]" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-sm font-black text-white">
+                          مالك {vehicleName}
+                        </h2>
+                        <span
+                          dir="ltr"
+                          className="rounded-md bg-white/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white/90"
+                        >
+                          {tagCode}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-white/80">
+                        {deliveryStatus === "replied"
+                          ? "ردّ على رسالتك الآن"
+                          : deliveryStatus === "read"
+                          ? "قرأ الرسالة"
+                          : deliveryStatus === "delivered"
+                          ? isSmsFallback || deliveredChannel === "SMS"
+                            ? "تم التسليم عبر SMS"
+                            : "تم التسليم عبر واتساب"
+                          : "جاري الإرسال..."}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[#25D366]/20 px-2.5 py-1 text-[10px] font-bold text-[#a7f3d0]">
+                    <LockKeyhole className="h-3 w-3" />
+                    مشفر وخصوصي
+                  </span>
+                </div>
+
+                {/* خلفية محادثة واتساب */}
+                <div
+                  className="space-y-3 bg-[#EFEAE2] p-4 dark:bg-[#0B141A]"
+                  style={{
+                    backgroundImage:
+                      "radial-gradient(rgba(0,0,0,0.04) 1px, transparent 0)",
+                    backgroundSize: "16px 16px",
+                  }}
+                >
+                  <div className="flex justify-center">
+                    <span className="rounded-lg bg-white/85 px-3 py-1 text-[11px] font-bold text-slate-600 shadow-sm dark:bg-[#182229] dark:text-slate-300">
+                      اليوم • بلاغ فوري عبر منصة بَلِّغْنِي
+                    </span>
+                  </div>
+
+                  {/* فقاعة البلاغ الصادرة (يمين) */}
+                  <div className="flex flex-col items-start">
+                    <div className="relative max-w-[88%] rounded-2xl rounded-tr-sm bg-[#D9FDD3] px-3.5 py-2.5 text-slate-900 shadow-sm dark:bg-[#005C4B] dark:text-white">
+                      <p className="text-xs font-black text-[#075E54] dark:text-emerald-200">
+                        تنبيه بَلِّغْنِي: {selectedReasonObj.label}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed">
+                        {selectedReasonObj.subtitle}
+                      </p>
+                      {imagePreviewUrl && (
+                        <div className="mt-2 overflow-hidden rounded-xl border border-black/10">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={imagePreviewUrl}
+                            alt="صورة البلاغ المرفقة"
+                            className="max-h-40 w-full object-cover"
+                          />
+                        </div>
+                      )}
+                      <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                        <span
+                          dir="ltr"
+                          className="text-[10px] font-medium text-slate-500 dark:text-white/70"
+                        >
+                          {sentAtLabel || "الآن"}
+                        </span>
+                        {isReadOrReplied ? (
+                          <CheckCheck
+                            className="h-4 w-4 text-[#53BDEB]"
+                            aria-label="تمت القراءة"
+                          />
+                        ) : isDeliveredOrAbove ? (
+                          <CheckCheck
+                            className="h-4 w-4 text-slate-500 dark:text-white/70"
+                            aria-label="تم التسليم"
+                          />
+                        ) : (
+                          <Check
+                            className="h-4 w-4 text-slate-500 dark:text-white/70"
+                            aria-label="تم الإرسال"
+                          />
+                        )}
+                      </div>
+                    </div>
+
+                    {isReadOrReplied && (
+                      <span className="mt-1 inline-flex items-center gap-1 px-1 text-[11px] font-bold text-[#0284c7] dark:text-[#53BDEB]">
+                        <CheckCheck className="h-3.5 w-3.5" />
+                        قُرئت بواسطة صاحب السيارة
+                      </span>
+                    )}
+                  </div>
+
+                  {/* فقاعة رد صاحب السيارة الواردة (يسار) + العداد التنازلي */}
+                  {ownerReply ? (
+                    <div className="flex flex-col items-end space-y-2 animate-in fade-in duration-300">
+                      <div className="max-w-[88%] rounded-2xl rounded-tl-sm bg-white px-3.5 py-2.5 text-slate-900 shadow-sm dark:bg-[#202C33] dark:text-white">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-700 dark:text-emerald-300">
+                          <MessageCircle className="h-3 w-3" />
+                          رد صاحب السيارة
+                        </span>
+                        <p className="mt-1 text-xs font-bold leading-relaxed">
+                          {ownerReply}
+                        </p>
+                      </div>
+
+                      {arrivalCountdown !== null && (
+                        <div className="w-full rounded-2xl border border-emerald-500/40 bg-emerald-600 px-4 py-3 text-white shadow-md">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <Clock className="h-5 w-5 animate-pulse text-emerald-100" />
+                              <div>
+                                <p className="text-xs font-black">
+                                  صاحب السيارة في طريقه إليك الآن!
+                                </p>
+                                <p className="text-[11px] text-emerald-100">
+                                  {arrivalCountdown > 0
+                                    ? "الوقت المتبقي المتوقع للوصول"
+                                    : "من المفترض وصول صاحب السيارة الآن"}
+                                </p>
+                              </div>
+                            </div>
+                            <span
+                              dir="ltr"
+                              className="rounded-xl bg-black/25 px-3 py-1.5 font-mono text-lg font-black tracking-wider"
+                            >
+                              {mins}:{secs}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl bg-white/75 px-3 py-2 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
+                      {isReadOrReplied
+                        ? "بانتظار استجابة صاحب السيارة... سيتم إشعارك هنا فور رده."
+                        : "يتم فحص حالة التسليم والقراءة تلقائياً كل 10 ثوانٍ دون كشف أرقام الهواتف."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* بطاقة تسويقية داكنة بهوية #0B0D13 و #E51926 */}
           <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-dark-hero-gradient p-6 text-white shadow-card-dark">

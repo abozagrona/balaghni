@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   sendZeroLeakNotification,
+  supabaseAdmin,
   uploadReportPhoto,
   validateScanTargetAndCooldown,
 } from "@/lib/supabase/client";
@@ -137,6 +138,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       tag_code: normalizedCode,
+      report_id: (result as { reportId?: string }).reportId || null,
       delivered_channel: result.deliveredChannels || "BOTH",
       photo_attached: Boolean(photoUrl),
       timestamp: new Date().toISOString(),
@@ -145,6 +147,75 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { ok: false, error: "حدث خطأ غير متوقع أثناء معالجة البلاغ." },
       { status: 500 }
+    );
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const rawTag = req.nextUrl.searchParams.get("tagCode") || "";
+    const reportId = req.nextUrl.searchParams.get("reportId") || "";
+    const tagCode = formatBalaghniTagCode(rawTag);
+
+    if (!tagCode && !reportId) {
+      return NextResponse.json({ ok: false, error: "tagCode required" }, { status: 400 });
+    }
+
+    let reportRow: Record<string, unknown> | null = null;
+    if (reportId && !reportId.startsWith("rep_")) {
+      const { data } = await supabaseAdmin
+        .from("reports")
+        .select("id,tag_code,reason_badge,message,created_at")
+        .eq("id", reportId)
+        .maybeSingle();
+      if (data) reportRow = data as Record<string, unknown>;
+    }
+
+    if (!reportRow && tagCode) {
+      const { data } = await supabaseAdmin
+        .from("reports")
+        .select("id,tag_code,reason_badge,message,created_at")
+        .eq("tag_code", tagCode)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (Array.isArray(data) && data.length > 0) {
+        reportRow = data[0] as Record<string, unknown>;
+      }
+    }
+
+    const badge = String(reportRow?.reason_badge || "");
+    const message = String(reportRow?.message || "");
+
+    let ownerReply: string | null = null;
+    const replyMarker = "[رد المالك عبر واتساب]:";
+    if (message.includes(replyMarker)) {
+      const parts = message.split(replyMarker);
+      ownerReply = parts[parts.length - 1]?.trim() || null;
+    } else if (badge.startsWith("رد المالك:")) {
+      ownerReply = badge.replace("رد المالك:", "").trim() || null;
+    }
+
+    let deliveryStatus: "sent" | "delivered" | "read" | "replied" = "delivered";
+    if (ownerReply) {
+      deliveryStatus = "replied";
+    } else if (badge.includes("تمت القراءة")) {
+      deliveryStatus = "read";
+    } else if (badge.includes("تم التسليم") || badge.includes("SMS")) {
+      deliveryStatus = "delivered";
+    } else if (badge.includes("تم الإرسال")) {
+      deliveryStatus = "sent";
+    }
+
+    return NextResponse.json({
+      ok: true,
+      deliveryStatus,
+      ownerReply,
+      isSmsFallback: badge.includes("SMS"),
+    });
+  } catch {
+    return NextResponse.json(
+      { ok: true, deliveryStatus: "delivered", ownerReply: null, isSmsFallback: false },
+      { status: 200 }
     );
   }
 }

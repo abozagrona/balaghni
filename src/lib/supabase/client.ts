@@ -1459,15 +1459,22 @@ export async function addReportForTag(params: {
   };
 
   try {
-    await supabase.from("reports").insert({
-      tag_code: normalizedCode,
-      reason_title: report.reasonTitle,
-      reason_badge: report.reasonBadge,
-      message: report.message,
-      location: report.location,
-      photo_url: report.photoUrl,
-      icon_type: report.iconType,
-    });
+    const { data: inserted } = await supabaseAdmin
+      .from("reports")
+      .insert({
+        tag_code: normalizedCode,
+        reason_title: report.reasonTitle,
+        reason_badge: report.reasonBadge,
+        message: report.message,
+        location: report.location,
+        photo_url: report.photoUrl,
+        icon_type: report.iconType,
+      })
+      .select("id")
+      .single();
+    if (inserted?.id) {
+      report.id = String(inserted.id);
+    }
   } catch {
     // ignore
   }
@@ -2867,7 +2874,7 @@ export async function sendZeroLeakNotification(params: {
   const callerPhone = String(params.senderPhone || "").trim();
   const reportMessage = noteText || meta.description;
 
-  await addReportForTag({
+  const addedReport = await addReportForTag({
     tagCode: normalizedCode,
     reasonTitle: meta.title,
     reasonBadge: meta.badge,
@@ -2970,6 +2977,14 @@ export async function sendZeroLeakNotification(params: {
   return {
     ok: true,
     deliveredChannels,
+    reportId: addedReport.report?.id,
+  } as {
+    ok: boolean;
+    cooldownActive?: boolean;
+    waitSeconds?: number;
+    error?: string;
+    deliveredChannels?: AlertChannel;
+    reportId?: string;
   };
 }
 
