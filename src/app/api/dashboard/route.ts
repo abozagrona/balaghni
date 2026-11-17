@@ -153,6 +153,16 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "update_owner_profile") {
+      if (auth.ownerPhone && !auth.isSuperAdmin) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              "تعديل بيانات المركبة واسم المالك متاح فقط عبر لوحة إدارة المنصة.",
+          },
+          { status: 403 }
+        );
+      }
       const ownerName =
         body.ownerName !== undefined ? String(body.ownerName).trim() : undefined;
       const vehicleInfo =

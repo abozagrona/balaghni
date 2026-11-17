@@ -196,49 +196,7 @@ function DashboardContent() {
     null
   );
 
-  const [profileMessage, setProfileMessage] = React.useState<string | null>(null);
-
-  // نافذة تعديل بيانات المركبة واسم المالك
-  const [showEditVehicleModal, setShowEditVehicleModal] = React.useState(false);
-  const [editOwnerName, setEditOwnerName] = React.useState("");
-  const [editVehicleInfo, setEditVehicleInfo] = React.useState("");
-  const [editCity, setEditCity] = React.useState("طرابلس");
-  const [savingVehicleProfile, setSavingVehicleProfile] = React.useState(false);
-
-  const handleOpenEditVehicleModal = () => {
-    if (!tagData) return;
-    setEditOwnerName(tagData.ownerName || "");
-    setEditVehicleInfo(tagData.vehicleInfo || "");
-    setEditCity(tagData.city || "طرابلس");
-    setShowEditVehicleModal(true);
-  };
-
-  const handleSaveVehicleProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tagData || savingVehicleProfile) return;
-    setSavingVehicleProfile(true);
-    try {
-      const res = await fetch("/api/dashboard", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "update_owner_profile",
-          tagCode: tagData.tagCode,
-          ownerName: editOwnerName.trim(),
-          vehicleInfo: editVehicleInfo.trim(),
-          city: editCity.trim(),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok && data.tag) {
-        setTagData(data.tag);
-        setShowEditVehicleModal(false);
-        setProfileMessage("تم تحديث بيانات المركبة واسم المالك بنجاح.");
-      }
-    } finally {
-      setSavingVehicleProfile(false);
-    }
-  };
+  const [profileMessage] = React.useState<string | null>(null);
 
   const handleLogout = React.useCallback(() => {
     clearOwnerSession();
@@ -881,15 +839,6 @@ function DashboardContent() {
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="lg"
-                  onClick={handleOpenEditVehicleModal}
-                  className="rounded-2xl border-white/20 bg-white/10 text-white hover:bg-white/20"
-                >
-                  تعديل المركبة واسم المالك
-                </Button>
                 <Button
                   asChild
                   variant="outline"
@@ -1647,80 +1596,6 @@ function DashboardContent() {
               {selectedPhotoAlert.message}
             </p>
           </div>
-        </div>
-      )}
-
-      {showEditVehicleModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <form
-            onSubmit={handleSaveVehicleProfile}
-            className="w-full max-w-md space-y-4 rounded-3xl border border-border bg-card p-6 shadow-2xl"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-black text-foreground">
-                تعديل بيانات المركبة واسم المالك
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowEditVehicleModal(false)}
-                className="rounded-full p-1 text-muted-foreground hover:bg-muted"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-bold text-foreground">
-                اسم المالك
-              </label>
-              <input
-                type="text"
-                value={editOwnerName}
-                onChange={(e) => setEditOwnerName(e.target.value)}
-                placeholder="مثال: محمد السنوسي"
-                className="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm font-bold text-foreground focus:border-primary focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-bold text-foreground">
-                نوع وموديل السيارة
-              </label>
-              <input
-                type="text"
-                value={editVehicleInfo}
-                onChange={(e) => setEditVehicleInfo(e.target.value)}
-                placeholder="مثال: هونداي سوناتا - أبيض"
-                className="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm font-bold text-foreground focus:border-primary focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-bold text-foreground">
-                المدينة
-              </label>
-              <input
-                type="text"
-                value={editCity}
-                onChange={(e) => setEditCity(e.target.value)}
-                placeholder="طرابلس"
-                className="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm font-bold text-foreground focus:border-primary focus:outline-none"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowEditVehicleModal(false)}
-              >
-                إلغاء
-              </Button>
-              <Button type="submit" disabled={savingVehicleProfile}>
-                {savingVehicleProfile ? "جاري الحفظ..." : "حفظ التغييرات"}
-              </Button>
-            </div>
-          </form>
         </div>
       )}
 
