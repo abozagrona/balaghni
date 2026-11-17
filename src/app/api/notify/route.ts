@@ -68,7 +68,12 @@ export async function POST(req: NextRequest) {
         String(formData.get("custom_note") || formData.get("note") || ""),
         250
       );
-      senderPhone = sanitizeUserText(String(formData.get("senderPhone") || ""), 20);
+      senderPhone = sanitizeUserText(
+        String(
+          formData.get("reporter_phone") || formData.get("senderPhone") || ""
+        ),
+        20
+      );
       imageEntry = formData.get("image");
     } else {
       const body = await req.json().catch(() => ({}));
@@ -78,7 +83,10 @@ export async function POST(req: NextRequest) {
         String(body.custom_note || body.note || ""),
         250
       );
-      senderPhone = sanitizeUserText(String(body.senderPhone || ""), 20);
+      senderPhone = sanitizeUserText(
+        String(body.reporter_phone || body.senderPhone || ""),
+        20
+      );
     }
 
     if (!tagCode.trim()) {

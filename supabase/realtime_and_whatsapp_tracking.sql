@@ -4,10 +4,11 @@
 
 BEGIN;
 
--- 1. إضافة أعمدة تتبع رسائل واتساب والرمز المختصر للرد السريع في جدول reports
+-- 1. إضافة أعمدة تتبع رسائل واتساب والرمز المختصر للرد السريع ورقم المُبلِّغ في جدول reports
 ALTER TABLE public.reports
   ADD COLUMN IF NOT EXISTS whatsapp_message_id text,
-  ADD COLUMN IF NOT EXISTS short_code text;
+  ADD COLUMN IF NOT EXISTS short_code text,
+  ADD COLUMN IF NOT EXISTS reporter_phone text;
 
 CREATE INDEX IF NOT EXISTS idx_reports_whatsapp_message_id
   ON public.reports (whatsapp_message_id)

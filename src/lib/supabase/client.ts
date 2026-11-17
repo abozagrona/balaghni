@@ -1481,6 +1481,7 @@ export async function addReportForTag(params: {
   location?: string;
   photoUrl?: string | null;
   iconType?: "blocking" | "lights" | "window" | "emergency";
+  reporterPhone?: string | null;
 }): Promise<{ ok: boolean; report?: TagReportRecord }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
   const nowIso = new Date().toISOString();
@@ -1497,21 +1498,34 @@ export async function addReportForTag(params: {
   };
 
   try {
-    const { data: inserted } = await supabaseAdmin
+    const basePayload = {
+      tag_code: normalizedCode,
+      reason_title: report.reasonTitle,
+      reason_badge: report.reasonBadge,
+      message: report.message,
+      location: report.location,
+      photo_url: report.photoUrl,
+      icon_type: report.iconType,
+    };
+    const { data: inserted, error: insertErr } = await supabaseAdmin
       .from("reports")
       .insert({
-        tag_code: normalizedCode,
-        reason_title: report.reasonTitle,
-        reason_badge: report.reasonBadge,
-        message: report.message,
-        location: report.location,
-        photo_url: report.photoUrl,
-        icon_type: report.iconType,
+        ...basePayload,
+        reporter_phone: params.reporterPhone ? params.reporterPhone.trim() : null,
       })
       .select("id")
       .single();
     if (inserted?.id) {
       report.id = String(inserted.id);
+    } else if (insertErr) {
+      const { data: fallbackInserted } = await supabaseAdmin
+        .from("reports")
+        .insert(basePayload)
+        .select("id")
+        .single();
+      if (fallbackInserted?.id) {
+        report.id = String(fallbackInserted.id);
+      }
     }
   } catch {
     // ignore
@@ -2920,6 +2934,7 @@ export async function sendZeroLeakNotification(params: {
     location: params.location || "",
     photoUrl: params.photoUrl || null,
     iconType: meta.iconType,
+    reporterPhone: callerPhone || null,
   });
 
   let deliveredChannels: AlertChannel = tag.alertChannel || "BOTH";
@@ -2983,12 +2998,25 @@ export async function sendZeroLeakNotification(params: {
 
     const fullTitle = meta.title.trim();
     const fullDescription = meta.description.trim();
+    const waCallerDigits = localCallerDigits
+      ? localCallerDigits.startsWith("218")
+        ? localCallerDigits
+        : localCallerDigits.startsWith("09")
+        ? `218${localCallerDigits.slice(1)}`
+        : localCallerDigits.startsWith("9") && localCallerDigits.length === 9
+        ? `218${localCallerDigits}`
+        : localCallerDigits
+      : "";
     const whatsappLines = [
       `🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك (${var1}):`,
       `• ${fullTitle}${fullDescription ? ` — ${fullDescription}` : ""}`,
       ...(noteText ? [`• ملاحظة إضافية: ${noteText}`] : []),
       ...(formattedCaller && formattedCaller !== "غير مرفق"
-        ? [`📞 للتواصل مع المُبلِّغ: ${formattedCaller}`]
+        ? [
+            `📞 رقم المُبلِّغ للتواصل المباشر: ${formattedCaller}${
+              waCallerDigits ? ` (https://wa.me/${waCallerDigits})` : ""
+            }`,
+          ]
         : []),
       ...(quickReplyUrl
         ? [`✅ للرد السريع (أنا قادم الآن): ${quickReplyUrl}`]

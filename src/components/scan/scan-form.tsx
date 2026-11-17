@@ -138,6 +138,9 @@ export function ScanForm({
   const [deliveredChannel, setDeliveredChannel] = React.useState<string>("BOTH");
   const [isSmsFallback, setIsSmsFallback] = React.useState<boolean>(false);
   const [ownerReply, setOwnerReply] = React.useState<string | null>(null);
+  const [submittedReporterPhone, setSubmittedReporterPhone] = React.useState<
+    string | null
+  >(null);
   const [arrivalCountdown, setArrivalCountdown] = React.useState<number | null>(
     null
   );
@@ -471,7 +474,10 @@ export function ScanForm({
       const formData = new FormData();
       formData.append("tag_code", tagCode);
       formData.append("reason", reason);
-      if (fullLibyaPhone) formData.append("senderPhone", fullLibyaPhone);
+      if (fullLibyaPhone) {
+        formData.append("senderPhone", fullLibyaPhone);
+        formData.append("reporter_phone", fullLibyaPhone);
+      }
       formData.append("fingerprint", fingerprint);
       if (imageFile) formData.append("image", imageFile);
 
@@ -498,6 +504,7 @@ export function ScanForm({
       setSendProgress(100);
       await new Promise((r) => setTimeout(r, 220));
       clearScanDraft(tagCode);
+      setSubmittedReporterPhone(fullLibyaPhone || null);
       setReportId(notifyData.report_id || null);
       setDeliveredChannel(notifyData.delivered_channel || "BOTH");
       setSentAtLabel(
@@ -657,6 +664,14 @@ export function ScanForm({
                       <p className="mt-1 text-xs leading-relaxed">
                         {selectedReasonObj.subtitle}
                       </p>
+                      {submittedReporterPhone && (
+                        <p
+                          dir="ltr"
+                          className="mt-1.5 text-[11px] font-bold text-[#075E54] dark:text-emerald-200"
+                        >
+                          📞 رقم التواصل المرفق: {submittedReporterPhone}
+                        </p>
+                      )}
                       {imagePreviewUrl && (
                         <div className="mt-2 overflow-hidden rounded-xl border border-black/10">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
