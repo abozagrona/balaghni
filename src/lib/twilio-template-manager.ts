@@ -66,7 +66,7 @@ export const BALAGHNI_TWILIO_TEMPLATES: TwilioTemplateSpec[] = [
     },
     types: {
       "twilio/text": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\n✅ للرد السريع (أنا قادم الآن): {{3}}",
+        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\n✅ للرد السريع (أنا قادم الآن): {{3}}\nاضغط على الرابط أعلاه لتأكيد قدومك — منصة بَلِّغْنِي.",
       },
     },
   },
@@ -79,11 +79,11 @@ export const BALAGHNI_TWILIO_TEMPLATES: TwilioTemplateSpec[] = [
       "2": "ضي سيارتك والع — ناسي ضي سيارتك والع بتاريتك حتفضى",
       "3": "0912345678",
       "4": "https://balaghni.ly/r/B8M3P4",
-      "5": "https://www.balaghni.ly/images/alert-sample.jpg",
+      "5": "https://www.balaghni.ly/balaghni-logo.jpg",
     },
     types: {
       "twilio/media": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه نَبِّهْنِي لسيارتك ({{1}}):\n• {{2}}\n📞 رقم المُبلِّغ للتواصل المباشر: {{3}}\n✅ للرد السريع (أنا قادم الآن): {{4}}",
+        body: "🚨 (منصة بَلِّغْنِي) تنبيه نَبِّهْنِي لسيارتك ({{1}}):\n• {{2}}\n📞 رقم المُبلِّغ للتواصل المباشر: {{3}}\n✅ للرد السريع (أنا قادم الآن): {{4}}\nاضغط على الرابط أعلاه لتأكيد قدومك — منصة بَلِّغْنِي.",
         media: ["{{5}}"],
       },
     },
@@ -91,13 +91,20 @@ export const BALAGHNI_TWILIO_TEMPLATES: TwilioTemplateSpec[] = [
   {
     friendlyName: "balaghni_otp_code",
     language: "ar",
-    category: "UTILITY",
+    category: "AUTHENTICATION",
     variables: {
       "1": "482910",
     },
     types: {
-      "twilio/text": {
-        body: "رمز التحقق الخاص بك في منصة بَلِّغْنِي هو: {{1}}. صالح لمدة 5 دقائق، لا تشاركه مع أي شخص.",
+      "whatsapp/authentication": {
+        add_security_recommendation: true,
+        code_expiration_minutes: 5,
+        actions: [
+          {
+            type: "COPY_CODE",
+            copy_code_text: "نسخ الرمز",
+          },
+        ],
       },
     },
   },
@@ -323,6 +330,8 @@ export async function configureTwilioWebhooks(
             webhook: {
               callback_url: webhookUrl,
               callback_method: "POST",
+              status_callback_url: webhookUrl,
+              status_callback_method: "POST",
             },
           }),
         }

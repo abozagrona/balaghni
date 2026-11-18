@@ -59,7 +59,7 @@ const TEMPLATES = [
     },
     types: {
       "twilio/text": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\n✅ للرد السريع (أنا قادم الآن): {{3}}",
+        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\n✅ للرد السريع (أنا قادم الآن): {{3}}\nاضغط على الرابط أعلاه لتأكيد قدومك — منصة بَلِّغْنِي.",
       },
     },
   },
@@ -73,11 +73,11 @@ const TEMPLATES = [
       2: "ضي سيارتك والع — ناسي ضي سيارتك والع بتاريتك حتفضى",
       3: "0912345678",
       4: "https://balaghni.ly/r/B8M3P4",
-      5: "https://www.balaghni.ly/images/alert-sample.jpg",
+      5: "https://www.balaghni.ly/balaghni-logo.jpg",
     },
     types: {
       "twilio/media": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه نَبِّهْنِي لسيارتك ({{1}}):\n• {{2}}\n📞 رقم المُبلِّغ للتواصل المباشر: {{3}}\n✅ للرد السريع (أنا قادم الآن): {{4}}",
+        body: "🚨 (منصة بَلِّغْنِي) تنبيه نَبِّهْنِي لسيارتك ({{1}}):\n• {{2}}\n📞 رقم المُبلِّغ للتواصل المباشر: {{3}}\n✅ للرد السريع (أنا قادم الآن): {{4}}\nاضغط على الرابط أعلاه لتأكيد قدومك — منصة بَلِّغْنِي.",
         media: ["{{5}}"],
       },
     },
@@ -86,13 +86,20 @@ const TEMPLATES = [
     friendlyName: "balaghni_otp_code",
     envKey: "TWILIO_CONTENT_SID_OTP",
     language: "ar",
-    category: "UTILITY",
+    category: "AUTHENTICATION",
     variables: {
       1: "482910",
     },
     types: {
-      "twilio/text": {
-        body: "رمز التحقق الخاص بك في منصة بَلِّغْنِي هو: {{1}}. صالح لمدة 5 دقائق، لا تشاركه مع أي شخص.",
+      "whatsapp/authentication": {
+        add_security_recommendation: true,
+        code_expiration_minutes: 5,
+        actions: [
+          {
+            type: "COPY_CODE",
+            copy_code_text: "نسخ الرمز",
+          },
+        ],
       },
     },
   },
@@ -120,7 +127,19 @@ async function runSetup() {
   const templateReport = [];
 
   for (const spec of TEMPLATES) {
-    let sid = existing.find((c) => c.friendly_name === spec.friendlyName)?.sid || "";
+    const existingItem = existing.find((c) => c.friendly_name === spec.friendlyName);
+    let sid = existingItem?.sid || "";
+    if (sid) {
+      const existingApp = await getApproval(sid);
+      if (existingApp.status === "rejected") {
+        await fetch(`https://content.twilio.com/v1/Content/${sid}`, {
+          method: "DELETE",
+          headers: { Authorization: authHeader },
+        });
+        sid = "";
+      }
+    }
+
     if (!sid) {
       const createRes = await fetch("https://content.twilio.com/v1/Content", {
         method: "POST",
@@ -225,6 +244,44 @@ async function runSetup() {
     }
   }
 
+  // Update WhatsApp Sender webhook directly (Channels API v2)
+  let senderWebhookUpdated = false;
+  try {
+    const sendersRes = await fetch(
+      "https://messaging.twilio.com/v2/Channels/Senders?Channel=whatsapp",
+      { headers: { Authorization: authHeader } }
+    );
+    const sendersJson = await sendersRes.json();
+    const targetSender = (sendersJson.senders || []).find(
+      (s) =>
+        s.sid === "XEedf047d7c8acce6021cbfaf97716036a" ||
+        s.sender_id === `whatsapp:${WHATSAPP_NUMBER}`
+    );
+    if (targetSender?.sid) {
+      const updRes = await fetch(
+        `https://messaging.twilio.com/v2/Channels/Senders/${targetSender.sid}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: authHeader,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            webhook: {
+              callback_url: WEBHOOK_URL,
+              callback_method: "POST",
+              status_callback_url: WEBHOOK_URL,
+              status_callback_method: "POST",
+            },
+          }),
+        }
+      );
+      senderWebhookUpdated = updRes.ok;
+    }
+  } catch {
+    // ignore
+  }
+
   envUpdates.TWILIO_MESSAGING_SERVICE_SID = svc.sid;
   upsertEnvLocal(envUpdates);
 
@@ -237,6 +294,7 @@ async function runSetup() {
           webhookUrl: WEBHOOK_URL,
           phoneNumberSid,
           messagingServiceSid: svc.sid,
+          senderWebhookUpdated,
         },
       },
       null,
