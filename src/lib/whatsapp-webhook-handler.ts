@@ -19,6 +19,7 @@ export interface ParsedIncomingMessage {
   text: string;
   timestamp: string;
   contextMessageId?: string;
+  buttonPayload?: string;
 }
 
 function normalizeLibyanPhone(raw: string): string {
@@ -162,17 +163,23 @@ export function extractWebhookEvents(body: Record<string, any>): {
             msg?.interactive?.button_reply?.title ||
             msg?.interactive?.list_reply?.title ||
             "";
-          if (textBody || msg?.from) {
+          const btnPayload =
+            msg?.button?.payload ||
+            msg?.interactive?.button_reply?.id ||
+            msg?.interactive?.list_reply?.id ||
+            undefined;
+          if (textBody || btnPayload || msg?.from) {
             messages.push({
               messageId: String(msg?.id || ""),
               fromPhone: String(msg?.from || ""),
-              text: String(textBody || "").trim(),
+              text: String(textBody || btnPayload || "").trim(),
               timestamp: msg?.timestamp
                 ? new Date(Number(msg.timestamp) * 1000).toISOString()
                 : new Date().toISOString(),
               contextMessageId: msg?.context?.id
                 ? String(msg.context.id)
                 : undefined,
+              buttonPayload: btnPayload ? String(btnPayload).trim() : undefined,
             });
           }
         }
@@ -196,32 +203,45 @@ export function extractWebhookEvents(body: Record<string, any>): {
     });
   }
 
-  // Incoming messages (Green API incomingMessageReceived or Twilio Body)
+  // Incoming messages (Green API incomingMessageReceived or Twilio Body/ButtonPayload/ButtonText)
   if (
     messages.length === 0 &&
     (body?.typeWebhook === "incomingMessageReceived" ||
       body?.text ||
       body?.reply ||
-      (body?.From && body?.Body))
+      body?.ButtonPayload ||
+      body?.ButtonText ||
+      (body?.From && (body?.Body || body?.ButtonPayload || body?.ButtonText)))
   ) {
     const rawFrom =
       body?.from ||
       body?.phone ||
       String(body?.From || "").replace(/^whatsapp:/i, "") ||
       String(body?.senderData?.chatId || "").replace(/@.*/, "");
+    const rawButtonPayload = String(body?.ButtonPayload || "").trim();
+    const rawButtonText = String(body?.ButtonText || "").trim();
     const rawText =
+      rawButtonText ||
       body?.text ||
       body?.reply ||
       body?.Body ||
+      rawButtonPayload ||
       body?.messageData?.textMessageData?.textMessage ||
       body?.messageData?.extendedTextMessageData?.text ||
       "";
-    if (rawFrom && rawText) {
+    const originalRepliedSid = String(
+      body?.OriginalRepliedMessageSid || ""
+    ).trim();
+    if (rawFrom && (rawText || rawButtonPayload)) {
       messages.push({
-        messageId: String(body?.idMessage || body?.messageId || body?.MessageSid || ""),
+        messageId: String(
+          body?.idMessage || body?.messageId || body?.MessageSid || ""
+        ),
         fromPhone: String(rawFrom),
         text: String(rawText).trim(),
         timestamp: new Date().toISOString(),
+        contextMessageId: originalRepliedSid || undefined,
+        buttonPayload: rawButtonPayload || undefined,
       });
     }
   }
@@ -598,31 +618,174 @@ export async function processWhatsappWebhookPayload(
   }
 
   for (const msg of messages) {
-    if (!msg.fromPhone || !msg.text) continue;
+    if (!msg.fromPhone || (!msg.text && !msg.buttonPayload)) continue;
 
-    const { report, tagCode } = await findLatestReportForPhone(msg.fromPhone);
+    console.log(
+      `[WhatsApp Incoming Reply] From: ${msg.fromPhone} | Text: ${msg.text} | ButtonPayload: ${msg.buttonPayload || "-"} | ContextSid: ${msg.contextMessageId || "-"}`
+    );
 
-    if (report?.id) {
-      const previousMessage = String(report.message || "").trim();
-      const replyLine = `\n[رد المالك عبر واتساب]: ${msg.text}`;
-      const updatedMessage = previousMessage.includes(msg.text)
+    let report: Record<string, any> | null = null;
+    let tagCode: string | null = null;
+    let resolvedReportId: string | null = null;
+
+    // 1. مطابقة زر الرد السريع التفاعلي (COMING_NOW:<reportId أو shortCode أو tagCode>)
+    const payloadStr = String(msg.buttonPayload || "").trim();
+    if (payloadStr) {
+      const targetToken = payloadStr.replace(/^COMING_NOW:/i, "").trim();
+      if (targetToken && !targetToken.startsWith("rep_")) {
+        // أ) البحث المباشر بمعرف البلاغ (report.id) أو الرمز القصير (short_code) أو رمز الملصق (tag_code)
+        try {
+          const { data: repById } = await supabaseAdmin
+            .from("reports")
+            .select("*")
+            .eq("id", targetToken)
+            .maybeSingle();
+          if (repById?.id) {
+            report = repById;
+            resolvedReportId = String(repById.id);
+            tagCode = String(repById.tag_code || "").toUpperCase() || null;
+          }
+        } catch {
+          // ignore if not UUID
+        }
+
+        if (!report) {
+          try {
+            const { data: repByShort } = await supabaseAdmin
+              .from("reports")
+              .select("*")
+              .eq("short_code", targetToken)
+              .order("created_at", { ascending: false })
+              .limit(1);
+            if (Array.isArray(repByShort) && repByShort.length > 0 && repByShort[0]) {
+              const found = repByShort[0];
+              report = found;
+              resolvedReportId = String(found.id);
+              tagCode = String(found.tag_code || "").toUpperCase() || null;
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        if (!report) {
+          try {
+            const { data: shortLog } = await supabaseAdmin
+              .from("admin_audit_logs")
+              .select("details")
+              .eq("action_type", "REPORT_SHORT_LINK")
+              .eq("target_item", targetToken)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (shortLog?.details) {
+              const parsed = JSON.parse(String(shortLog.details));
+              resolvedReportId = String(parsed.reportId || "").trim() || null;
+              tagCode = String(parsed.tagCode || "").toUpperCase() || null;
+              if (resolvedReportId && !resolvedReportId.startsWith("rep_")) {
+                const { data: repRow } = await supabaseAdmin
+                  .from("reports")
+                  .select("*")
+                  .eq("id", resolvedReportId)
+                  .maybeSingle();
+                if (repRow) report = repRow;
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        if (!report) {
+          const { data: repByTag } = await supabaseAdmin
+            .from("reports")
+            .select("*")
+            .eq("tag_code", targetToken.toUpperCase())
+            .order("created_at", { ascending: false })
+            .limit(1);
+          if (Array.isArray(repByTag) && repByTag.length > 0 && repByTag[0]) {
+            const found = repByTag[0];
+            report = found;
+            resolvedReportId = String(found.id);
+            tagCode = String(found.tag_code || "").toUpperCase() || null;
+          }
+        }
+      }
+    }
+
+    // 2. مطابقة عبر معرف الرسالة الأصلية المُرد عليها (OriginalRepliedMessageSid / context.id)
+    if (!report && msg.contextMessageId) {
+      const byMsgId = await findReportByMessageId(msg.contextMessageId);
+      if (byMsgId.report) {
+        report = byMsgId.report;
+        resolvedReportId = byMsgId.reportId;
+        tagCode = byMsgId.tagCode;
+      }
+    }
+
+    // 3. مطابقة عبر رقم هاتف مالك المركبة
+    if (!report) {
+      const byPhone = await findLatestReportForPhone(msg.fromPhone);
+      report = byPhone.report;
+      tagCode = tagCode || byPhone.tagCode;
+      if (report?.id) {
+        resolvedReportId = String(report.id);
+      }
+    }
+
+    const isQuickReplyButton =
+      payloadStr.toUpperCase().startsWith("COMING_NOW") ||
+      msg.text.includes("أنا قادم الآن");
+    const effectiveReplyText = isQuickReplyButton
+      ? "أنا قادم الآن"
+      : msg.text.trim();
+
+    if (report?.id || resolvedReportId) {
+      const targetId = String(report?.id || resolvedReportId || "");
+      const previousMessage = String(report?.message || "").trim();
+      const replyLine = `\n[رد المالك عبر واتساب]: ${effectiveReplyText}`;
+      const updatedMessage = previousMessage.includes(effectiveReplyText)
         ? previousMessage
         : `${previousMessage}${replyLine}`.trim();
-      const replyBadge = `رد المالك: ${msg.text.slice(0, 40)}`;
+      const replyBadge = `رد المالك: ${effectiveReplyText.slice(0, 40)}`;
 
-      await supabaseAdmin
-        .from("reports")
-        .update({
-          reason_badge: replyBadge,
-          message: updatedMessage,
-        })
-        .eq("id", report.id);
+      if (targetId && !targetId.startsWith("rep_")) {
+        await supabaseAdmin
+          .from("reports")
+          .update({
+            reason_badge: replyBadge,
+            message: updatedMessage,
+            whatsapp_status: "read",
+          })
+          .eq("id", targetId);
+      }
+
+      // حفظ في admin_audit_logs لضمان التقاط الرد فوراً من قِبل الـ Polling أيضاً
+      try {
+        await supabaseAdmin.from("admin_audit_logs").insert({
+          admin_name: "Webhook Quick Reply",
+          action_type: "REPORT_STATUS_UPDATE",
+          target_item: targetId || tagCode || msg.fromPhone,
+          details: JSON.stringify({
+            reportId: targetId,
+            tagCode,
+            status: "replied",
+            ownerReply: effectiveReplyText,
+            reasonBadge: replyBadge,
+            buttonPayload: payloadStr || null,
+            updatedAt: new Date().toISOString(),
+          }),
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
 
       await broadcastReportRealtimeUpdate({
-        reportId: String(report.id),
+        reportId: targetId,
         tagCode,
         deliveryStatus: "replied",
-        ownerReply: msg.text,
+        ownerReply: effectiveReplyText,
         isSmsFallback: false,
         reasonBadge: replyBadge,
       });
@@ -630,8 +793,8 @@ export async function processWhatsappWebhookPayload(
       await supabaseAdmin.from("reports").insert({
         tag_code: tagCode,
         reason_title: "رد المالك عبر واتساب",
-        reason_badge: "رد المالك",
-        message: msg.text,
+        reason_badge: `رد المالك: ${effectiveReplyText.slice(0, 40)}`,
+        message: effectiveReplyText,
         location: "",
         icon_type: "blocking",
       });

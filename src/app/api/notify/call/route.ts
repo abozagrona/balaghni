@@ -5,7 +5,10 @@ import {
   getVehicleTagByCode,
   supabaseAdmin,
 } from "@/lib/supabase/client";
-import { sendWhatsappAlertMessage } from "@/lib/otp-service";
+import {
+  sendWhatsappAlertMessage,
+  TWILIO_CONTENT_SIDS,
+} from "@/lib/otp-service";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -74,6 +77,11 @@ export async function POST(req: NextRequest) {
 
     await sendWhatsappAlertMessage(tag.ownerPhone, whatsappText, null, {
       verifyDelivery: false,
+      twilioContentSid: TWILIO_CONTENT_SIDS.VOICE_CALL,
+      twilioContentVariables: {
+        "1": callCode,
+        "2": vehicleLabel,
+      },
     });
 
     return NextResponse.json({

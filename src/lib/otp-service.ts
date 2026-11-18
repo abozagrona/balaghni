@@ -400,11 +400,54 @@ function formatWhatsappCaption(raw: string, maxLen = 1024): string {
   return `${cleaned.slice(0, maxLen - 3).trim()}...`;
 }
 
+export const TWILIO_CONTENT_SIDS = {
+  ALERT: (
+    process.env.TWILIO_CONTENT_SID_ALERT ||
+    "HX3cfb28dd453b5de4bcec53becc303a8a"
+  ).trim(),
+  MEDIA_ALERT: (
+    process.env.TWILIO_CONTENT_SID_MEDIA_ALERT ||
+    "HXa5800c50cff2d2e3ca9f9872f9aaf634"
+  ).trim(),
+  OTP: (
+    process.env.TWILIO_CONTENT_SID_OTP ||
+    "HX1223e60efe0f1fbe806f8f28f59fd737"
+  ).trim(),
+  REMIND: (
+    process.env.TWILIO_CONTENT_SID_REMIND ||
+    "HX7676bbda661d25c7e16bf3ff53cc19a7"
+  ).trim(),
+  SUBSCRIPTION: (
+    process.env.TWILIO_CONTENT_SID_SUBSCRIPTION ||
+    "HXa25ae82cd5b176deb5570f4b1352f298"
+  ).trim(),
+  DOC_REMINDER: (
+    process.env.TWILIO_CONTENT_SID_DOC_REMINDER ||
+    "HX3c140fa2ac3cd8329034c182b3065dfa"
+  ).trim(),
+  ORDER: (
+    process.env.TWILIO_CONTENT_SID_ORDER ||
+    "HX0af3ddac5ba66867a04cac6c273c56c7"
+  ).trim(),
+  ADMIN_ALERT: (
+    process.env.TWILIO_CONTENT_SID_ADMIN_ALERT ||
+    "HXfba96b545e3e61a4f4819698ca610dc0"
+  ).trim(),
+  VOICE_CALL: (
+    process.env.TWILIO_CONTENT_SID_VOICE_CALL ||
+    "HX6366aec344763ac936575ce0cfe25974"
+  ).trim(),
+} as const;
+
 export async function sendWhatsappAlertMessage(
   phone: string,
   message: string,
   photoUrl?: string | null,
-  options?: { verifyDelivery?: boolean }
+  options?: {
+    verifyDelivery?: boolean;
+    twilioContentSid?: string;
+    twilioContentVariables?: Record<string, string>;
+  }
 ): Promise<{
   ok: boolean;
   idMessage?: string;
@@ -415,7 +458,7 @@ export async function sendWhatsappAlertMessage(
   const trimmedPhoto = String(photoUrl || "").trim();
   const hasPhoto = /^https?:\/\//i.test(trimmedPhoto);
 
-  // دعم لـ Twilio WhatsApp مع تمرير StatusCallback الصريح
+  // دعم لـ Twilio WhatsApp مع تمرير StatusCallback الصريح ودعم القوالب التفاعلية (ContentSid + ContentVariables) مع خيار احتياطي تلقائي للروابط النصية
   const twilioSid = process.env.TWILIO_ACCOUNT_SID?.trim();
   const twilioToken = process.env.TWILIO_AUTH_TOKEN?.trim();
   const twilioFrom = (
@@ -423,17 +466,80 @@ export async function sendWhatsappAlertMessage(
     process.env.TWILIO_WHATSAPP_NUMBER ||
     ""
   ).trim();
+  const messagingServiceSid = (
+    process.env.TWILIO_MESSAGING_SERVICE_SID || ""
+  ).trim();
+
   if (!GREEN_API_TOKEN && twilioSid && twilioToken && twilioFrom) {
     try {
       const cleanPhone = phone.replace(/[^\d]/g, "");
+      const fromFormatted = twilioFrom.startsWith("whatsapp:")
+        ? twilioFrom
+        : `whatsapp:${twilioFrom}`;
+      const toFormatted = `whatsapp:+${cleanPhone}`;
+      const authHeader = `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`;
+
+      // 1. محاولة الإرسال عبر قالب الأزرار التفاعلية (ContentSid + ContentVariables) أولاً
+      if (options?.twilioContentSid) {
+        try {
+          const tplForm = new URLSearchParams();
+          tplForm.set("From", fromFormatted);
+          tplForm.set("To", toFormatted);
+          if (messagingServiceSid) {
+            tplForm.set("MessagingServiceSid", messagingServiceSid);
+          }
+          tplForm.set("ContentSid", options.twilioContentSid);
+          if (
+            options.twilioContentVariables &&
+            Object.keys(options.twilioContentVariables).length > 0
+          ) {
+            tplForm.set(
+              "ContentVariables",
+              JSON.stringify(options.twilioContentVariables)
+            );
+          }
+          tplForm.set(
+            "StatusCallback",
+            "https://www.balaghni.ly/api/webhooks/whatsapp-status"
+          );
+
+          const tplRes = await fetch(
+            `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: authHeader,
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: tplForm.toString(),
+            }
+          );
+          const tplData = (await tplRes.json().catch(() => ({}))) as {
+            sid?: string;
+            status?: string;
+            error_code?: number | null;
+            message?: string;
+          };
+          if (
+            tplRes.ok &&
+            tplData.sid &&
+            tplData.status !== "failed" &&
+            !tplData.error_code
+          ) {
+            return { ok: true, idMessage: tplData.sid };
+          }
+          console.warn(
+            `[Twilio ContentSid Fallback] Template ${options.twilioContentSid} not ready (${tplData.message || tplRes.status}), falling back to text body.`
+          );
+        } catch {
+          // fallback to text body below
+        }
+      }
+
+      // 2. الخيار الاحتياطي التلقائي (Fallback): إرسال الرسالة بالرابط النصي ريثما يتحول القالب من pending إلى approved في Meta
       const form = new URLSearchParams();
-      form.set(
-        "From",
-        twilioFrom.startsWith("whatsapp:")
-          ? twilioFrom
-          : `whatsapp:${twilioFrom}`
-      );
-      form.set("To", `whatsapp:+${cleanPhone}`);
+      form.set("From", fromFormatted);
+      form.set("To", toFormatted);
       form.set("Body", safeCaption);
       form.set(
         "StatusCallback",
@@ -447,7 +553,7 @@ export async function sendWhatsappAlertMessage(
         {
           method: "POST",
           headers: {
-            Authorization: `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`,
+            Authorization: authHeader,
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body: form.toString(),

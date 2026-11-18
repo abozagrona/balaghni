@@ -55,11 +55,17 @@ const TEMPLATES = [
     variables: {
       1: "هونداي سوناتا",
       2: "مْسَكِّر عليا بسيارتك — لو سمحت تجي تحول سيارتك بسرعة",
-      3: "https://balaghni.ly/r/A7K9M2",
+      3: "REP_A7K9M2",
     },
     types: {
-      "twilio/text": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\n✅ للرد السريع (أنا قادم الآن): {{3}}\nاضغط على الرابط أعلاه لتأكيد قدومك — منصة بَلِّغْنِي.",
+      "twilio/quick-reply": {
+        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\nاضغط على الزر أدناه لتأكيد قدومك — منصة بَلِّغْنِي.",
+        actions: [
+          {
+            title: "أنا قادم الآن",
+            id: "COMING_NOW:{{3}}",
+          },
+        ],
       },
     },
   },
@@ -184,12 +190,19 @@ const TEMPLATES = [
     language: "ar",
     category: "UTILITY",
     variables: {
-      1: "هونداي سوناتا",
-      2: "https://balaghni.ly/call/C7M4K9",
+      1: "C7M4K9",
+      2: "هونداي سوناتا",
     },
     types: {
-      "twilio/text": {
-        body: "📞 (منصة بَلِّغْنِي) اتصال صوتي عاجل بخصوص سيارتك ({{1}})! المُبلِّغ ينتظر عند المركبة ويتصل بك صوتياً الآن عبر المتصفح (مكالمة مشفرة دون كشف رقمك أو رقمه). اضغط هنا للرد والتحدث فوراً: {{2}} — منصة بَلِّغْنِي.",
+      "twilio/call-to-action": {
+        body: "📞 (منصة بَلِّغْنِي) اتصال صوتي عاجل بخصوص سيارتك ({{2}})! المُبلِّغ ينتظر عند المركبة ويتصل بك صوتياً الآن عبر المتصفح (مكالمة مشفرة دون كشف رقمك أو رقمه). اضغط على الزر أدناه للرد والتحدث فوراً — منصة بَلِّغْنِي.",
+        actions: [
+          {
+            type: "URL",
+            title: "رد على المكالمة الآن",
+            url: "https://balaghni.ly/call/{{1}}",
+          },
+        ],
       },
     },
   },
@@ -217,15 +230,20 @@ async function runSetup() {
   const templateReport = [];
 
   for (const spec of TEMPLATES) {
-    const existingItem = existing.find((c) => c.friendly_name === spec.friendlyName);
-    let sid = existingItem?.sid || "";
+    const existingItems = existing.filter((c) => c.friendly_name === spec.friendlyName);
+    let sid = existingItems[0]?.sid || "";
     if (sid) {
       const existingApp = await getApproval(sid);
-      if (existingApp.status === "rejected") {
-        await fetch(`https://content.twilio.com/v1/Content/${sid}`, {
-          method: "DELETE",
-          headers: { Authorization: authHeader },
-        });
+      const existingTypes = existingItems[0]?.types || {};
+      const expectedTypeKey = Object.keys(spec.types)[0];
+      const hasExpectedType = Boolean(existingTypes[expectedTypeKey]);
+      if (existingApp.status === "rejected" || spec.forceRecreate || !hasExpectedType) {
+        for (const item of existingItems) {
+          await fetch(`https://content.twilio.com/v1/Content/${item.sid}`, {
+            method: "DELETE",
+            headers: { Authorization: authHeader },
+          });
+        }
         sid = "";
       }
     }

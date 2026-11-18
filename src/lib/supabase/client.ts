@@ -5,6 +5,7 @@ import crypto from "crypto";
 import {
   sendWhatsappAlertMessage,
   sendSmsAlertMessage,
+  TWILIO_CONTENT_SIDS,
 } from "@/lib/otp-service";
 import {
   signSecurityToken,
@@ -3044,13 +3045,38 @@ export async function sendZeroLeakNotification(params: {
     ];
 
     const effectivePhotoUrl = photoAttachmentsEnabled ? params.photoUrl : null;
+    const alertReasonBody = [
+      `${fullTitle}${fullDescription ? ` — ${fullDescription}` : ""}`,
+      ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
+      ...(formattedCaller && formattedCaller !== "غير مرفق"
+        ? [`رقم المُبلِّغ: ${formattedCaller}`]
+        : []),
+    ].join(" | ");
 
-    // 1. إرسال واتساب أولاً بشكل فوري دون إرسال SMS في نفس اللحظة أبداً
+    // 1. إرسال واتساب أولاً عبر قالب الزر التفاعلي (QUICK_REPLY: "أنا قادم الآن ✅") مع إبقاء الرابط النصي كخيار احتياطي تلقائي ريثما يعتمد القالب في Meta
     const waResult = await sendWhatsappAlertMessage(
       tag.ownerPhone,
       whatsappLines.join("\n"),
       effectivePhotoUrl,
-      { verifyDelivery: false }
+      {
+        verifyDelivery: false,
+        twilioContentSid: effectivePhotoUrl
+          ? TWILIO_CONTENT_SIDS.MEDIA_ALERT
+          : TWILIO_CONTENT_SIDS.ALERT,
+        twilioContentVariables: effectivePhotoUrl
+          ? {
+              "1": var1,
+              "2": alertReasonBody,
+              "3": formattedCaller || "غير مرفق",
+              "4": quickReplyUrl || "https://balaghni.ly",
+              "5": effectivePhotoUrl,
+            }
+          : {
+              "1": var1,
+              "2": alertReasonBody,
+              "3": reportIdStr || shortCode || normalizedCode,
+            },
+      }
     );
     const waOk = waResult.ok;
 

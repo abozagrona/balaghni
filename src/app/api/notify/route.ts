@@ -201,6 +201,8 @@ async function syncReportDeliveryAndFallback(
     reportRow?.tag_code || tagCode || ""
   ).toUpperCase();
 
+  let ownerReply: string | null = null;
+
   // فحص سجلات REPORT_STATUS_UPDATE الواردة من الـ Webhook لهذا البلاغ تحديداً
   try {
     const { data: statusLogs } = await supabaseAdmin
@@ -214,7 +216,10 @@ async function syncReportDeliveryAndFallback(
     if (latestLog?.details) {
       const parsedLog = JSON.parse(String(latestLog.details));
       const logBadge = String(parsedLog.reasonBadge || "");
-      if (
+      if (parsedLog.ownerReply) {
+        ownerReply = String(parsedLog.ownerReply).trim();
+        badge = logBadge || `رد المالك: ${ownerReply}`;
+      } else if (
         logBadge.includes("تمت القراءة") ||
         (logBadge.includes("تم التسليم") && !badge.includes("تمت القراءة"))
       ) {
@@ -225,12 +230,11 @@ async function syncReportDeliveryAndFallback(
     // ignore
   }
 
-  let ownerReply: string | null = null;
   const replyMarker = "[رد المالك عبر واتساب]:";
-  if (message.includes(replyMarker)) {
+  if (!ownerReply && message.includes(replyMarker)) {
     const parts = message.split(replyMarker);
     ownerReply = parts[parts.length - 1]?.trim() || null;
-  } else if (badge.startsWith("رد المالك:")) {
+  } else if (!ownerReply && badge.startsWith("رد المالك:")) {
     ownerReply = badge.replace("رد المالك:", "").trim() || null;
   }
 
