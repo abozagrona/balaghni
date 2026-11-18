@@ -103,6 +103,81 @@ const TEMPLATES = [
       },
     },
   },
+  {
+    friendlyName: "balaghni_remind_extension",
+    envKey: "TWILIO_CONTENT_SID_REMIND",
+    language: "ar",
+    category: "UTILITY",
+    variables: {
+      1: "هونداي سوناتا",
+      2: "https://balaghni.ly/r/A7K9M2",
+    },
+    types: {
+      "twilio/text": {
+        body: "تنبيه من منصة بَلِّغْنِي: لقد انتهت مهلة ال5 دقائق الأولى لبلاغ سيارتك ({{1}}). هل أنت في طريقك الآن؟ يرجى الضغط على رابط الرد السريع للتأكيد: {{2}} — منصة بَلِّغْنِي.",
+      },
+    },
+  },
+  {
+    friendlyName: "balaghni_subscription_expiry",
+    envKey: "TWILIO_CONTENT_SID_SUBSCRIPTION",
+    language: "ar",
+    category: "UTILITY",
+    variables: {
+      1: "LY-2026-8841",
+      2: "2026-12-01",
+    },
+    types: {
+      "twilio/text": {
+        body: "تنبيه من منصة بَلِّغْنِي: اشتراك ملصق سيارتك ({{1}}) على وشك الانتهاء بتاريخ {{2}}. لتجديد الاشتراك واستمرار الحماية، يرجى زيارة المنصة.",
+      },
+    },
+  },
+  {
+    friendlyName: "balaghni_document_reminder",
+    envKey: "TWILIO_CONTENT_SID_DOC_REMINDER",
+    language: "ar",
+    category: "UTILITY",
+    variables: {
+      1: "تويوتا كامري",
+      2: "تأمين السيارة ينتهي قريباً",
+    },
+    types: {
+      "twilio/text": {
+        body: "تذكير من منصة بَلِّغْنِي: حان موعد تجديد مستند سيارتك ({{1}}) - {{2}}. حافظ على سلامتك وتجنب المخالفات.",
+      },
+    },
+  },
+  {
+    friendlyName: "balaghni_order_update",
+    envKey: "TWILIO_CONTENT_SID_ORDER",
+    language: "ar",
+    category: "UTILITY",
+    variables: {
+      1: "ORD-2026-1042",
+    },
+    types: {
+      "twilio/text": {
+        body: "مرحباً بك في منصة بَلِّغْنِي! تم استلام طلبك رقم ({{1}}) بنجاح لشراء ملصق السيارة. سنقوم بالتواصل معك لتأكيد التسليم والتفعيل قريباً.",
+      },
+    },
+  },
+  {
+    friendlyName: "balaghni_admin_alert",
+    envKey: "TWILIO_CONTENT_SID_ADMIN_ALERT",
+    language: "ar",
+    category: "UTILITY",
+    variables: {
+      1: "ORD-2026-1042",
+      2: "100",
+      3: "LY-2026-8841",
+    },
+    types: {
+      "twilio/text": {
+        body: "تنبيه إداري - بَلِّغْنِي: تم استلام طلب كاش جديد برقم ({{1}}) بقيمة ({{2}} د.ل) لملصق السيارة ({{3}}). يرجى المراجعة وتأكيد التحصيل.",
+      },
+    },
+  },
 ];
 
 async function listContents() {
