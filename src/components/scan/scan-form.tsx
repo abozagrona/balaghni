@@ -151,7 +151,7 @@ export function ScanForm({
     React.useState<boolean>(false);
   const [reminderError, setReminderError] = React.useState<string | null>(null);
   const [noResponseCountdown, setNoResponseCountdown] =
-    React.useState<number>(300);
+    React.useState<number>(120);
   const [activeCallCode, setActiveCallCode] = React.useState<string | null>(
     null
   );
@@ -595,7 +595,7 @@ export function ScanForm({
       setDeliveryStatus("sent");
       setOwnerReply(null);
       setArrivalCountdown(null);
-      setNoResponseCountdown(300);
+      setNoResponseCountdown(120);
       setActiveCallCode(null);
       setIsSending(false);
       setIsSuccess(true);
@@ -680,45 +680,92 @@ export function ScanForm({
               Math.floor((arrivalCountdown ?? 0) / 60)
             ).padStart(2, "0");
             const secs = String((arrivalCountdown ?? 0) % 60).padStart(2, "0");
+            const noRespMins = String(
+              Math.floor(noResponseCountdown / 60)
+            ).padStart(2, "0");
+            const noRespSecs = String(noResponseCountdown % 60).padStart(
+              2,
+              "0"
+            );
+            const isCallUnlocked =
+              (!ownerReply && noResponseCountdown === 0) ||
+              (Boolean(ownerReply) && arrivalCountdown === 0);
 
             return (
               <div className="overflow-hidden rounded-3xl border border-emerald-600/25 shadow-card-soft">
-                {/* ترويسة واتساب الرسمية */}
-                <div className="flex items-center justify-between bg-[#075E54] px-4 py-3 text-white dark:bg-[#202C33]">
-                  <div className="flex items-center gap-3">
-                    <div className="relative flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-white">
+                {/* ترويسة واتساب الرسمية + أيقونة الاتصال العلوية */}
+                <div className="flex items-center justify-between gap-2 bg-[#075E54] px-4 py-3 text-white dark:bg-[#202C33]">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15 text-white">
                       <CarFront className="h-5 w-5" />
                       <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[#075E54] bg-[#25D366] dark:border-[#202C33]" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <h2 className="text-sm font-black text-white">
+                        <h2 className="truncate text-sm font-black text-white">
                           مالك {vehicleName}
                         </h2>
                         <span
                           dir="ltr"
-                          className="rounded-md bg-white/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white/90"
+                          className="shrink-0 rounded-md bg-white/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white/90"
                         >
                           {tagCode}
                         </span>
                       </div>
-                      <p className="text-[11px] text-white/80">
+                      <p className="truncate text-[11px] font-semibold text-white/85">
                         {deliveryStatus === "replied"
-                          ? "ردّ على رسالتك الآن"
+                          ? "قُرئت بواسطة صاحب السيارة • ردّ الآن"
                           : deliveryStatus === "read"
-                          ? "قرأ الرسالة"
+                          ? "قُرئت بواسطة صاحب السيارة"
                           : deliveryStatus === "delivered"
                           ? isSmsFallback || deliveredChannel === "SMS"
-                            ? "تم التسليم عبر SMS"
-                            : "تم التسليم عبر واتساب"
-                          : "جاري الإرسال..."}
+                            ? "تم الاستلام عبر SMS"
+                            : "تم الاستلام"
+                          : "تم الإرسال"}
                       </p>
                     </div>
                   </div>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-[#25D366]/20 px-2.5 py-1 text-[10px] font-bold text-[#a7f3d0]">
-                    <LockKeyhole className="h-3 w-3" />
-                    مشفر وخصوصي
-                  </span>
+
+                  {/* أيقونة الاتصال العلوية (مثل واتساب) تتفعّل بعد دقيقتين من عدم الرد */}
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={
+                        isCallUnlocked ? handleInitiateVoiceCall : undefined
+                      }
+                      disabled={
+                        !isCallUnlocked ||
+                        isStartingCall ||
+                        Boolean(activeCallCode)
+                      }
+                      title={
+                        isCallUnlocked
+                          ? "اتصال صوتي مشفر بصاحب السيارة (دون كشف رقمك)"
+                          : `في حال عدم الرد، ستتفعّل أيقونة الاتصال بعد ${noRespMins}:${noRespSecs}`
+                      }
+                      aria-label="اتصال صوتي مشفر بصاحب السيارة"
+                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-black transition ${
+                        isCallUnlocked
+                          ? "animate-pulse bg-[#25D366] text-slate-950 shadow-md hover:bg-[#1fb857]"
+                          : "cursor-not-allowed bg-white/10 text-white/50"
+                      }`}
+                    >
+                      {isStartingCall ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Phone className="h-3.5 w-3.5" />
+                      )}
+                      <span dir="ltr">
+                        {isCallUnlocked
+                          ? "اتصال"
+                          : `${noRespMins}:${noRespSecs}`}
+                      </span>
+                    </button>
+                    <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-[#25D366]/20 px-2.5 py-1 text-[10px] font-bold text-[#a7f3d0]">
+                      <LockKeyhole className="h-3 w-3" />
+                      مشفر
+                    </span>
+                  </div>
                 </div>
 
                 {/* خلفية محادثة واتساب */}
@@ -840,26 +887,6 @@ export function ScanForm({
 
                       {arrivalCountdown === 0 && reminderStage === 0 && (
                         <div className="w-full space-y-2">
-                          {!activeCallCode && (
-                            <button
-                              type="button"
-                              onClick={handleInitiateVoiceCall}
-                              disabled={isStartingCall}
-                              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-md transition hover:bg-[#1fb857] disabled:opacity-60"
-                            >
-                              {isStartingCall ? (
-                                <>
-                                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                                  جارٍ طلب المكالمة الصوتية المشفرة...
-                                </>
-                              ) : (
-                                <>
-                                  <Phone className="h-4 w-4" />
-                                  اتصال صوتي مشفر بصاحب السيارة (دون كشف رقمك)
-                                </>
-                              )}
-                            </button>
-                          )}
                           <button
                             type="button"
                             onClick={handleRequestReminder}
@@ -927,53 +954,26 @@ export function ScanForm({
                           <div className="flex flex-col items-center gap-1">
                             <span>
                               {isReadOrReplied
-                                ? "قرأ صاحب السيارة الرسالة... بانتظار استجابته الآن."
+                                ? "قُرئت بواسطة صاحب السيارة... بانتظار استجابته الآن."
                                 : isDeliveredOrAbove
-                                ? "وصلت الرسالة لهاتف صاحب السيارة... بانتظار استجابته."
-                                : "اتصال حي مباشر • سيتم تحديث علامات الصح وظهور رد المالك فورياً."}
+                                ? "تم الاستلام على هاتف صاحب السيارة... بانتظار استجابته."
+                                : "تم الإرسال • سيتم تحديث علامات الصح وظهور رد المالك فورياً."}
                             </span>
                             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
                               <Clock className="h-3.5 w-3.5" />
-                              يُتاح الاتصال الصوتي المشفر (بدون كشف الرقم) عند عدم الرد بعد:{" "}
+                              في حال عدم الرد، ستتفعّل أيقونة الاتصال الصوتي المشفر في الأعلى بعد دقيقتين (
                               <strong dir="ltr" className="font-mono">
-                                {String(
-                                  Math.floor(noResponseCountdown / 60)
-                                ).padStart(2, "0")}
-                                :
-                                {String(noResponseCountdown % 60).padStart(
-                                  2,
-                                  "0"
-                                )}
+                                {noRespMins}:{noRespSecs}
                               </strong>
+                              )
                             </span>
                           </div>
                         ) : (
-                          <span className="font-bold text-amber-700 dark:text-amber-300">
-                            مرت 5 دقائق دون استجابة من صاحب السيارة • يمكنك الآن الاتصال به صوتياً عبر المتصفح دون أن يظهر لأيٍّ منكما رقم الآخر.
+                          <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                            تفعّلت أيقونة الاتصال الصوتي المشفر (📞) في الأعلى • يمكنك الضغط عليها للاتصال بصاحب السيارة دون كشف الأرقام.
                           </span>
                         )}
                       </div>
-
-                      {noResponseCountdown === 0 && !activeCallCode && (
-                        <button
-                          type="button"
-                          onClick={handleInitiateVoiceCall}
-                          disabled={isStartingCall}
-                          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#25D366] px-4 py-3.5 text-xs font-black text-slate-950 shadow-md transition hover:bg-[#1fb857] disabled:opacity-60"
-                        >
-                          {isStartingCall ? (
-                            <>
-                              <LoaderCircle className="h-4 w-4 animate-spin" />
-                              جارٍ طلب المكالمة الصوتية المشفرة...
-                            </>
-                          ) : (
-                            <>
-                              <Phone className="h-4 w-4" />
-                              اتصال صوتي مشفر بصاحب السيارة (دون كشف رقمك)
-                            </>
-                          )}
-                        </button>
-                      )}
 
                       {reminderError && (
                         <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
@@ -986,7 +986,11 @@ export function ScanForm({
                           callCode={activeCallCode}
                           tagCode={tagCode}
                           role="caller"
-                          onClose={() => setActiveCallCode(null)}
+                          initialStream={callerMicStream}
+                          onClose={() => {
+                            setCallerMicStream(null);
+                            setActiveCallCode(null);
+                          }}
                         />
                       )}
                     </div>

@@ -426,11 +426,20 @@ export async function processWhatsappWebhookPayload(
           })
           .eq("id", report.id);
 
-        if (normalizedStatus === "read" || normalizedStatus === "delivered") {
+        if (
+          normalizedStatus === "read" ||
+          normalizedStatus === "delivered" ||
+          normalizedStatus === "sent"
+        ) {
           await broadcastReportRealtimeUpdate({
             reportId: String(report.id),
             tagCode,
-            deliveryStatus: normalizedStatus === "read" ? "read" : "delivered",
+            deliveryStatus:
+              normalizedStatus === "read"
+                ? "read"
+                : normalizedStatus === "delivered"
+                ? "delivered"
+                : "sent",
             ownerReply: null,
             isSmsFallback: false,
             reasonBadge: badgeLabel,
