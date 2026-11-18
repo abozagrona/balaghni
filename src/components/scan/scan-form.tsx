@@ -22,6 +22,7 @@ import {
   CheckCheck,
   Clock,
   MessageCircle,
+  Phone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
@@ -34,6 +35,7 @@ import {
   FlaggedNotePreview,
   type FlaggedSpan,
 } from "@/components/scan/flagged-note-preview";
+import { AnonymousVoiceCall } from "@/components/scan/anonymous-voice-call";
 import {
   loadScanDraft,
   saveScanDraft,
@@ -148,6 +150,12 @@ export function ScanForm({
   const [isSendingReminder, setIsSendingReminder] =
     React.useState<boolean>(false);
   const [reminderError, setReminderError] = React.useState<string | null>(null);
+  const [noResponseCountdown, setNoResponseCountdown] =
+    React.useState<number>(300);
+  const [activeCallCode, setActiveCallCode] = React.useState<string | null>(
+    null
+  );
+  const [isStartingCall, setIsStartingCall] = React.useState<boolean>(false);
 
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [moderationState, setModerationState] =
@@ -386,6 +394,40 @@ export function ScanForm({
     }
   };
 
+  // عداد الـ 5 دقائق (300 ثانية) لعدم استجابة صاحب السيارة بعد إرسال/وصول البلاغ لتفعيل المكالمة الصوتية المشفرة
+  React.useEffect(() => {
+    if (!isSuccess || ownerReply || noResponseCountdown <= 0) return;
+    const timer = window.setInterval(() => {
+      setNoResponseCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isSuccess, ownerReply, noResponseCountdown]);
+
+  const handleInitiateVoiceCall = async () => {
+    if (isStartingCall || activeCallCode) return;
+    setIsStartingCall(true);
+    setReminderError(null);
+    try {
+      const res = await fetch("/api/notify/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tagCode, reportId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.callCode) {
+        setReminderError(
+          data.error || "تعذر بدء المكالمة الصوتية المشفرة حالياً."
+        );
+        return;
+      }
+      setActiveCallCode(String(data.callCode));
+    } catch {
+      setReminderError("حدث خطأ في الاتصال. حاول مرة أخرى.");
+    } finally {
+      setIsStartingCall(false);
+    }
+  };
+
   // التحكم في نوافذ <dialog>
   React.useEffect(() => {
     const dialog = errorDialogRef.current;
@@ -516,6 +558,8 @@ export function ScanForm({
       setDeliveryStatus("sent");
       setOwnerReply(null);
       setArrivalCountdown(null);
+      setNoResponseCountdown(300);
+      setActiveCallCode(null);
       setIsSending(false);
       setIsSuccess(true);
     } catch {
@@ -759,6 +803,26 @@ export function ScanForm({
 
                       {arrivalCountdown === 0 && reminderStage === 0 && (
                         <div className="w-full space-y-2">
+                          {!activeCallCode && (
+                            <button
+                              type="button"
+                              onClick={handleInitiateVoiceCall}
+                              disabled={isStartingCall}
+                              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-md transition hover:bg-[#1fb857] disabled:opacity-60"
+                            >
+                              {isStartingCall ? (
+                                <>
+                                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                                  جارٍ طلب المكالمة الصوتية المشفرة...
+                                </>
+                              ) : (
+                                <>
+                                  <Phone className="h-4 w-4" />
+                                  اتصال صوتي مشفر بصاحب السيارة (دون كشف رقمك)
+                                </>
+                              )}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={handleRequestReminder}
@@ -785,6 +849,15 @@ export function ScanForm({
                         </div>
                       )}
 
+                      {activeCallCode && (
+                        <AnonymousVoiceCall
+                          callCode={activeCallCode}
+                          tagCode={tagCode}
+                          role="caller"
+                          onClose={() => setActiveCallCode(null)}
+                        />
+                      )}
+
                       {reminderStage === 2 && (
                         <div className="w-full space-y-3 rounded-2xl border border-amber-500/40 bg-amber-50 p-4 text-slate-900 shadow-md dark:bg-amber-950/50 dark:text-amber-50">
                           <p className="text-xs font-bold leading-relaxed">
@@ -807,10 +880,74 @@ export function ScanForm({
                       )}
                     </div>
                   ) : (
-                    <div className="rounded-xl bg-white/75 px-3 py-2 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
-                      {isReadOrReplied
-                        ? "بانتظار استجابة صاحب السيارة... سيتم إشعارك هنا فور رده."
-                        : "اتصال حي مباشر • سيتم تحديث علامات الصح وظهور رد المالك فورياً دون كشف أرقام الهواتف."}
+                    <div className="space-y-2.5">
+                      <div className="rounded-xl bg-white/75 px-3 py-2.5 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
+                        {noResponseCountdown > 0 ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <span>
+                              {isReadOrReplied
+                                ? "قرأ صاحب السيارة الرسالة... بانتظار استجابته الآن."
+                                : isDeliveredOrAbove
+                                ? "وصلت الرسالة لهاتف صاحب السيارة... بانتظار استجابته."
+                                : "اتصال حي مباشر • سيتم تحديث علامات الصح وظهور رد المالك فورياً."}
+                            </span>
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                              <Clock className="h-3.5 w-3.5" />
+                              يُتاح الاتصال الصوتي المشفر (بدون كشف الرقم) عند عدم الرد بعد:{" "}
+                              <strong dir="ltr" className="font-mono">
+                                {String(
+                                  Math.floor(noResponseCountdown / 60)
+                                ).padStart(2, "0")}
+                                :
+                                {String(noResponseCountdown % 60).padStart(
+                                  2,
+                                  "0"
+                                )}
+                              </strong>
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="font-bold text-amber-700 dark:text-amber-300">
+                            مرت 5 دقائق دون استجابة من صاحب السيارة • يمكنك الآن الاتصال به صوتياً عبر المتصفح دون أن يظهر لأيٍّ منكما رقم الآخر.
+                          </span>
+                        )}
+                      </div>
+
+                      {noResponseCountdown === 0 && !activeCallCode && (
+                        <button
+                          type="button"
+                          onClick={handleInitiateVoiceCall}
+                          disabled={isStartingCall}
+                          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#25D366] px-4 py-3.5 text-xs font-black text-slate-950 shadow-md transition hover:bg-[#1fb857] disabled:opacity-60"
+                        >
+                          {isStartingCall ? (
+                            <>
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                              جارٍ طلب المكالمة الصوتية المشفرة...
+                            </>
+                          ) : (
+                            <>
+                              <Phone className="h-4 w-4" />
+                              اتصال صوتي مشفر بصاحب السيارة (دون كشف رقمك)
+                            </>
+                          )}
+                        </button>
+                      )}
+
+                      {reminderError && (
+                        <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
+                          {reminderError}
+                        </p>
+                      )}
+
+                      {activeCallCode && (
+                        <AnonymousVoiceCall
+                          callCode={activeCallCode}
+                          tagCode={tagCode}
+                          role="caller"
+                          onClose={() => setActiveCallCode(null)}
+                        />
+                      )}
                     </div>
                   )}
                 </div>

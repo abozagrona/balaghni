@@ -178,6 +178,20 @@ export const BALAGHNI_TWILIO_TEMPLATES: TwilioTemplateSpec[] = [
       },
     },
   },
+  {
+    friendlyName: "balaghni_voice_call_invite",
+    language: "ar",
+    category: "UTILITY",
+    variables: {
+      "1": "هونداي سوناتا",
+      "2": "https://balaghni.ly/call/C7M4K9",
+    },
+    types: {
+      "twilio/text": {
+        body: "📞 (منصة بَلِّغْنِي) اتصال صوتي عاجل بخصوص سيارتك ({{1}})! المُبلِّغ ينتظر عند المركبة ويتصل بك صوتياً الآن عبر المتصفح (مكالمة مشفرة دون كشف رقمك أو رقمه). اضغط هنا للرد والتحدث فوراً: {{2}} — منصة بَلِّغْنِي.",
+      },
+    },
+  },
 ];
 
 export async function listTwilioContentTemplates(): Promise<
