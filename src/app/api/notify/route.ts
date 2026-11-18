@@ -150,32 +150,6 @@ export async function POST(req: NextRequest) {
 
     const reportId = (result as { reportId?: string }).reportId || null;
 
-    if (reportId && !reportId.startsWith("rep_")) {
-      after(async () => {
-        const sleep = (ms: number) =>
-          new Promise<void>((resolve) => setTimeout(resolve, ms));
-        const checkpointsMs = [6000, 9000, 10000, 11000]; // ~6s, 15s, 25s, 36s
-        for (const waitMs of checkpointsMs) {
-          await sleep(waitMs);
-          try {
-            const state = await syncReportDeliveryAndFallback(
-              reportId,
-              normalizedCode
-            );
-            if (
-              state.deliveryStatus === "read" ||
-              state.deliveryStatus === "replied" ||
-              state.isSmsFallback
-            ) {
-              break;
-            }
-          } catch {
-            // ignore transient check failure
-          }
-        }
-      });
-    }
-
     // استجابة آمنة تماماً لا تحتوي على رقم هاتف المالك (Zero-Leak)
     return NextResponse.json({
       ok: true,
@@ -201,32 +175,36 @@ async function syncReportDeliveryAndFallback(
   ownerReply: string | null;
   isSmsFallback: boolean;
 }> {
-  let reportRow: Record<string, unknown> | null = null;
-  if (reportId && !reportId.startsWith("rep_")) {
-    const { data } = await supabaseAdmin
-      .from("reports")
-      .select("id,tag_code,reason_badge,message,created_at")
-      .eq("id", reportId)
-      .maybeSingle();
-    if (data) reportRow = data as Record<string, unknown>;
+  // إذا لم يتوفر معرف بلاغ حقيقي (UUID) خاص بهذه الجلسة، لا نرجع أي بلاغ قديم لنفس الملصق أبداً
+  if (!reportId || reportId.startsWith("rep_")) {
+    return {
+      deliveryStatus: "sent",
+      ownerReply: null,
+      isSmsFallback: false,
+    };
   }
 
-  if (!reportRow && tagCode) {
-    const { data } = await supabaseAdmin
-      .from("reports")
-      .select("id,tag_code,reason_badge,message,created_at")
-      .eq("tag_code", tagCode)
-      .order("created_at", { ascending: false })
-      .limit(1);
-    if (Array.isArray(data) && data.length > 0) {
-      reportRow = data[0] as Record<string, unknown>;
-    }
+  const { data } = await supabaseAdmin
+    .from("reports")
+    .select("id,tag_code,reason_badge,message,created_at")
+    .eq("id", reportId)
+    .maybeSingle();
+
+  const reportRow = (data as Record<string, unknown> | null) || null;
+  if (!reportRow) {
+    return {
+      deliveryStatus: "sent",
+      ownerReply: null,
+      isSmsFallback: false,
+    };
   }
 
-  let badge = String(reportRow?.reason_badge || "");
-  const message = String(reportRow?.message || "");
-  const resolvedReportId = String(reportRow?.id || reportId || "");
-  const resolvedTagCode = String(reportRow?.tag_code || tagCode || "").toUpperCase();
+  let badge = String(reportRow.reason_badge || "");
+  const message = String(reportRow.message || "");
+  const resolvedReportId = String(reportRow.id || reportId);
+  const resolvedTagCode = String(
+    reportRow.tag_code || tagCode || ""
+  ).toUpperCase();
 
   let ownerReply: string | null = null;
   const replyMarker = "[رد المالك عبر واتساب]:";
@@ -237,82 +215,74 @@ async function syncReportDeliveryAndFallback(
     ownerReply = badge.replace("رد المالك:", "").trim() || null;
   }
 
-  const prevBadge = badge;
-
-  // فحص حالة Green-API (لترقية الحالة إلى تم التسليم أو تمت القراءة) أو التحويل البديل لـ SMS بعد 35 ثانية (لباقة نَبِّهْنِي فقط)
+  // التحويل التلقائي البديل إلى SMS بعد 35 ثانية لباقة نَبِّهْنِي فقط إذا لم يصل حدث delivered أو read عبر الـ Webhook
   if (
     !ownerReply &&
     !badge.includes("تمت القراءة") &&
+    !badge.includes("تم التسليم") &&
     !badge.includes("SMS") &&
     resolvedReportId
   ) {
     try {
-      const { data: dispatchRows } = await supabaseAdmin
-        .from("admin_audit_logs")
-        .select("details,created_at")
-        .eq("action_type", "REPORT_DISPATCH")
-        .eq("target_item", resolvedReportId)
-        .order("created_at", { ascending: false })
-        .limit(1);
+      const createdMs = new Date(
+        String(reportRow.created_at || Date.now())
+      ).getTime();
+      const elapsedMs = Date.now() - createdMs;
 
-      const dispatchRow = Array.isArray(dispatchRows) ? dispatchRows[0] : null;
-      if (dispatchRow?.details) {
-        const meta = JSON.parse(String(dispatchRow.details));
-        const targetCode = String(meta.tagCode || resolvedTagCode || "").toUpperCase();
-        const tagRecord = targetCode ? await getVehicleTagByCode(targetCode) : null;
-        const ownerPhone = tagRecord?.ownerPhone || "";
+      if (elapsedMs >= 35000) {
+        const { data: dispatchRows } = await supabaseAdmin
+          .from("admin_audit_logs")
+          .select("details")
+          .eq("action_type", "REPORT_DISPATCH")
+          .eq("target_item", resolvedReportId)
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-        if (ownerPhone && meta.waMessageId) {
-          const waState = await checkGreenApiMessageStatus(
-            ownerPhone,
-            String(meta.waMessageId)
-          );
-          if (waState === "read") {
-            badge = "واتساب: تمت القراءة";
+        const dispatchRow = Array.isArray(dispatchRows)
+          ? dispatchRows[0]
+          : null;
+        if (dispatchRow?.details) {
+          const meta = JSON.parse(String(dispatchRow.details));
+          const targetCode = String(
+            meta.tagCode || resolvedTagCode || ""
+          ).toUpperCase();
+          const tagRecord = targetCode
+            ? await getVehicleTagByCode(targetCode)
+            : null;
+          const ownerPhone = tagRecord?.ownerPhone || "";
+          const isBasic =
+            tagRecord?.planType === "basic" ||
+            tagRecord?.packageType === "basic" ||
+            tagRecord?.alertChannel === "WHATSAPP";
+
+          if (ownerPhone && Boolean(meta.smsFallbackEnabled) && !isBasic) {
+            badge = "تم الإشعار عبر SMS (بديل تلقائي)";
             await supabaseAdmin
               .from("reports")
               .update({ reason_badge: badge })
               .eq("id", resolvedReportId);
-          } else if (waState === "delivered" && !badge.includes("تم التسليم")) {
-            badge = "واتساب: تم التسليم";
-            await supabaseAdmin
-              .from("reports")
-              .update({ reason_badge: badge })
-              .eq("id", resolvedReportId);
-          } else if (!badge.includes("تم التسليم")) {
-            const createdMs = new Date(
-              String(meta.createdAt || reportRow?.created_at || Date.now())
-            ).getTime();
-            const elapsedMs = Date.now() - createdMs;
-            const isBasic =
-              tagRecord?.planType === "basic" ||
-              tagRecord?.packageType === "basic" ||
-              tagRecord?.alertChannel === "WHATSAPP";
 
-            if (
-              elapsedMs >= 35000 &&
-              Boolean(meta.smsFallbackEnabled) &&
-              !isBasic
-            ) {
-              badge = "تم الإشعار عبر SMS (بديل تلقائي)";
-              await supabaseAdmin
-                .from("reports")
-                .update({ reason_badge: badge })
-                .eq("id", resolvedReportId);
+            await sendSmsAlertMessage(
+              ownerPhone,
+              String(meta.var1 || targetCode),
+              String(meta.var2 || "تنبيه عاجل"),
+              String(meta.var3 || "يرجى مراجعة مركبتك"),
+              String(meta.formattedCaller || "غير مرفق")
+            );
 
-              await sendSmsAlertMessage(
-                ownerPhone,
-                String(meta.var1 || targetCode),
-                String(meta.var2 || "تنبيه عاجل"),
-                String(meta.var3 || "يرجى مراجعة مركبتك"),
-                String(meta.formattedCaller || "غير مرفق")
-              );
-            }
+            await broadcastReportRealtimeUpdate({
+              reportId: resolvedReportId,
+              tagCode: resolvedTagCode,
+              deliveryStatus: "delivered",
+              ownerReply: null,
+              isSmsFallback: true,
+              reasonBadge: badge,
+            });
           }
         }
       }
     } catch {
-      // ignore transient check failure
+      // ignore
     }
   }
 
@@ -323,17 +293,6 @@ async function syncReportDeliveryAndFallback(
     deliveryStatus = "read";
   } else if (badge.includes("تم التسليم") || badge.includes("SMS")) {
     deliveryStatus = "delivered";
-  }
-
-  if (badge !== prevBadge) {
-    await broadcastReportRealtimeUpdate({
-      reportId: resolvedReportId,
-      tagCode: resolvedTagCode,
-      deliveryStatus,
-      ownerReply,
-      isSmsFallback: badge.includes("SMS"),
-      reasonBadge: badge,
-    });
   }
 
   return {
@@ -350,7 +309,10 @@ export async function GET(req: NextRequest) {
     const tagCode = formatBalaghniTagCode(rawTag);
 
     if (!tagCode && !reportId) {
-      return NextResponse.json({ ok: false, error: "tagCode required" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "tagCode required" },
+        { status: 400 }
+      );
     }
 
     const state = await syncReportDeliveryAndFallback(reportId, tagCode);

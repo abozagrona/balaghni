@@ -1518,13 +1518,28 @@ export async function addReportForTag(params: {
     if (inserted?.id) {
       report.id = String(inserted.id);
     } else if (insertErr) {
-      const { data: fallbackInserted } = await supabaseAdmin
+      const { data: fallbackInserted, error: fbErr } = await supabaseAdmin
         .from("reports")
         .insert(basePayload)
         .select("id")
         .single();
       if (fallbackInserted?.id) {
         report.id = String(fallbackInserted.id);
+      } else if (fbErr) {
+        await supabaseAdmin
+          .from("tags")
+          .upsert(
+            { tag_code: normalizedCode, status: "ACTIVE" },
+            { onConflict: "tag_code", ignoreDuplicates: true }
+          );
+        const { data: retryInserted } = await supabaseAdmin
+          .from("reports")
+          .insert(basePayload)
+          .select("id")
+          .single();
+        if (retryInserted?.id) {
+          report.id = String(retryInserted.id);
+        }
       }
     }
   } catch {

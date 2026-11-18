@@ -9,12 +9,63 @@ import { formatBalaghniTagCode } from "@/lib/utils";
 export const dynamic = "force-dynamic";
 
 const REPLY_OPTIONS: Record<string, string> = {
-  "2min": "أنا قادم خلال دقيقتين",
-  "5min": "أنا قادم خلال 5 دقائق",
-  sorry: "أعتذر، سأتحرك فوراً",
+  "2min": "أنا قادم الآن",
+  "5min": "أنا قادم الآن",
+  sorry: "أنا قادم الآن",
 };
 
+// GET: عرض زر تأكيد فقط (دون تعديل قاعدة البيانات لمنع WhatsApp Link Preview Bot)
 export async function GET(req: NextRequest) {
+  const reportId = String(req.nextUrl.searchParams.get("reportId") || "").trim();
+  const rawTag = String(req.nextUrl.searchParams.get("tagCode") || "").trim();
+  const sig = String(req.nextUrl.searchParams.get("sig") || "").trim();
+  const replyKey = String(req.nextUrl.searchParams.get("reply") || "2min").trim();
+
+  const tagCode = formatBalaghniTagCode(rawTag);
+  const replyText = REPLY_OPTIONS[replyKey] || REPLY_OPTIONS["2min"];
+
+  if (!reportId || !tagCode || !verifyReportReplySignature(reportId, tagCode, sig)) {
+    return new NextResponse(
+      `<!DOCTYPE html><html lang="ar" dir="rtl"><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0B0D13;color:#fff;"><h2>رابط الاستجابة غير صالح أو منتهي الصلاحية</h2></body></html>`,
+      { status: 403, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+  }
+
+  const actionUrl = `/api/notify/reply?reportId=${encodeURIComponent(
+    reportId
+  )}&tagCode=${encodeURIComponent(tagCode)}&sig=${encodeURIComponent(
+    sig
+  )}&reply=${encodeURIComponent(replyKey)}`;
+
+  return new NextResponse(
+    `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>تأكيد الاستجابة • بَلِّغْنِي</title>
+</head>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0B141A;color:#fff;font-family:system-ui,-apple-system,sans-serif;padding:20px;">
+  <div style="max-width:420px;width:100%;background:#202C33;border:1px solid rgba(37,211,102,0.35);border-radius:24px;padding:32px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,0.4);">
+    <h1 style="margin:0 0 12px;font-size:20px;font-weight:900;">تأكيد قدومك إلى المركبة (${tagCode})</h1>
+    <p style="margin:0 0 20px;font-size:14px;color:rgba(255,255,255,0.8);line-height:1.6;">
+      اضغط على الزر أدناه لإبلاغ الطرف الآخر بردّك:<br/>
+      <strong style="color:#25D366;font-size:16px;">«${replyText}»</strong>
+    </p>
+    <form method="POST" action="${actionUrl}">
+      <button type="submit" style="width:100%;border:none;border-radius:16px;background:#25D366;color:#0B141A;font-size:16px;font-weight:900;padding:15px 20px;cursor:pointer;">
+        ✅ تأكيد وإرسال الرد الآن
+      </button>
+    </form>
+  </div>
+</body>
+</html>`,
+    { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } }
+  );
+}
+
+// POST: يُنفذ حصراً عند ضغطة المالك الفعلية
+export async function POST(req: NextRequest) {
   const reportId = String(req.nextUrl.searchParams.get("reportId") || "").trim();
   const rawTag = String(req.nextUrl.searchParams.get("tagCode") || "").trim();
   const sig = String(req.nextUrl.searchParams.get("sig") || "").trim();
@@ -39,17 +90,6 @@ export async function GET(req: NextRequest) {
         .eq("id", reportId)
         .maybeSingle();
       if (data) reportRow = data as Record<string, unknown>;
-    }
-    if (!reportRow) {
-      const { data } = await supabaseAdmin
-        .from("reports")
-        .select("id,message")
-        .eq("tag_code", tagCode)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (Array.isArray(data) && data.length > 0) {
-        reportRow = data[0] as Record<string, unknown>;
-      }
     }
 
     const reasonBadge = `رد المالك: ${replyText}`;

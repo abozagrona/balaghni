@@ -269,6 +269,9 @@ export function ScanForm({
         },
         (payload) => {
           const row = (payload.new || {}) as Record<string, unknown>;
+          if (hasRealReportId && row.id && String(row.id) !== String(reportId)) {
+            return;
+          }
           const parsed = parseReportStatusFromRow(
             typeof row.reason_badge === "string" ? row.reason_badge : null,
             typeof row.message === "string" ? row.message : null
@@ -278,6 +281,13 @@ export function ScanForm({
       )
       .on("broadcast", { event: "report_update" }, ({ payload }) => {
         const data = (payload || {}) as Partial<ReportRealtimePayload>;
+        if (
+          hasRealReportId &&
+          data.reportId &&
+          String(data.reportId) !== String(reportId)
+        ) {
+          return;
+        }
         applyRealtimeState({
           deliveryStatus: data.deliveryStatus,
           ownerReply: data.ownerReply ?? null,
