@@ -156,6 +156,8 @@ export function ScanForm({
     null
   );
   const [isStartingCall, setIsStartingCall] = React.useState<boolean>(false);
+  const [callerMicStream, setCallerMicStream] =
+    React.useState<MediaStream | null>(null);
 
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [moderationState, setModerationState] =
@@ -407,6 +409,24 @@ export function ScanForm({
     if (isStartingCall || activeCallCode) return;
     setIsStartingCall(true);
     setReminderError(null);
+
+    // طلب إذن الميكروفون مباشرةً عند ضغطة الزر (User Gesture) قبل أي طلب شبكي غير متزامن
+    let preAcquiredStream: MediaStream | null = null;
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function"
+    ) {
+      try {
+        preAcquiredStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+      } catch {
+        preAcquiredStream = null;
+      }
+    }
+
     try {
       const res = await fetch("/api/notify/call", {
         method: "POST",
@@ -415,13 +435,20 @@ export function ScanForm({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok || !data.callCode) {
+        if (preAcquiredStream) {
+          preAcquiredStream.getTracks().forEach((t) => t.stop());
+        }
         setReminderError(
           data.error || "تعذر بدء المكالمة الصوتية المشفرة حالياً."
         );
         return;
       }
+      setCallerMicStream(preAcquiredStream);
       setActiveCallCode(String(data.callCode));
     } catch {
+      if (preAcquiredStream) {
+        preAcquiredStream.getTracks().forEach((t) => t.stop());
+      }
       setReminderError("حدث خطأ في الاتصال. حاول مرة أخرى.");
     } finally {
       setIsStartingCall(false);
@@ -854,7 +881,11 @@ export function ScanForm({
                           callCode={activeCallCode}
                           tagCode={tagCode}
                           role="caller"
-                          onClose={() => setActiveCallCode(null)}
+                          initialStream={callerMicStream}
+                          onClose={() => {
+                            setCallerMicStream(null);
+                            setActiveCallCode(null);
+                          }}
                         />
                       )}
 

@@ -11,6 +11,7 @@ const nextConfig = {
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https://*.supabase.co https://*.supabase.in",
+      "media-src 'self' blob: mediastream:",
       "connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co https://*.green-api.com https://va.vercel-scripts.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
@@ -32,7 +33,7 @@ const nextConfig = {
           {
             key: "Permissions-Policy",
             value:
-              "camera=(self), microphone=(), geolocation=(), publickey-credentials-get=(self), publickey-credentials-create=(self)",
+              "camera=(self), microphone=(self), geolocation=(), publickey-credentials-get=(self), publickey-credentials-create=(self)",
           },
         ],
       },
