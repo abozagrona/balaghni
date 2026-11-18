@@ -10,6 +10,9 @@ export const metadata: Metadata = {
   },
   description:
     "منصة بَلِّغْنِي (BALAGHNI) الذكية في ليبيا: امسح رمز QR للتواصل الفوري والآمن مع صاحب السيارة دون كشف رقم الهاتف.",
+  other: {
+    "facebook-domain-verification": "79atptilyn0idzn7yeuwb1ppnkdogc",
+  },
 };
 
 export const viewport: Viewport = {
