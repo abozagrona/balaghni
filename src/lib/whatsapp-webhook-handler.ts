@@ -304,11 +304,32 @@ async function findLatestReportForPhone(phone: string): Promise<{
 
 async function findReportByMessageId(messageId: string): Promise<{
   report: Record<string, any> | null;
+  reportId: string | null;
   tagCode: string | null;
   vehicleLabel: string;
 }> {
   if (!messageId) {
-    return { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+    return { report: null, reportId: null, tagCode: null, vehicleLabel: "مركبتك" };
+  }
+
+  try {
+    const { data: twilioRows } = await supabaseAdmin
+      .from("reports")
+      .select("*")
+      .eq("twilio_message_sid", messageId)
+      .limit(1);
+    if (Array.isArray(twilioRows) && twilioRows.length > 0) {
+      const r = twilioRows[0];
+      const tc = String(r.tag_code || "").toUpperCase();
+      return {
+        report: r,
+        reportId: String(r.id),
+        tagCode: tc || null,
+        vehicleLabel: tc || "مركبتك",
+      };
+    }
+  } catch {
+    // column twilio_message_sid may not be migrated yet
   }
 
   try {
@@ -320,7 +341,12 @@ async function findReportByMessageId(messageId: string): Promise<{
     if (Array.isArray(directRows) && directRows.length > 0) {
       const r = directRows[0];
       const tc = String(r.tag_code || "").toUpperCase();
-      return { report: r, tagCode: tc || null, vehicleLabel: tc || "مركبتك" };
+      return {
+        report: r,
+        reportId: String(r.id),
+        tagCode: tc || null,
+        vehicleLabel: tc || "مركبتك",
+      };
     }
   } catch {
     // column whatsapp_message_id may not be migrated yet; fallback to audit logs
@@ -340,6 +366,8 @@ async function findReportByMessageId(messageId: string): Promise<{
       const parsed = JSON.parse(String(logRow.details));
       const reportId = String(parsed.reportId || logRow.target_item || "").trim();
       const tc = String(parsed.tagCode || "").toUpperCase();
+      const vLabel = String(parsed.var1 || tc || "مركبتك");
+
       if (reportId && !reportId.startsWith("rep_")) {
         const { data: rep } = await supabaseAdmin
           .from("reports")
@@ -349,17 +377,34 @@ async function findReportByMessageId(messageId: string): Promise<{
         if (rep) {
           return {
             report: rep,
+            reportId: String(rep.id),
             tagCode: tc || String(rep.tag_code || "").toUpperCase() || null,
-            vehicleLabel: String(parsed.var1 || tc || "مركبتك"),
+            vehicleLabel: vLabel,
           };
         }
+      }
+
+      if (tc) {
+        const { data: repRows } = await supabaseAdmin
+          .from("reports")
+          .select("*")
+          .eq("tag_code", tc)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        const latestRep = Array.isArray(repRows) ? repRows[0] : null;
+        return {
+          report: latestRep || { id: reportId, tag_code: tc, reason_badge: "واتساب: تم الإرسال" },
+          reportId: reportId || (latestRep?.id ? String(latestRep.id) : null),
+          tagCode: tc,
+          vehicleLabel: vLabel,
+        };
       }
     }
   } catch {
     // ignore
   }
 
-  return { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+  return { report: null, reportId: null, tagCode: null, vehicleLabel: "مركبتك" };
 }
 
 function normalizeStatusRank(badge: string): number {
@@ -377,11 +422,13 @@ export async function processWhatsappWebhookPayload(
   const { statuses, messages } = extractWebhookEvents(body);
 
   for (const st of statuses) {
-    console.info("[WhatsApp Webhook] تحديث حالة الرسالة:", st);
+    console.log(
+      `[WhatsApp Status Webhook] MessageSid/idMessage: ${st.messageId} | MessageStatus: ${st.status} | Provider: ${st.provider}`
+    );
 
     let matched = st.messageId
       ? await findReportByMessageId(st.messageId)
-      : { report: null, tagCode: null, vehicleLabel: "مركبتك" };
+      : { report: null, reportId: null, tagCode: null, vehicleLabel: "مركبتك" };
 
     // معالجة حالة التزامن (Race Condition): انتظار 800ms وإعادة البحث عن idMessage إذا وصل الـ Webhook قبل إتمام الحفظ
     if (!matched.report && st.messageId) {
@@ -390,9 +437,14 @@ export async function processWhatsappWebhookPayload(
     }
 
     if (!matched.report && st.recipientPhone) {
-      matched = await findLatestReportForPhone(st.recipientPhone);
+      const byPhone = await findLatestReportForPhone(st.recipientPhone);
+      matched = {
+        ...byPhone,
+        reportId: byPhone.report?.id ? String(byPhone.report.id) : null,
+      };
     }
-    const { report, tagCode, vehicleLabel } = matched;
+    const { report, reportId, tagCode, vehicleLabel } = matched;
+    const resolvedReportId = String(reportId || report?.id || "").trim();
 
     const normalizedStatus = st.status.toLowerCase();
     const statusBadgeMap: Record<string, string> = {
@@ -410,21 +462,51 @@ export async function processWhatsappWebhookPayload(
       read: 3,
     };
 
-    if (report?.id) {
-      const currentBadge = String(report.reason_badge || "");
+    const badgeLabel =
+      statusBadgeMap[normalizedStatus] || `واتساب: ${normalizedStatus}`;
+
+    if (resolvedReportId || report?.id) {
+      const currentBadge = String(report?.reason_badge || "");
       const currentRank = normalizeStatusRank(currentBadge);
       const nextRank = incomingRankMap[normalizedStatus] ?? 0;
-      const badgeLabel =
-        statusBadgeMap[normalizedStatus] || `واتساب: ${normalizedStatus}`;
 
       // عدم التراجع في الحالة (مثلاً: لا نرجع من read أو رد المالك إلى delivered أو sent)
       if (nextRank === 0 || nextRank > currentRank) {
-        await supabaseAdmin
-          .from("reports")
-          .update({
-            reason_badge: badgeLabel,
-          })
-          .eq("id", report.id);
+        if (report?.id && !String(report.id).startsWith("rep_")) {
+          const { error: updErr } = await supabaseAdmin
+            .from("reports")
+            .update({
+              reason_badge: badgeLabel,
+              whatsapp_status: normalizedStatus,
+            })
+            .eq("id", report.id);
+          if (updErr) {
+            await supabaseAdmin
+              .from("reports")
+              .update({ reason_badge: badgeLabel })
+              .eq("id", report.id);
+          }
+        }
+
+        // حفظ تحديث الحالة في admin_audit_logs لضمان قراءته عبر الـ Polling حتى لو لم تكتمل هجرة الأعمدة الجديدة
+        try {
+          await supabaseAdmin.from("admin_audit_logs").insert({
+            admin_name: "Webhook Status",
+            action_type: "REPORT_STATUS_UPDATE",
+            target_item: resolvedReportId || tagCode || st.messageId,
+            details: JSON.stringify({
+              reportId: resolvedReportId,
+              tagCode,
+              messageId: st.messageId,
+              status: normalizedStatus,
+              reasonBadge: badgeLabel,
+              updatedAt: new Date().toISOString(),
+            }),
+            created_at: new Date().toISOString(),
+          });
+        } catch {
+          // ignore
+        }
 
         if (
           normalizedStatus === "read" ||
@@ -432,7 +514,7 @@ export async function processWhatsappWebhookPayload(
           normalizedStatus === "sent"
         ) {
           await broadcastReportRealtimeUpdate({
-            reportId: String(report.id),
+            reportId: resolvedReportId || String(report?.id || ""),
             tagCode,
             deliveryStatus:
               normalizedStatus === "read"

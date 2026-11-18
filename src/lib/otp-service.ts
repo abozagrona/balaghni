@@ -358,6 +358,40 @@ export async function checkGreenApiMessageStatus(
   }
 }
 
+export async function checkTwilioMessageStatus(
+  messageSid: string
+): Promise<"sent" | "delivered" | "read" | "failed" | "unknown"> {
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const sid = String(messageSid || "").trim();
+  if (!twilioSid || !twilioToken || !sid) return "unknown";
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages/${sid}.json`,
+      {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`,
+        },
+        signal: controller.signal,
+      }
+    ).finally(() => clearTimeout(timeout));
+
+    if (!res.ok) return "unknown";
+    const data = (await res.json().catch(() => ({}))) as { status?: string };
+    const st = String(data?.status || "").trim().toLowerCase();
+    if (st === "read") return "read";
+    if (st === "delivered") return "delivered";
+    if (st === "sent" || st === "queued" || st === "sending") return "sent";
+    if (st === "failed" || st === "undelivered") return "failed";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 function formatWhatsappCaption(raw: string, maxLen = 1024): string {
   const cleaned = String(raw || "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
@@ -381,17 +415,30 @@ export async function sendWhatsappAlertMessage(
   const trimmedPhoto = String(photoUrl || "").trim();
   const hasPhoto = /^https?:\/\//i.test(trimmedPhoto);
 
-  // دعم اختياري لـ Twilio WhatsApp (عند تفعيله بدلاً من Green API)
+  // دعم لـ Twilio WhatsApp مع تمرير StatusCallback الصريح
   const twilioSid = process.env.TWILIO_ACCOUNT_SID?.trim();
   const twilioToken = process.env.TWILIO_AUTH_TOKEN?.trim();
-  const twilioFrom = process.env.TWILIO_WHATSAPP_FROM?.trim();
+  const twilioFrom = (
+    process.env.TWILIO_WHATSAPP_FROM ||
+    process.env.TWILIO_WHATSAPP_NUMBER ||
+    ""
+  ).trim();
   if (!GREEN_API_TOKEN && twilioSid && twilioToken && twilioFrom) {
     try {
       const cleanPhone = phone.replace(/[^\d]/g, "");
       const form = new URLSearchParams();
-      form.set("From", twilioFrom.startsWith("whatsapp:") ? twilioFrom : `whatsapp:${twilioFrom}`);
+      form.set(
+        "From",
+        twilioFrom.startsWith("whatsapp:")
+          ? twilioFrom
+          : `whatsapp:${twilioFrom}`
+      );
       form.set("To", `whatsapp:+${cleanPhone}`);
       form.set("Body", safeCaption);
+      form.set(
+        "StatusCallback",
+        "https://www.balaghni.ly/api/webhooks/whatsapp-status"
+      );
       if (hasPhoto) {
         form.set("MediaUrl", trimmedPhoto);
       }
@@ -406,13 +453,22 @@ export async function sendWhatsappAlertMessage(
           body: form.toString(),
         }
       );
-      const data = (await res.json().catch(() => ({}))) as { sid?: string; message?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        sid?: string;
+        message?: string;
+      };
       if (!res.ok) {
-        return { ok: false, error: data.message || `Twilio error: ${res.status}` };
+        return {
+          ok: false,
+          error: data.message || `Twilio error: ${res.status}`,
+        };
       }
       return { ok: true, idMessage: data.sid };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : "Twilio send error" };
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "Twilio send error",
+      };
     }
   }
 

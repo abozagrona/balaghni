@@ -1529,7 +1529,12 @@ export async function addReportForTag(params: {
         await supabaseAdmin
           .from("tags")
           .upsert(
-            { tag_code: normalizedCode, status: "ACTIVE" },
+            {
+              tag_code: normalizedCode,
+              status: "ACTIVE",
+              activation_pin_hash:
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            },
             { onConflict: "tag_code", ignoreDuplicates: true }
           );
         const { data: retryInserted } = await supabaseAdmin
@@ -3065,6 +3070,8 @@ export async function sendZeroLeakNotification(params: {
                   .update({
                     reason_badge: "واتساب: تم الإرسال",
                     whatsapp_message_id: waResult.idMessage || null,
+                    twilio_message_sid: waResult.idMessage || null,
+                    whatsapp_status: "sent",
                     short_code: shortCode || null,
                   })
                   .eq("id", reportIdStr);
@@ -3090,6 +3097,7 @@ export async function sendZeroLeakNotification(params: {
                   reportId: reportIdStr,
                   tagCode: normalizedCode,
                   waMessageId: waResult.idMessage || null,
+                  twilioMessageSid: waResult.idMessage || null,
                   shortCode: shortCode || null,
                   smsFallbackEnabled,
                   var1,
