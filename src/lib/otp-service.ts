@@ -439,6 +439,65 @@ export const TWILIO_CONTENT_SIDS = {
   ).trim(),
 } as const;
 
+function sanitizeTwilioContentVariables(
+  vars?: Record<string, string>
+): Record<string, string> {
+  if (!vars || typeof vars !== "object") return {};
+  const cleaned: Record<string, string> = {};
+  for (const [key, rawVal] of Object.entries(vars)) {
+    const k = String(key || "").trim();
+    if (!k) continue;
+    const normalizedVal = String(rawVal ?? "")
+      .replace(/[\r\n\t]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    cleaned[k] = normalizedVal || "-";
+  }
+  return cleaned;
+}
+
+const templateApprovalMemoryCache = new Map<
+  string,
+  { status: string; checkedAt: number }
+>();
+
+async function isTwilioTemplateApproved(
+  contentSid: string,
+  authHeader: string
+): Promise<boolean> {
+  const sid = String(contentSid || "").trim();
+  if (!sid) return false;
+  const cached = templateApprovalMemoryCache.get(sid);
+  const now = Date.now();
+  // الكاش صالح لمدة 60 ثانية حتى يتم تفعيل القالب تلقائياً فور موافقة Meta
+  if (cached && now - cached.checkedAt < 60000) {
+    return cached.status === "approved";
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch(
+      `https://content.twilio.com/v1/Content/${sid}/ApprovalRequests`,
+      {
+        headers: { Authorization: authHeader },
+        signal: controller.signal,
+      }
+    ).finally(() => clearTimeout(timeout));
+    if (!res.ok) return false;
+    const data = (await res.json().catch(() => ({}))) as {
+      whatsapp?: { status?: string };
+    };
+    const st = String(data?.whatsapp?.status || "unsubmitted")
+      .trim()
+      .toLowerCase();
+    templateApprovalMemoryCache.set(sid, { status: st, checkedAt: now });
+    return st === "approved";
+  } catch {
+    return false;
+  }
+}
+
 export async function sendWhatsappAlertMessage(
   phone: string,
   message: string,
@@ -458,7 +517,6 @@ export async function sendWhatsappAlertMessage(
   const trimmedPhoto = String(photoUrl || "").trim();
   const hasPhoto = /^https?:\/\//i.test(trimmedPhoto);
 
-  // دعم لـ Twilio WhatsApp مع تمرير StatusCallback الصريح ودعم القوالب التفاعلية (ContentSid + ContentVariables) مع خيار احتياطي تلقائي للروابط النصية
   const twilioSid = process.env.TWILIO_ACCOUNT_SID?.trim();
   const twilioToken = process.env.TWILIO_AUTH_TOKEN?.trim();
   const twilioFrom = (
@@ -479,9 +537,22 @@ export async function sendWhatsappAlertMessage(
       const toFormatted = `whatsapp:+${cleanPhone}`;
       const authHeader = `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`;
 
-      // 1. الإرسال عبر قالب الأزرار التفاعلية (ContentSid + ContentVariables) مباشرة بدون حقل Body النصي
+      // 1. محاولة الإرسال عبر القالب التفاعلي ذي الأزرار (ContentSid + ContentVariables المنظّفة بدون Body) داخل try/catch
       if (options?.twilioContentSid) {
         try {
+          const isApproved = await isTwilioTemplateApproved(
+            options.twilioContentSid,
+            authHeader
+          );
+          if (!isApproved) {
+            throw new Error(
+              `Template ${options.twilioContentSid} is still pending Meta approval (preventing Error 63016)`
+            );
+          }
+
+          const cleanVars = sanitizeTwilioContentVariables(
+            options.twilioContentVariables
+          );
           const tplForm = new URLSearchParams();
           tplForm.set("From", fromFormatted);
           tplForm.set("To", toFormatted);
@@ -489,14 +560,8 @@ export async function sendWhatsappAlertMessage(
             tplForm.set("MessagingServiceSid", messagingServiceSid);
           }
           tplForm.set("ContentSid", options.twilioContentSid);
-          if (
-            options.twilioContentVariables &&
-            Object.keys(options.twilioContentVariables).length > 0
-          ) {
-            tplForm.set(
-              "ContentVariables",
-              JSON.stringify(options.twilioContentVariables)
-            );
+          if (Object.keys(cleanVars).length > 0) {
+            tplForm.set("ContentVariables", JSON.stringify(cleanVars));
           }
           tplForm.set(
             "StatusCallback",
@@ -521,31 +586,53 @@ export async function sendWhatsappAlertMessage(
             message?: string;
           };
           if (
-            tplRes.ok &&
-            tplData.sid &&
-            tplData.status !== "failed" &&
-            !tplData.error_code
+            !tplRes.ok ||
+            !tplData.sid ||
+            tplData.status === "failed" ||
+            tplData.status === "undelivered" ||
+            tplData.error_code
           ) {
-            // تحقق سريع بعد 1.2 ثانية للتأكد من عدم رفض الرسالة بـ 63016 أثناء كون القالب pending في Meta
-            await new Promise((r) => setTimeout(r, 1200));
-            const stCheck = await checkTwilioMessageStatus(tplData.sid);
-            if (stCheck !== "failed") {
-              return { ok: true, idMessage: tplData.sid };
-            }
-            console.warn(
-              `[Twilio ContentSid Pending Fallback] Message ${tplData.sid} failed (template pending approval), falling back.`
-            );
-          } else {
-            console.warn(
-              `[Twilio ContentSid Fallback] Template ${options.twilioContentSid} not ready (${tplData.message || tplRes.status}), falling back.`
+            throw new Error(
+              `Twilio ContentSid errorCode=${tplData.error_code || tplRes.status} message=${tplData.message || tplData.status}`
             );
           }
-        } catch {
-          // fallback below
+
+          // التحقق بعد 1.8 ثانية من عدم تحول الرسالة إلى undelivered / failed (مثل خطأ 63016)
+          await new Promise((r) => setTimeout(r, 1800));
+          const verifyRes = await fetch(
+            `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages/${tplData.sid}.json`,
+            { headers: { Authorization: authHeader } }
+          );
+          const verifyJson = (await verifyRes.json().catch(() => ({}))) as {
+            status?: string;
+            error_code?: number | null;
+            error_message?: string | null;
+          };
+          if (
+            verifyJson.status === "failed" ||
+            verifyJson.status === "undelivered" ||
+            verifyJson.error_code
+          ) {
+            templateApprovalMemoryCache.set(options.twilioContentSid, {
+              status: "pending",
+              checkedAt: Date.now(),
+            });
+            throw new Error(
+              `Twilio message ${tplData.sid} undelivered (errorCode=${verifyJson.error_code}, status=${verifyJson.status})`
+            );
+          }
+
+          return { ok: true, idMessage: tplData.sid };
+        } catch (tplErr) {
+          console.warn(
+            `[Twilio Interactive Template Fallback] ${
+              tplErr instanceof Error ? tplErr.message : String(tplErr)
+            } -> Switching automatically to fallback delivery.`
+          );
         }
       }
 
-      // 2. إذا لم يكن هناك GREEN_API_TOKEN مُفعّل، نرسل النص الاحتياطي عبر Twilio ريثما يُعتمد القالب
+      // 2. إذا لم يكن هناك GREEN_API_TOKEN مُفعّل، نرسل النص الاحتياطي عبر Twilio (Body)
       if (!GREEN_API_TOKEN) {
         const form = new URLSearchParams();
         form.set("From", fromFormatted);
@@ -571,9 +658,13 @@ export async function sendWhatsappAlertMessage(
         );
         const data = (await res.json().catch(() => ({}))) as {
           sid?: string;
+          error_code?: number | null;
           message?: string;
         };
         if (!res.ok) {
+          console.error(
+            `[Twilio Fallback Body Error] code=${data.error_code || res.status} msg=${data.message}`
+          );
           return {
             ok: false,
             error: data.message || `Twilio error: ${res.status}`,
@@ -582,6 +673,9 @@ export async function sendWhatsappAlertMessage(
         return { ok: true, idMessage: data.sid };
       }
     } catch (err) {
+      console.error(
+        `[Twilio Send Exception] ${err instanceof Error ? err.message : String(err)}`
+      );
       if (!GREEN_API_TOKEN) {
         return {
           ok: false,
