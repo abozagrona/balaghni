@@ -161,6 +161,27 @@ export function AnonymousVoiceCall({
     };
   }, [role, callState]);
 
+  // عداد مدة الرنين للمتصل (60 ثانية كحد أقصى للرنين ثم العودة التلقائية لشاشة المحادثة)
+  React.useEffect(() => {
+    if (role !== "caller" || callState !== "ringing") return;
+    const ringTimeout = window.setTimeout(() => {
+      if (channelRef.current) {
+        void channelRef.current.send({
+          type: "broadcast",
+          event: "call-ended",
+          payload: { from: role, reason: "ring_timeout" },
+        });
+      }
+      cleanupMediaAndPeer();
+      if (onClose) {
+        onClose();
+      } else {
+        setCallState("ended");
+      }
+    }, 60000);
+    return () => window.clearTimeout(ringTimeout);
+  }, [role, callState, cleanupMediaAndPeer, onClose]);
+
   // عداد مدة المكالمة الفعلي (120 ثانية كحد أقصى)
   React.useEffect(() => {
     if (callState !== "connected") return;
@@ -175,14 +196,18 @@ export function AnonymousVoiceCall({
             });
           }
           cleanupMediaAndPeer();
-          setCallState("ended");
+          if (role === "caller" && onClose) {
+            onClose();
+          } else {
+            setCallState("ended");
+          }
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [callState, role, cleanupMediaAndPeer]);
+  }, [callState, role, cleanupMediaAndPeer, onClose]);
 
   const connectSignalingWithStream = React.useCallback(
     (stream: MediaStream) => {
@@ -345,11 +370,19 @@ export function AnonymousVoiceCall({
         })
         .on("broadcast", { event: "call-declined" }, () => {
           cleanupMediaAndPeer();
-          setCallState("declined");
+          if (role === "caller" && onClose) {
+            onClose();
+          } else {
+            setCallState("declined");
+          }
         })
         .on("broadcast", { event: "call-ended" }, () => {
           cleanupMediaAndPeer();
-          setCallState("ended");
+          if (role === "caller" && onClose) {
+            onClose();
+          } else {
+            setCallState("ended");
+          }
         })
         .subscribe((status) => {
           if (status === "SUBSCRIBED" && role === "callee") {
@@ -365,7 +398,7 @@ export function AnonymousVoiceCall({
           }
         });
     },
-    [callCode, role, cleanupMediaAndPeer]
+    [callCode, role, cleanupMediaAndPeer, onClose]
   );
 
   // إذا تم تمرير initialStream جاهز من ضغطة زر المُبلِّغ المباشرة، نستخدمه فوراً دون استدعاء getUserMedia داخل useEffect
@@ -461,7 +494,11 @@ export function AnonymousVoiceCall({
       });
     }
     cleanupMediaAndPeer();
-    setCallState("ended");
+    if (role === "caller" && onClose) {
+      onClose();
+    } else {
+      setCallState("ended");
+    }
   };
 
   const handleCalleeDecline = () => {

@@ -470,7 +470,7 @@ export async function sendWhatsappAlertMessage(
     process.env.TWILIO_MESSAGING_SERVICE_SID || ""
   ).trim();
 
-  if (!GREEN_API_TOKEN && twilioSid && twilioToken && twilioFrom) {
+  if (twilioSid && twilioToken && twilioFrom) {
     try {
       const cleanPhone = phone.replace(/[^\d]/g, "");
       const fromFormatted = twilioFrom.startsWith("whatsapp:")
@@ -479,7 +479,7 @@ export async function sendWhatsappAlertMessage(
       const toFormatted = `whatsapp:+${cleanPhone}`;
       const authHeader = `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`;
 
-      // 1. محاولة الإرسال عبر قالب الأزرار التفاعلية (ContentSid + ContentVariables) أولاً
+      // 1. الإرسال عبر قالب الأزرار التفاعلية (ContentSid + ContentVariables) مباشرة بدون حقل Body النصي
       if (options?.twilioContentSid) {
         try {
           const tplForm = new URLSearchParams();
@@ -526,55 +526,68 @@ export async function sendWhatsappAlertMessage(
             tplData.status !== "failed" &&
             !tplData.error_code
           ) {
-            return { ok: true, idMessage: tplData.sid };
+            // تحقق سريع بعد 1.2 ثانية للتأكد من عدم رفض الرسالة بـ 63016 أثناء كون القالب pending في Meta
+            await new Promise((r) => setTimeout(r, 1200));
+            const stCheck = await checkTwilioMessageStatus(tplData.sid);
+            if (stCheck !== "failed") {
+              return { ok: true, idMessage: tplData.sid };
+            }
+            console.warn(
+              `[Twilio ContentSid Pending Fallback] Message ${tplData.sid} failed (template pending approval), falling back.`
+            );
+          } else {
+            console.warn(
+              `[Twilio ContentSid Fallback] Template ${options.twilioContentSid} not ready (${tplData.message || tplRes.status}), falling back.`
+            );
           }
-          console.warn(
-            `[Twilio ContentSid Fallback] Template ${options.twilioContentSid} not ready (${tplData.message || tplRes.status}), falling back to text body.`
-          );
         } catch {
-          // fallback to text body below
+          // fallback below
         }
       }
 
-      // 2. الخيار الاحتياطي التلقائي (Fallback): إرسال الرسالة بالرابط النصي ريثما يتحول القالب من pending إلى approved في Meta
-      const form = new URLSearchParams();
-      form.set("From", fromFormatted);
-      form.set("To", toFormatted);
-      form.set("Body", safeCaption);
-      form.set(
-        "StatusCallback",
-        "https://www.balaghni.ly/api/webhooks/whatsapp-status"
-      );
-      if (hasPhoto) {
-        form.set("MediaUrl", trimmedPhoto);
-      }
-      const res = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: authHeader,
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: form.toString(),
+      // 2. إذا لم يكن هناك GREEN_API_TOKEN مُفعّل، نرسل النص الاحتياطي عبر Twilio ريثما يُعتمد القالب
+      if (!GREEN_API_TOKEN) {
+        const form = new URLSearchParams();
+        form.set("From", fromFormatted);
+        form.set("To", toFormatted);
+        form.set("Body", safeCaption);
+        form.set(
+          "StatusCallback",
+          "https://www.balaghni.ly/api/webhooks/whatsapp-status"
+        );
+        if (hasPhoto) {
+          form.set("MediaUrl", trimmedPhoto);
         }
-      );
-      const data = (await res.json().catch(() => ({}))) as {
-        sid?: string;
-        message?: string;
-      };
-      if (!res.ok) {
+        const res = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: authHeader,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: form.toString(),
+          }
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          sid?: string;
+          message?: string;
+        };
+        if (!res.ok) {
+          return {
+            ok: false,
+            error: data.message || `Twilio error: ${res.status}`,
+          };
+        }
+        return { ok: true, idMessage: data.sid };
+      }
+    } catch (err) {
+      if (!GREEN_API_TOKEN) {
         return {
           ok: false,
-          error: data.message || `Twilio error: ${res.status}`,
+          error: err instanceof Error ? err.message : "Twilio send error",
         };
       }
-      return { ok: true, idMessage: data.sid };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : "Twilio send error",
-      };
     }
   }
 

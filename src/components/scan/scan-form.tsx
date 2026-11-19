@@ -768,234 +768,224 @@ export function ScanForm({
                   </div>
                 </div>
 
-                {/* خلفية محادثة واتساب */}
-                <div
-                  className="space-y-3 bg-[#EFEAE2] p-4 dark:bg-[#0B141A]"
-                  style={{
-                    backgroundImage:
-                      "radial-gradient(rgba(0,0,0,0.04) 1px, transparent 0)",
-                    backgroundSize: "16px 16px",
-                  }}
-                >
-                  <div className="flex justify-center">
-                    <span className="rounded-lg bg-white/85 px-3 py-1 text-[11px] font-bold text-slate-600 shadow-sm dark:bg-[#182229] dark:text-slate-300">
-                      اليوم • بلاغ فوري عبر منصة بَلِّغْنِي
-                    </span>
+                {/* منطقة المحادثة أو شاشة المكالمة الصوتية المشفرة (تحل محل المحادثة وتعود إليها فور الإنهاء) */}
+                {activeCallCode ? (
+                  <div className="bg-[#111B21] p-4 animate-in fade-in duration-200">
+                    <AnonymousVoiceCall
+                      callCode={activeCallCode}
+                      tagCode={tagCode}
+                      role="caller"
+                      vehicleLabel={vehicleName}
+                      initialStream={callerMicStream}
+                      onClose={() => {
+                        setCallerMicStream(null);
+                        setActiveCallCode(null);
+                      }}
+                    />
                   </div>
-
-                  {/* فقاعة البلاغ الصادرة (يمين) */}
-                  <div className="flex flex-col items-start">
-                    <div className="relative max-w-[88%] rounded-2xl rounded-tr-sm bg-[#D9FDD3] px-3.5 py-2.5 text-slate-900 shadow-sm dark:bg-[#005C4B] dark:text-white">
-                      <p className="text-xs font-black text-[#075E54] dark:text-emerald-200">
-                        تنبيه بَلِّغْنِي: {selectedReasonObj.label}
-                      </p>
-                      <p className="mt-1 text-xs leading-relaxed">
-                        {selectedReasonObj.subtitle}
-                      </p>
-                      {submittedReporterPhone && (
-                        <p
-                          dir="ltr"
-                          className="mt-1.5 text-[11px] font-bold text-[#075E54] dark:text-emerald-200"
-                        >
-                          📞 رقم التواصل المرفق: {submittedReporterPhone}
-                        </p>
-                      )}
-                      {imagePreviewUrl && (
-                        <div className="mt-2 overflow-hidden rounded-xl border border-black/10">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={imagePreviewUrl}
-                            alt="صورة البلاغ المرفقة"
-                            className="max-h-40 w-full object-cover"
-                          />
-                        </div>
-                      )}
-                      <div className="mt-1.5 flex items-center justify-end gap-1.5">
-                        <span
-                          dir="ltr"
-                          className="text-[10px] font-medium text-slate-500 dark:text-white/70"
-                        >
-                          {sentAtLabel || "الآن"}
-                        </span>
-                        {isReadOrReplied ? (
-                          <CheckCheck
-                            className="h-4 w-4 text-[#53BDEB]"
-                            aria-label="تمت القراءة"
-                          />
-                        ) : isDeliveredOrAbove ? (
-                          <CheckCheck
-                            className="h-4 w-4 text-slate-500 dark:text-white/70"
-                            aria-label="تم التسليم"
-                          />
-                        ) : (
-                          <Check
-                            className="h-4 w-4 text-slate-500 dark:text-white/70"
-                            aria-label="تم الإرسال"
-                          />
-                        )}
-                      </div>
+                ) : (
+                  <div
+                    className="space-y-3 bg-[#EFEAE2] p-4 dark:bg-[#0B141A] animate-in fade-in duration-200"
+                    style={{
+                      backgroundImage:
+                        "radial-gradient(rgba(0,0,0,0.04) 1px, transparent 0)",
+                      backgroundSize: "16px 16px",
+                    }}
+                  >
+                    <div className="flex justify-center">
+                      <span className="rounded-lg bg-white/85 px-3 py-1 text-[11px] font-bold text-slate-600 shadow-sm dark:bg-[#182229] dark:text-slate-300">
+                        اليوم • بلاغ فوري عبر منصة بَلِّغْنِي
+                      </span>
                     </div>
 
-                    {isReadOrReplied && (
-                      <span className="mt-1 inline-flex items-center gap-1 px-1 text-[11px] font-bold text-[#0284c7] dark:text-[#53BDEB]">
-                        <CheckCheck className="h-3.5 w-3.5" />
-                        قُرئت بواسطة صاحب السيارة
-                      </span>
-                    )}
-                  </div>
-
-                  {/* فقاعة رد صاحب السيارة الواردة (يسار) + العداد التنازلي */}
-                  {ownerReply ? (
-                    <div className="flex flex-col items-end space-y-2 animate-in fade-in duration-300">
-                      <div className="max-w-[88%] rounded-2xl rounded-tl-sm bg-white px-3.5 py-2.5 text-slate-900 shadow-sm dark:bg-[#202C33] dark:text-white">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-700 dark:text-emerald-300">
-                          <MessageCircle className="h-3 w-3" />
-                          رد صاحب السيارة
-                        </span>
-                        <p className="mt-1 text-xs font-bold leading-relaxed">
-                          {ownerReply}
+                    {/* فقاعة البلاغ الصادرة (يمين) */}
+                    <div className="flex flex-col items-start">
+                      <div className="relative max-w-[88%] rounded-2xl rounded-tr-sm bg-[#D9FDD3] px-3.5 py-2.5 text-slate-900 shadow-sm dark:bg-[#005C4B] dark:text-white">
+                        <p className="text-xs font-black text-[#075E54] dark:text-emerald-200">
+                          تنبيه بَلِّغْنِي: {selectedReasonObj.label}
                         </p>
-                      </div>
-
-                      {arrivalCountdown !== null && reminderStage < 2 && (
-                        <div className="w-full rounded-2xl border border-emerald-500/40 bg-emerald-600 px-4 py-3 text-white shadow-md">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2">
-                              <Clock className="h-5 w-5 animate-pulse text-emerald-100" />
-                              <div>
-                                <p className="text-xs font-black">
-                                  {reminderStage === 1
-                                    ? "تم إرسال التنبيه التذكيري (تمديد 5 دقائق أخيرة)"
-                                    : "صاحب السيارة في طريقه إليك الآن!"}
-                                </p>
-                                <p className="text-[11px] text-emerald-100">
-                                  {arrivalCountdown > 0
-                                    ? "الوقت المتبقي المتوقع للوصول"
-                                    : "انتهت المهلة ولم يصل صاحب السيارة بعد"}
-                                </p>
-                              </div>
-                            </div>
-                            <span
-                              dir="ltr"
-                              className="rounded-xl bg-black/25 px-3 py-1.5 font-mono text-lg font-black tracking-wider"
-                            >
-                              {mins}:{secs}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {arrivalCountdown === 0 && reminderStage === 0 && (
-                        <div className="w-full space-y-2">
-                          <button
-                            type="button"
-                            onClick={handleRequestReminder}
-                            disabled={isSendingReminder}
-                            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 text-xs font-black text-slate-950 shadow-md transition hover:bg-amber-400 disabled:opacity-60"
+                        <p className="mt-1 text-xs leading-relaxed">
+                          {selectedReasonObj.subtitle}
+                        </p>
+                        {submittedReporterPhone && (
+                          <p
+                            dir="ltr"
+                            className="mt-1.5 text-[11px] font-bold text-[#075E54] dark:text-emerald-200"
                           >
-                            {isSendingReminder ? (
-                              <>
-                                <LoaderCircle className="h-4 w-4 animate-spin" />
-                                جارٍ إرسال التنبيه التذكيري...
-                              </>
-                            ) : (
-                              <>
-                                <BellRing className="h-4 w-4" />
-                                طلب تنبيه تذكيري (تمديد 5 دقائق أخيرة)
-                              </>
-                            )}
-                          </button>
-                          {reminderError && (
-                            <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
-                              {reminderError}
-                            </p>
+                            📞 رقم التواصل المرفق: {submittedReporterPhone}
+                          </p>
+                        )}
+                        {imagePreviewUrl && (
+                          <div className="mt-2 overflow-hidden rounded-xl border border-black/10">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={imagePreviewUrl}
+                              alt="صورة البلاغ المرفقة"
+                              className="max-h-40 w-full object-cover"
+                            />
+                          </div>
+                        )}
+                        <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                          <span
+                            dir="ltr"
+                            className="text-[10px] font-medium text-slate-500 dark:text-white/70"
+                          >
+                            {sentAtLabel || "الآن"}
+                          </span>
+                          {isReadOrReplied ? (
+                            <CheckCheck
+                              className="h-4 w-4 text-[#53BDEB]"
+                              aria-label="تمت القراءة"
+                            />
+                          ) : isDeliveredOrAbove ? (
+                            <CheckCheck
+                              className="h-4 w-4 text-slate-500 dark:text-white/70"
+                              aria-label="تم التسليم"
+                            />
+                          ) : (
+                            <Check
+                              className="h-4 w-4 text-slate-500 dark:text-white/70"
+                              aria-label="تم الإرسال"
+                            />
                           )}
                         </div>
-                      )}
-
-                      {activeCallCode && (
-                        <AnonymousVoiceCall
-                          callCode={activeCallCode}
-                          tagCode={tagCode}
-                          role="caller"
-                          initialStream={callerMicStream}
-                          onClose={() => {
-                            setCallerMicStream(null);
-                            setActiveCallCode(null);
-                          }}
-                        />
-                      )}
-
-                      {reminderStage === 2 && (
-                        <div className="w-full space-y-3 rounded-2xl border border-amber-500/40 bg-amber-50 p-4 text-slate-900 shadow-md dark:bg-amber-950/50 dark:text-amber-50">
-                          <p className="text-xs font-bold leading-relaxed">
-                            ملاحظة: يرجى التواصل مع خدمة العملاء إذا لم توجد استجابة من صاحب السيارة، حيث انتهت مهلة الانتظار ولا يمكن إرسال تنبيهات إضافية.
-                          </p>
-                          <a
-                            href={`https://wa.me/${(
-                              process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "218910000000"
-                            ).replace(/[^\d]/g, "")}?text=${encodeURIComponent(
-                              `مرحباً خدمة عملاء بَلِّغْنِي، انتهت مهلة الانتظار (10 دقائق) ولم يستجب صاحب المركبة للملصق (${tagCode}).`
-                            )}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-sm transition hover:bg-[#1fb857]"
-                          >
-                            <MessageCircle className="h-4 w-4" />
-                            التواصل مع خدمة العملاء
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-2.5">
-                      <div className="rounded-xl bg-white/75 px-3 py-2.5 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
-                        {noResponseCountdown > 0 ? (
-                          <div className="flex flex-col items-center gap-1">
-                            <span>
-                              {isReadOrReplied
-                                ? "قُرئت بواسطة صاحب السيارة... بانتظار استجابته الآن."
-                                : isDeliveredOrAbove
-                                ? "تم الاستلام على هاتف صاحب السيارة... بانتظار استجابته."
-                                : "تم الإرسال • سيتم تحديث علامات الصح وظهور رد المالك فورياً."}
-                            </span>
-                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
-                              <Clock className="h-3.5 w-3.5" />
-                              في حال عدم الرد، ستتفعّل أيقونة الاتصال الصوتي المشفر في الأعلى بعد دقيقتين (
-                              <strong dir="ltr" className="font-mono">
-                                {noRespMins}:{noRespSecs}
-                              </strong>
-                              )
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="font-bold text-emerald-700 dark:text-emerald-300">
-                            تفعّلت أيقونة الاتصال الصوتي المشفر (📞) في الأعلى • يمكنك الضغط عليها للاتصال بصاحب السيارة دون كشف الأرقام.
-                          </span>
-                        )}
                       </div>
 
-                      {reminderError && (
-                        <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
-                          {reminderError}
-                        </p>
-                      )}
-
-                      {activeCallCode && (
-                        <AnonymousVoiceCall
-                          callCode={activeCallCode}
-                          tagCode={tagCode}
-                          role="caller"
-                          initialStream={callerMicStream}
-                          onClose={() => {
-                            setCallerMicStream(null);
-                            setActiveCallCode(null);
-                          }}
-                        />
+                      {isReadOrReplied && (
+                        <span className="mt-1 inline-flex items-center gap-1 px-1 text-[11px] font-bold text-[#0284c7] dark:text-[#53BDEB]">
+                          <CheckCheck className="h-3.5 w-3.5" />
+                          قُرئت بواسطة صاحب السيارة
+                        </span>
                       )}
                     </div>
-                  )}
-                </div>
+
+                    {/* فقاعة رد صاحب السيارة الواردة (يسار) + العداد التنازلي */}
+                    {ownerReply ? (
+                      <div className="flex flex-col items-end space-y-2 animate-in fade-in duration-300">
+                        <div className="max-w-[88%] rounded-2xl rounded-tl-sm bg-white px-3.5 py-2.5 text-slate-900 shadow-sm dark:bg-[#202C33] dark:text-white">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-700 dark:text-emerald-300">
+                            <MessageCircle className="h-3 w-3" />
+                            رد صاحب السيارة
+                          </span>
+                          <p className="mt-1 text-xs font-bold leading-relaxed">
+                            {ownerReply}
+                          </p>
+                        </div>
+
+                        {arrivalCountdown !== null && reminderStage < 2 && (
+                          <div className="w-full rounded-2xl border border-emerald-500/40 bg-emerald-600 px-4 py-3 text-white shadow-md">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <Clock className="h-5 w-5 animate-pulse text-emerald-100" />
+                                <div>
+                                  <p className="text-xs font-black">
+                                    {reminderStage === 1
+                                      ? "تم إرسال التنبيه التذكيري (تمديد 5 دقائق أخيرة)"
+                                      : "صاحب السيارة في طريقه إليك الآن!"}
+                                  </p>
+                                  <p className="text-[11px] text-emerald-100">
+                                    {arrivalCountdown > 0
+                                      ? "الوقت المتبقي المتوقع للوصول"
+                                      : "انتهت المهلة ولم يصل صاحب السيارة بعد"}
+                                  </p>
+                                </div>
+                              </div>
+                              <span
+                                dir="ltr"
+                                className="rounded-xl bg-black/25 px-3 py-1.5 font-mono text-lg font-black tracking-wider"
+                              >
+                                {mins}:{secs}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {arrivalCountdown === 0 && reminderStage === 0 && (
+                          <div className="w-full space-y-2">
+                            <button
+                              type="button"
+                              onClick={handleRequestReminder}
+                              disabled={isSendingReminder}
+                              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 text-xs font-black text-slate-950 shadow-md transition hover:bg-amber-400 disabled:opacity-60"
+                            >
+                              {isSendingReminder ? (
+                                <>
+                                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                                  جارٍ إرسال التنبيه التذكيري...
+                                </>
+                              ) : (
+                                <>
+                                  <BellRing className="h-4 w-4" />
+                                  طلب تنبيه تذكيري (تمديد 5 دقائق أخيرة)
+                                </>
+                              )}
+                            </button>
+                            {reminderError && (
+                              <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
+                                {reminderError}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {reminderStage === 2 && (
+                          <div className="w-full space-y-3 rounded-2xl border border-amber-500/40 bg-amber-50 p-4 text-slate-900 shadow-md dark:bg-amber-950/50 dark:text-amber-50">
+                            <p className="text-xs font-bold leading-relaxed">
+                              ملاحظة: يرجى التواصل مع خدمة العملاء إذا لم توجد استجابة من صاحب السيارة، حيث انتهت مهلة الانتظار ولا يمكن إرسال تنبيهات إضافية.
+                            </p>
+                            <a
+                              href={`https://wa.me/${(
+                                process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "218910000000"
+                              ).replace(/[^\d]/g, "")}?text=${encodeURIComponent(
+                                `مرحباً خدمة عملاء بَلِّغْنِي، انتهت مهلة الانتظار (10 دقائق) ولم يستجب صاحب المركبة للملصق (${tagCode}).`
+                              )}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-sm transition hover:bg-[#1fb857]"
+                            >
+                              <MessageCircle className="h-4 w-4" />
+                              التواصل مع خدمة العملاء
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5">
+                        <div className="rounded-xl bg-white/75 px-3 py-2.5 text-center text-[11px] font-semibold text-slate-600 dark:bg-[#182229] dark:text-slate-300">
+                          {noResponseCountdown > 0 ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <span>
+                                {isReadOrReplied
+                                  ? "قُرئت بواسطة صاحب السيارة... بانتظار استجابته الآن."
+                                  : isDeliveredOrAbove
+                                  ? "تم الاستلام على هاتف صاحب السيارة... بانتظار استجابته."
+                                  : "تم الإرسال • سيتم تحديث علامات الصح وظهور رد المالك فورياً."}
+                              </span>
+                              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                                <Clock className="h-3.5 w-3.5" />
+                                في حال عدم الرد، ستتفعّل أيقونة الاتصال الصوتي المشفر في الأعلى بعد دقيقتين (
+                                <strong dir="ltr" className="font-mono">
+                                  {noRespMins}:{noRespSecs}
+                                </strong>
+                                )
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                              تفعّلت أيقونة الاتصال الصوتي المشفر (📞) في الأعلى • يمكنك الضغط عليها للاتصال بصاحب السيارة دون كشف الأرقام.
+                            </span>
+                          )}
+                        </div>
+
+                        {reminderError && (
+                          <p className="text-center text-[11px] font-bold text-red-600 dark:text-red-400">
+                            {reminderError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })()}

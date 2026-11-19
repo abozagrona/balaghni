@@ -420,6 +420,7 @@ async function runStatus() {
       friendlyName: c.friendly_name,
       contentSid: c.sid,
       language: c.language,
+      contentTypes: Object.keys(c.types || {}),
       status: app.status || "unsubmitted",
       category: app.category || null,
       rejectionReason: app.rejection_reason || null,
