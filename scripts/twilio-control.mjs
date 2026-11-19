@@ -46,167 +46,112 @@ if (!ACCOUNT_SID || !AUTH_TOKEN) {
 const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 const authHeader = `Basic ${Buffer.from(`${ACCOUNT_SID}:${AUTH_TOKEN}`).toString("base64")}`;
 
-const TEMPLATES = [
-  {
-    friendlyName: "balaghni_vehicle_alert",
-    envKey: "TWILIO_CONTENT_SID_ALERT",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "هونداي سوناتا",
-      2: "مْسَكِّر عليا بسيارتك — لو سمحت تجي تحول سيارتك بسرعة",
-      3: "REP_A7K9M2",
-    },
-    types: {
-      "twilio/quick-reply": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه لسيارتك ({{1}}):\n• {{2}}\nاضغط على الزر أدناه لتأكيد قدومك — منصة بَلِّغْنِي.",
-        actions: [
-          {
-            title: "أنا قادم الآن",
-            id: "COMING_NOW:{{3}}",
-          },
-        ],
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_nabbihni_media_alert",
-    envKey: "TWILIO_CONTENT_SID_MEDIA_ALERT",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "تويوتا كامري",
-      2: "ضي سيارتك والع — ناسي ضي سيارتك والع بتاريتك حتفضى",
-      3: "0912345678",
-      4: "https://balaghni.ly/r/B8M3P4",
-      5: "https://www.balaghni.ly/balaghni-logo.jpg",
-    },
-    types: {
-      "twilio/media": {
-        body: "🚨 (منصة بَلِّغْنِي) تنبيه نَبِّهْنِي لسيارتك ({{1}}):\n• {{2}}\n📞 رقم المُبلِّغ للتواصل المباشر: {{3}}\n✅ للرد السريع (أنا قادم الآن): {{4}}\nاضغط على الرابط أعلاه لتأكيد قدومك — منصة بَلِّغْنِي.",
-        media: ["{{5}}"],
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_otp_code",
-    envKey: "TWILIO_CONTENT_SID_OTP",
-    language: "ar",
-    category: "AUTHENTICATION",
-    variables: {
-      1: "482910",
-    },
-    types: {
-      "whatsapp/authentication": {
-        add_security_recommendation: true,
-        code_expiration_minutes: 5,
-        actions: [
-          {
-            type: "COPY_CODE",
-            copy_code_text: "نسخ الرمز",
-          },
-        ],
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_remind_extension",
-    envKey: "TWILIO_CONTENT_SID_REMIND",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "هونداي سوناتا",
-      2: "https://balaghni.ly/r/A7K9M2",
-    },
-    types: {
-      "twilio/text": {
-        body: "تنبيه من منصة بَلِّغْنِي: لقد انتهت مهلة ال5 دقائق الأولى لبلاغ سيارتك ({{1}}). هل أنت في طريقك الآن؟ يرجى الضغط على رابط الرد السريع للتأكيد: {{2}} — منصة بَلِّغْنِي.",
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_subscription_expiry",
-    envKey: "TWILIO_CONTENT_SID_SUBSCRIPTION",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "LY-2026-8841",
-      2: "2026-12-01",
-    },
-    types: {
-      "twilio/text": {
-        body: "تنبيه من منصة بَلِّغْنِي: اشتراك ملصق سيارتك ({{1}}) على وشك الانتهاء بتاريخ {{2}}. لتجديد الاشتراك واستمرار الحماية، يرجى زيارة المنصة.",
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_document_reminder",
-    envKey: "TWILIO_CONTENT_SID_DOC_REMINDER",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "تويوتا كامري",
-      2: "تأمين السيارة ينتهي قريباً",
-    },
-    types: {
-      "twilio/text": {
-        body: "تذكير من منصة بَلِّغْنِي: حان موعد تجديد مستند سيارتك ({{1}}) - {{2}}. حافظ على سلامتك وتجنب المخالفات.",
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_order_update",
-    envKey: "TWILIO_CONTENT_SID_ORDER",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "ORD-2026-1042",
-    },
-    types: {
-      "twilio/text": {
-        body: "مرحباً بك في منصة بَلِّغْنِي! تم استلام طلبك رقم ({{1}}) بنجاح لشراء ملصق السيارة. سنقوم بالتواصل معك لتأكيد التسليم والتفعيل قريباً.",
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_admin_alert",
-    envKey: "TWILIO_CONTENT_SID_ADMIN_ALERT",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "ORD-2026-1042",
-      2: "100",
-      3: "LY-2026-8841",
-    },
-    types: {
-      "twilio/text": {
-        body: "تنبيه إداري - بَلِّغْنِي: تم استلام طلب كاش جديد برقم ({{1}}) بقيمة ({{2}} د.ل) لملصق السيارة ({{3}}). يرجى المراجعة وتأكيد التحصيل.",
-      },
-    },
-  },
-  {
-    friendlyName: "balaghni_voice_call_invite",
-    envKey: "TWILIO_CONTENT_SID_VOICE_CALL",
-    language: "ar",
-    category: "UTILITY",
-    variables: {
-      1: "C7M4K9",
-      2: "هونداي سوناتا",
-    },
-    types: {
-      "twilio/call-to-action": {
-        body: "📞 (منصة بَلِّغْنِي) اتصال صوتي عاجل بخصوص سيارتك ({{2}})! المُبلِّغ ينتظر عند المركبة ويتصل بك صوتياً الآن عبر المتصفح (مكالمة مشفرة دون كشف رقمك أو رقمه). اضغط على الزر أدناه للرد والتحدث فوراً — منصة بَلِّغْنِي.",
-        actions: [
-          {
-            type: "URL",
-            title: "رد على المكالمة الآن",
-            url: "https://balaghni.ly/call/{{1}}",
-          },
-        ],
-      },
-    },
-  },
-];
+const ENV_KEY_MAP = {
+  balaghni_vehicle_alert: "TWILIO_CONTENT_SID_ALERT",
+  balaghni_nabbihni_media_alert: "TWILIO_CONTENT_SID_MEDIA_ALERT",
+  balaghni_voice_call_invite: "TWILIO_CONTENT_SID_VOICE_CALL",
+  balaghni_remind_extension: "TWILIO_CONTENT_SID_REMIND",
+  balaghni_otp_code: "TWILIO_CONTENT_SID_OTP",
+  balaghni_subscription_expiry: "TWILIO_CONTENT_SID_SUBSCRIPTION",
+  balaghni_document_reminder: "TWILIO_CONTENT_SID_DOC_REMINDER",
+  balaghni_weekly_overdue: "TWILIO_CONTENT_SID_WEEKLY_OVERDUE",
+  balaghni_order_cod_received: "TWILIO_CONTENT_SID_ORDER_COD",
+  balaghni_order_activated: "TWILIO_CONTENT_SID_ORDER_ACTIVATED",
+  balaghni_sticker_linked: "TWILIO_CONTENT_SID_STICKER_LINKED",
+  balaghni_gift_activated: "TWILIO_CONTENT_SID_GIFT_ACTIVATED",
+  balaghni_admin_alert: "TWILIO_CONTENT_SID_ADMIN_ALERT",
+};
+
+function buildTemplatesFromJson() {
+  const jsonPath = path.join(ROOT, "balaghni_templates.json");
+  const rawList = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+
+  return rawList.map((item) => {
+    const friendlyName = item.friendly_name;
+    const category =
+      friendlyName === "balaghni_otp_code" ? "AUTHENTICATION" : "UTILITY";
+    const language = item.language || "ar";
+    const variables = item.variables || {};
+    let types = {};
+
+    if (item.button_type === "COPY_CODE") {
+      types = {
+        "whatsapp/authentication": {
+          add_security_recommendation: true,
+          code_expiration_minutes: 5,
+          actions: [
+            {
+              type: "COPY_CODE",
+              copy_code_text: item.button_title || "نسخ الرمز",
+            },
+          ],
+        },
+      };
+    } else if (item.button_type === "QUICK_REPLY" && item.media_url) {
+      // قالب 2: وسائط بصورة + زر رد سريع (twilio/card يدعم media + QUICK_REPLY في واتساب، والمتغيرات توضع في title الذي يمثل body البطاقة)
+      types = {
+        "twilio/card": {
+          title: item.body,
+          media: ["https://www.balaghni.ly/balaghni-logo.jpg"],
+          actions: [
+            {
+              type: "QUICK_REPLY",
+              title: item.button_title || "أنا قادم الآن",
+              id: "COMING_NOW",
+            },
+          ],
+        },
+      };
+    } else if (item.button_type === "QUICK_REPLY") {
+      // قالب 1: زر رد سريع
+      types = {
+        "twilio/quick-reply": {
+          body: item.body,
+          actions: [
+            {
+              title: item.button_title || "أنا قادم الآن",
+              id: "COMING_NOW",
+            },
+          ],
+        },
+      };
+    } else if (item.button_type === "URL") {
+      // قالب 3: زر رابط ديناميكي
+      types = {
+        "twilio/call-to-action": {
+          body: item.body,
+          actions: [
+            {
+              type: "URL",
+              title: item.button_title || "رد على المكالمة الآن",
+              url: item.button_url || "https://balaghni.ly/call/{{1}}",
+            },
+          ],
+        },
+      };
+    } else {
+      types = {
+        "twilio/text": {
+          body: item.body,
+        },
+      };
+    }
+
+    return {
+      friendlyName,
+      envKey:
+        ENV_KEY_MAP[friendlyName] ||
+        `TWILIO_CONTENT_SID_${friendlyName.toUpperCase()}`,
+      language,
+      category,
+      variables,
+      types,
+      rawBody: item.body,
+    };
+  });
+}
+
+const TEMPLATES = buildTemplatesFromJson();
 
 async function listContents() {
   const res = await fetch("https://content.twilio.com/v1/Content?PageSize=50", {
@@ -225,9 +170,21 @@ async function getApproval(sid) {
 }
 
 async function runSetup() {
+  const forceRecreateAll = process.argv.includes("--recreate");
   const existing = await listContents();
   const envUpdates = {};
   const templateReport = [];
+
+  // حذف أي قوالب قديمة لم تعد موجودة في قائمة الـ 13 قالب المعتمدة
+  const validNames = new Set(TEMPLATES.map((t) => t.friendlyName));
+  for (const oldItem of existing) {
+    if (!validNames.has(oldItem.friendly_name)) {
+      await fetch(`https://content.twilio.com/v1/Content/${oldItem.sid}`, {
+        method: "DELETE",
+        headers: { Authorization: authHeader },
+      });
+    }
+  }
 
   for (const spec of TEMPLATES) {
     const existingItems = existing.filter((c) => c.friendly_name === spec.friendlyName);
@@ -237,7 +194,11 @@ async function runSetup() {
       const existingTypes = existingItems[0]?.types || {};
       const expectedTypeKey = Object.keys(spec.types)[0];
       const hasExpectedType = Boolean(existingTypes[expectedTypeKey]);
-      if (existingApp.status === "rejected" || spec.forceRecreate || !hasExpectedType) {
+      if (
+        forceRecreateAll ||
+        existingApp.status === "rejected" ||
+        !hasExpectedType
+      ) {
         for (const item of existingItems) {
           await fetch(`https://content.twilio.com/v1/Content/${item.sid}`, {
             method: "DELETE",
@@ -276,6 +237,9 @@ async function runSetup() {
     }
 
     envUpdates[spec.envKey] = sid;
+    if (spec.friendlyName === "balaghni_order_cod_received") {
+      envUpdates.TWILIO_CONTENT_SID_ORDER = sid;
+    }
 
     let approval = await getApproval(sid);
     if (!approval.status || approval.status === "unsubmitted" || approval.status === "rejected") {

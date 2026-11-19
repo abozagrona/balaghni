@@ -5,7 +5,10 @@ import {
   supabaseAdmin,
   syncTagActivationToLocalStore,
 } from "@/lib/supabase/client";
-import { sendWhatsappAlertMessage } from "@/lib/otp-service";
+import {
+  sendWhatsappAlertMessage,
+  TWILIO_CONTENT_SIDS,
+} from "@/lib/otp-service";
 import {
   getAdminWhatsappNumber,
   getDefaultFeaturesForPackage,
@@ -640,13 +643,41 @@ export async function activateStickerAtomic(params: {
             subscriptionExpiresAt: expiresAt,
             skipAdminWhatsapp: true,
           });
+          const pkgLabel =
+            planType === "basic"
+              ? "الباقة الأساسية (50 د.ل)"
+              : planType === "gift"
+              ? "باقة الهدية (شهر مجاني)"
+              : "باقة نبّهني (100 د.ل)";
           await sendWhatsappAlertMessage(
             params.ownerPhone,
-            `✅ تم تفعيل ملصق «بَلِّغْنِي» (${code}) بنجاح!\nالباقة: ${planType === "basic" ? "الباقة الأساسية (50 د.ل)" : planType === "gift" ? "باقة الهدية (شهر مجاني)" : "باقة نَبِّهْنِي (100 د.ل)"}\nصالح حتى: ${expiresAt.slice(0, 10)}\nرابط لوحة التحكم: https://www.balaghni.ly/login`
+            `تم تفعيل وربط ملصق بلّغني (${code}) بحسابك بنجاح\nالباقة: ${pkgLabel}\nصالح حتى: ${expiresAt.slice(0, 10)}\nيمكنك إدارة بيانات سيارتك من لوحة التحكم في منصة بلّغني`,
+            null,
+            {
+              twilioContentSid: TWILIO_CONTENT_SIDS.STICKER_LINKED,
+              twilioContentVariables: {
+                "1": code,
+                "2": pkgLabel,
+                "3": expiresAt.slice(0, 10),
+              },
+            }
           );
           await sendWhatsappAlertMessage(
             getAdminWhatsappNumber(),
-            `✅ تفعيل أونلاين مباشر لملصق (${code})\nالباقة: ${planType}\nالهاتف: ${params.ownerPhone}\nالاسم: ${params.ownerName || "-"}`
+            `تنبيه إداري - منصة بلّغني:\nتم استلام طلب جديد (تفعيل أونلاين مباشر)\nالأكواد: ${code}\nالباقة: ${pkgLabel}\nالمستلم: ${params.ownerName || "-"} (${params.ownerPhone})\nالمدينة والعنوان: تفعيل مباشر (QR)\nالإجمالي: ${getPackagePriceLyd(planType)} د.ل — يرجى المتابعة من لوحة الإدارة`,
+            null,
+            {
+              twilioContentSid: TWILIO_CONTENT_SIDS.ADMIN_ALERT,
+              twilioContentVariables: {
+                "1": "تفعيل أونلاين مباشر",
+                "2": code,
+                "3": pkgLabel,
+                "4": params.ownerName || "-",
+                "5": params.ownerPhone,
+                "6": "تفعيل مباشر (QR)",
+                "7": String(getPackagePriceLyd(planType)),
+              },
+            }
           );
         }
         await recordSaleTransaction({
@@ -900,7 +931,15 @@ export async function redeemGiftSticker(params: {
 
   await sendWhatsappAlertMessage(
     params.phone,
-    `🎁 مبروك! تم ربط وتفعيل ملصق الهدية (${code}) على سيارتك مجاناً لمدة 30 يوماً بكامل مزايا باقة نَبِّهْنِي.\nتنتهي الفترة المجانية بتاريخ ${expiresAt.slice(0, 10)}.`
+    `تم ربط وتفعيل ملصق الهدية (${code}) على سيارتك مجاناً لمدة 30 يوماً بكامل مزايا باقة نبّهني\nتنتهي الفترة المجانية بتاريخ ${expiresAt.slice(0, 10)} — منصة بلّغني`,
+    null,
+    {
+      twilioContentSid: TWILIO_CONTENT_SIDS.GIFT_ACTIVATED,
+      twilioContentVariables: {
+        "1": code,
+        "2": expiresAt.slice(0, 10),
+      },
+    }
   );
 
   return { ok: true, sticker: rec };
@@ -1023,9 +1062,25 @@ export async function linkPrepaidSticker(params: {
     activationSource,
   });
 
+  const linkedPkgLabel =
+    planType === "gift"
+      ? "باقة هدية - شهر مجاني"
+      : pkg === "basic"
+      ? "الباقة الأساسية (50 د.ل)"
+      : "باقة نبّهني (100 د.ل)";
+
   await sendWhatsappAlertMessage(
     params.phone,
-    `✅ تم ربط ملصق «بَلِّغْنِي» (${code}) بحسابك بنجاح!\nالباقة: ${planType === "gift" ? "باقة هدية - شهر مجاني" : pkg === "basic" ? "الباقة الأساسية" : "باقة نَبِّهْنِي"}\nصالح حتى: ${expiresAt.slice(0, 10)}\nلوحة التحكم: https://www.balaghni.ly/dashboard`
+    `تم تفعيل وربط ملصق بلّغني (${code}) بحسابك بنجاح\nالباقة: ${linkedPkgLabel}\nصالح حتى: ${expiresAt.slice(0, 10)}\nيمكنك إدارة بيانات سيارتك من لوحة التحكم في منصة بلّغني`,
+    null,
+    {
+      twilioContentSid: TWILIO_CONTENT_SIDS.STICKER_LINKED,
+      twilioContentVariables: {
+        "1": code,
+        "2": linkedPkgLabel,
+        "3": expiresAt.slice(0, 10),
+      },
+    }
   );
 
   return { ok: true, sticker: rec };
@@ -2733,7 +2788,17 @@ export async function confirmCodOrderDelivery(params: {
 
   await sendWhatsappAlertMessage(
     target.customerPhone,
-    `✅ مرحباً ${target.customerName}، تم تأكيد استلام الدفع وتفعيل ${tagCodes.length > 1 ? "ملصقات" : "ملصق"} «بَلِّغْنِي» الخاص بك بنجاح!\nكود الملصق: ${tagCodes.join(" , ")}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nيمكنك الآن ربط الملصق بالسيارة عبر مسح رمز QR أو الدخول لصفحة التفعيل: https://www.balaghni.ly/activate`
+    `مرحبا ${target.customerName}، تم تأكيد طلبك وتفعيل ملصق بلّغني الخاص بك بنجاح\nكود الملصق: ${tagCodes.join(" , ")}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nيمكنك الآن ربط الملصق بالسيارة عبر مسح رمز QR أو الدخول لصفحة التفعيل على المنصة`,
+    null,
+    {
+      twilioContentSid: TWILIO_CONTENT_SIDS.ORDER_ACTIVATED,
+      twilioContentVariables: {
+        "1": target.customerName,
+        "2": tagCodes.join(" , "),
+        "3": pkgConfig.name,
+        "4": expiresAt.slice(0, 10),
+      },
+    }
   );
 
   return { ok: true, stickerCode: primaryTagCode };

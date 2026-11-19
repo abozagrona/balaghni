@@ -4,7 +4,10 @@ import {
   pullAndReserveCodTag,
   recordMarketplaceOrder,
 } from "@/lib/lifecycle-service";
-import { sendWhatsappAlertMessage } from "@/lib/otp-service";
+import {
+  sendWhatsappAlertMessage,
+  TWILIO_CONTENT_SIDS,
+} from "@/lib/otp-service";
 import {
   getAdminWhatsappNumber,
   getPackageConfig,
@@ -152,12 +155,35 @@ export async function POST(req: NextRequest) {
 
       await sendWhatsappAlertMessage(
         adminPhone,
-        `🛒 طلب جديد (دفع كاش عند الاستلام 💵 — بانتظار التوصيل)\nالأكواد المحجوزة (${reservedCodes.length}): ${joinedCodes}\nالباقة: ${pkgConfig.name}\nالمستلم: ${fullName}\nهاتف المستلم: ${phone}\nالمدينة: ${city} - ${address}\nالإجمالي: ${totalLyd} د.ل`
+        `تنبيه إداري - منصة بلّغني:\nتم استلام طلب جديد (دفع كاش عند الاستلام)\nالأكواد: ${joinedCodes}\nالباقة: ${pkgConfig.name}\nالمستلم: ${fullName} (${phone})\nالمدينة والعنوان: ${city} - ${address}\nالإجمالي: ${totalLyd} د.ل — يرجى المتابعة من لوحة الإدارة`,
+        null,
+        {
+          twilioContentSid: TWILIO_CONTENT_SIDS.ADMIN_ALERT,
+          twilioContentVariables: {
+            "1": "دفع كاش عند الاستلام",
+            "2": joinedCodes,
+            "3": pkgConfig.name,
+            "4": fullName,
+            "5": phone,
+            "6": `${city} - ${address}`,
+            "7": String(totalLyd),
+          },
+        }
       );
 
       await sendWhatsappAlertMessage(
         phone,
-        `📦 مرحباً ${fullName}، تم استلام طلبك لملصق «بَلِّغْنِي» بنجاح!\n${reservedCodes.length > 1 ? `أكواد الملصقات المحجوزة (${reservedCodes.length})` : "كود الملصق المحجوز"}: ${joinedCodes}\nالباقة: ${pkgConfig.name}\nطريقة الدفع: كاش عند الاستلام (${totalLyd} د.ل)\nحالة الطلب: بانتظار التوصيل والدفع\nسيتم التواصل معك قريباً لتنسيق التوصيل، وبعد الاستلام يمكنك ربط الملصق بسيارتك.`
+        `مرحبا ${fullName}، تم استلام طلبك لملصق بلّغني بنجاح\nكود الملصق المحجوز: ${joinedCodes}\nالباقة: ${pkgConfig.name}\nطريقة الدفع: كاش عند الاستلام (${totalLyd} د.ل)\nحالة الطلب: بانتظار التوصيل والدفع\nسيتم التواصل معك قريباً لتنسيق التوصيل، وبعد الاستلام يمكنك ربط الملصق بسيارتك`,
+        null,
+        {
+          twilioContentSid: TWILIO_CONTENT_SIDS.ORDER_COD,
+          twilioContentVariables: {
+            "1": fullName,
+            "2": joinedCodes,
+            "3": pkgConfig.name,
+            "4": String(totalLyd),
+          },
+        }
       );
 
       return NextResponse.json({
@@ -250,12 +276,35 @@ export async function POST(req: NextRequest) {
 
     await sendWhatsappAlertMessage(
       adminPhone,
-      `🛒 طلب وتفعيل ملصق جديد (${joinedAssignedCodes})\nالباقة: ${pkgConfig.name}\nطريقة الدفع: دفع أونلاين ✅ (مدفوع - جاهز للربط)\nالمستلم: ${fullName}\nهاتف المستلم: ${phone}\nالمدينة: ${city} - ${address}\nالكمية: ${activatedCodes.length}\nالإجمالي: ${totalLyd} د.ل\nتاريخ الانتهاء: ${expiresAt.slice(0, 10)}`
+      `تنبيه إداري - منصة بلّغني:\nتم استلام طلب جديد (دفع أونلاين مدفوع)\nالأكواد: ${joinedAssignedCodes}\nالباقة: ${pkgConfig.name}\nالمستلم: ${fullName} (${phone})\nالمدينة والعنوان: ${city} - ${address}\nالإجمالي: ${totalLyd} د.ل — يرجى المتابعة من لوحة الإدارة`,
+      null,
+      {
+        twilioContentSid: TWILIO_CONTENT_SIDS.ADMIN_ALERT,
+        twilioContentVariables: {
+          "1": "دفع أونلاين مدفوع",
+          "2": joinedAssignedCodes,
+          "3": pkgConfig.name,
+          "4": fullName,
+          "5": phone,
+          "6": `${city} - ${address}`,
+          "7": String(totalLyd),
+        },
+      }
     );
 
     await sendWhatsappAlertMessage(
       phone,
-      `✅ مرحباً ${fullName}، تم تأكيد طلبك وتفعيل ${activatedCodes.length > 1 ? "ملصقات" : "ملصق"} «بَلِّغْنِي»!\n${activatedCodes.length > 1 ? `أكواد الملصقات (${activatedCodes.length})` : "كود الملصق"}: ${joinedAssignedCodes}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nعند استلام الملصق، امسح رمز QR أو ادخل لصفحة «تفعيل وربط ملصق جديد» لربطه بسيارتك: https://www.balaghni.ly/activate`
+      `مرحبا ${fullName}، تم تأكيد طلبك وتفعيل ملصق بلّغني الخاص بك بنجاح\nكود الملصق: ${joinedAssignedCodes}\nالباقة: ${pkgConfig.name}\nصالح لمدة 365 يوماً حتى: ${expiresAt.slice(0, 10)}\nيمكنك الآن ربط الملصق بالسيارة عبر مسح رمز QR أو الدخول لصفحة التفعيل على المنصة`,
+      null,
+      {
+        twilioContentSid: TWILIO_CONTENT_SIDS.ORDER_ACTIVATED,
+        twilioContentVariables: {
+          "1": fullName,
+          "2": joinedAssignedCodes,
+          "3": pkgConfig.name,
+          "4": expiresAt.slice(0, 10),
+        },
+      }
     );
 
     return NextResponse.json({

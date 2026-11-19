@@ -6,6 +6,7 @@ import {
 import {
   sendSmsAlertMessage,
   sendWhatsappAlertMessage,
+  TWILIO_CONTENT_SIDS,
 } from "@/lib/otp-service";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
@@ -59,13 +60,19 @@ export async function POST(req: NextRequest) {
       .trim()
       .slice(0, 25);
 
-    const reminderText = `(منصة بَلِّغْنِي) تنبيه تذكيري أخير (تمديد 5 دقائق): الطرف الآخر ما زال بانتظارك عند سيارتك (${vehicleLabel}). يرجى التوجه للمركبة فوراً.`;
+    const reminderText = `(منصة بلّغني) تنبيه تذكيري أخير (تمديد 5 دقائق): الطرف الآخر ما زال بانتظارك عند سيارتك (${vehicleLabel}). يرجى التوجه للمركبة فوراً.`;
 
     const waResult = await sendWhatsappAlertMessage(
       tag.ownerPhone,
       reminderText,
       null,
-      { verifyDelivery: false }
+      {
+        verifyDelivery: false,
+        twilioContentSid: TWILIO_CONTENT_SIDS.REMIND,
+        twilioContentVariables: {
+          "1": vehicleLabel,
+        },
+      }
     );
 
     const isBasicPlan =

@@ -187,6 +187,62 @@ export async function sendOtpViaWhatsapp(
   phone: string,
   otpCode: string
 ): Promise<{ ok: boolean; error?: string }> {
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const twilioFrom = (
+    process.env.TWILIO_WHATSAPP_FROM ||
+    process.env.TWILIO_WHATSAPP_NUMBER ||
+    ""
+  ).trim();
+  const messagingServiceSid = (
+    process.env.TWILIO_MESSAGING_SERVICE_SID || ""
+  ).trim();
+
+  if (twilioSid && twilioToken && twilioFrom && TWILIO_CONTENT_SIDS.OTP) {
+    try {
+      const authHeader = `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`;
+      const isOtpApproved = await isTwilioTemplateApproved(
+        TWILIO_CONTENT_SIDS.OTP,
+        authHeader
+      );
+      if (isOtpApproved) {
+        const cleanPhone = phone.replace(/[^\d]/g, "");
+        const fromFormatted = twilioFrom.startsWith("whatsapp:")
+          ? twilioFrom
+          : `whatsapp:${twilioFrom}`;
+        const tplForm = new URLSearchParams();
+        tplForm.set("From", fromFormatted);
+        tplForm.set("To", `whatsapp:+${cleanPhone}`);
+        if (messagingServiceSid) {
+          tplForm.set("MessagingServiceSid", messagingServiceSid);
+        }
+        tplForm.set("ContentSid", TWILIO_CONTENT_SIDS.OTP);
+        tplForm.set("ContentVariables", JSON.stringify({ "1": String(otpCode).trim() }));
+        const tplRes = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: authHeader,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: tplForm.toString(),
+          }
+        );
+        const tplData = (await tplRes.json().catch(() => ({}))) as {
+          sid?: string;
+          status?: string;
+          error_code?: number | null;
+        };
+        if (tplRes.ok && tplData.sid && tplData.status !== "failed" && !tplData.error_code) {
+          return { ok: true };
+        }
+      }
+    } catch {
+      // fallback to Green-API below
+    }
+  }
+
   if (!GREEN_API_TOKEN) {
     return { ok: false, error: "GREEN_API_TOKEN is not configured" };
   }
@@ -200,7 +256,7 @@ export async function sendOtpViaWhatsapp(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
 
-    const message = `رمز التحقق الخاص بك في بَلِّغْنِي هو: ${otpCode}. صالح لمدة 5 دقائق.`;
+    const message = `رمز التحقق الخاص بك في بلّغني هو: ${otpCode}. صالح لمدة 5 دقائق.`;
 
     const res = await fetch(url, {
       method: "POST",
@@ -403,39 +459,60 @@ function formatWhatsappCaption(raw: string, maxLen = 1024): string {
 export const TWILIO_CONTENT_SIDS = {
   ALERT: (
     process.env.TWILIO_CONTENT_SID_ALERT ||
-    "HX3cfb28dd453b5de4bcec53becc303a8a"
+    "HXf7739f104e5c27326afef82ac2aca284"
   ).trim(),
   MEDIA_ALERT: (
     process.env.TWILIO_CONTENT_SID_MEDIA_ALERT ||
-    "HXa5800c50cff2d2e3ca9f9872f9aaf634"
-  ).trim(),
-  OTP: (
-    process.env.TWILIO_CONTENT_SID_OTP ||
-    "HX1223e60efe0f1fbe806f8f28f59fd737"
-  ).trim(),
-  REMIND: (
-    process.env.TWILIO_CONTENT_SID_REMIND ||
-    "HX7676bbda661d25c7e16bf3ff53cc19a7"
-  ).trim(),
-  SUBSCRIPTION: (
-    process.env.TWILIO_CONTENT_SID_SUBSCRIPTION ||
-    "HXa25ae82cd5b176deb5570f4b1352f298"
-  ).trim(),
-  DOC_REMINDER: (
-    process.env.TWILIO_CONTENT_SID_DOC_REMINDER ||
-    "HX3c140fa2ac3cd8329034c182b3065dfa"
-  ).trim(),
-  ORDER: (
-    process.env.TWILIO_CONTENT_SID_ORDER ||
-    "HX0af3ddac5ba66867a04cac6c273c56c7"
-  ).trim(),
-  ADMIN_ALERT: (
-    process.env.TWILIO_CONTENT_SID_ADMIN_ALERT ||
-    "HXfba96b545e3e61a4f4819698ca610dc0"
+    "HX6edeea3060c4724a597e6e1e04c6ed55"
   ).trim(),
   VOICE_CALL: (
     process.env.TWILIO_CONTENT_SID_VOICE_CALL ||
-    "HX6366aec344763ac936575ce0cfe25974"
+    "HXf797f5d7ef9ac340c463c8ab1d1a4b48"
+  ).trim(),
+  REMIND: (
+    process.env.TWILIO_CONTENT_SID_REMIND ||
+    "HXb83e34284546e1ea02956643506baaa9"
+  ).trim(),
+  OTP: (
+    process.env.TWILIO_CONTENT_SID_OTP ||
+    "HXf5c8957fcfe89e5df2cb6ce3bca5360a"
+  ).trim(),
+  SUBSCRIPTION: (
+    process.env.TWILIO_CONTENT_SID_SUBSCRIPTION ||
+    "HX30f7b6cdd9149d92744c8958e1291ed7"
+  ).trim(),
+  DOC_REMINDER: (
+    process.env.TWILIO_CONTENT_SID_DOC_REMINDER ||
+    "HXbcd098099c61a110214d83dbbd764efa"
+  ).trim(),
+  WEEKLY_OVERDUE: (
+    process.env.TWILIO_CONTENT_SID_WEEKLY_OVERDUE ||
+    "HXfa7f67591e5a3fb9c18edc3c0fc828de"
+  ).trim(),
+  ORDER_COD: (
+    process.env.TWILIO_CONTENT_SID_ORDER_COD ||
+    process.env.TWILIO_CONTENT_SID_ORDER ||
+    "HX35243cfcff2f04a7aa7686882151788d"
+  ).trim(),
+  ORDER: (
+    process.env.TWILIO_CONTENT_SID_ORDER ||
+    "HX35243cfcff2f04a7aa7686882151788d"
+  ).trim(),
+  ORDER_ACTIVATED: (
+    process.env.TWILIO_CONTENT_SID_ORDER_ACTIVATED ||
+    "HX12f9bd8e8bf04cddd41ef4ac473df2dc"
+  ).trim(),
+  STICKER_LINKED: (
+    process.env.TWILIO_CONTENT_SID_STICKER_LINKED ||
+    "HXb0a8ac56e004a613b6526f264ac55eb4"
+  ).trim(),
+  GIFT_ACTIVATED: (
+    process.env.TWILIO_CONTENT_SID_GIFT_ACTIVATED ||
+    "HXde2025741e0226f9f1835e3656480e2e"
+  ).trim(),
+  ADMIN_ALERT: (
+    process.env.TWILIO_CONTENT_SID_ADMIN_ALERT ||
+    "HX856fa5af28c8794e21a11283e2f2b719"
   ).trim(),
 } as const;
 

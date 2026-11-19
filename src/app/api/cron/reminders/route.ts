@@ -4,6 +4,7 @@ import {
   sendNabehniReminderSms,
   sendSubscriptionExpirySms,
   sendWhatsappAlertMessage,
+  TWILIO_CONTENT_SIDS,
 } from "@/lib/otp-service";
 
 export const dynamic = "force-dynamic";
@@ -144,14 +145,23 @@ function isSubscriptionActiveForTag(
 async function sendWhatsappWithSmsFallback(
   phone: string,
   whatsappText: string,
-  sendSmsFallback: () => Promise<{ ok: boolean; error?: string }>
+  sendSmsFallback: () => Promise<{ ok: boolean; error?: string }>,
+  twilioOpts?: {
+    twilioContentSid?: string;
+    twilioContentVariables?: Record<string, string>;
+  }
 ): Promise<{
   whatsappOk: boolean;
   smsAttempted: boolean;
   smsOk: boolean;
   smsError?: string;
 }> {
-  const waRes = await sendWhatsappAlertMessage(phone, whatsappText);
+  const waRes = await sendWhatsappAlertMessage(
+    phone,
+    whatsappText,
+    null,
+    twilioOpts
+  );
   if (waRes.ok) {
     return { whatsappOk: true, smsAttempted: false, smsOk: false };
   }
@@ -327,12 +337,19 @@ async function handleRemindersCron(request: NextRequest) {
 
       const var1 = vars.statusLabel.slice(0, 25);
       const var2 = vars.expiryDetail.slice(0, 30);
-      const whatsappText = `(منصة بَلِّغْنِي): اشتراك ملصق بَلِّغْنِي ${var1} جدّد اشتراكك لاستمرار الخدمة (${var2})`;
+      const whatsappText = `(منصة بلّغني): اشتراك ملصق بلّغني ${var1} لاستمرار الخدمة (${var2}) — منصة بلّغني`;
 
       const delivery = await sendWhatsappWithSmsFallback(
         target.ownerPhone,
         whatsappText,
-        () => sendSubscriptionExpirySms(target.ownerPhone, var1, var2)
+        () => sendSubscriptionExpirySms(target.ownerPhone, var1, var2),
+        {
+          twilioContentSid: TWILIO_CONTENT_SIDS.SUBSCRIPTION,
+          twilioContentVariables: {
+            "1": var1,
+            "2": var2,
+          },
+        }
       );
 
       if ((delivery.whatsappOk || delivery.smsOk) && target.tagCode) {
@@ -410,10 +427,19 @@ async function handleRemindersCron(request: NextRequest) {
 
       if (isWeeklyOverdue) {
         // المتابعة الأسبوعية بعد انتهاء وثيقة «نَبِّهْنِي» (طالما الاشتراك سارٍ): WhatsApp فقط بدون SMS
-        const weeklyText = `(منصة بَلِّغْنِي) خدمة نَبِّهْنِي: تذكير أسبوعي — ${var2} سيارتك (${var3}) طاح من يوم ${var4} ومزال ما جددتاش، حدّث التاريخ في حسابك بعد التجديد باش نوقفو التذكير.`;
+        const weeklyText = `(منصة بلّغني) خدمة نبّهني: تذكير أسبوعي — ${var2} سيارتك (${var3}) طاح من يوم ${var4} ومزال ما جددتاش، حدّث التاريخ في حسابك بعد التجديد باش نوقفو التذكير`;
         const waRes = await sendWhatsappAlertMessage(
           target.ownerPhone,
-          weeklyText
+          weeklyText,
+          null,
+          {
+            twilioContentSid: TWILIO_CONTENT_SIDS.WEEKLY_OVERDUE,
+            twilioContentVariables: {
+              "1": var2,
+              "2": var3,
+              "3": var4,
+            },
+          }
         );
 
         if (waRes.ok && doc.id) {
@@ -444,16 +470,25 @@ async function handleRemindersCron(request: NextRequest) {
         continue;
       }
 
-      // المراحل الأربع (30، 14، 3، 0): WhatsApp أولاً، ثم SMS (f1416035-9b11-4699-8289-f4685428c7af) عند فشل WhatsApp فقط
+      // المراحل الأربع (30، 14، 3، 0): WhatsApp أولاً، ثم SMS عند فشل WhatsApp فقط
       const phaseLabel = getNabehniPhaseLabel(daysRemaining, var2);
       if (!phaseLabel) continue;
       const var1 = phaseLabel.slice(0, 25);
 
-      const whatsappText = `(منصة بَلِّغْنِي) خدمة نَبِّهْنِي: ${var1} ${var2} سيارتك (${var3}) تاريخ الانتهاء ${var4}`;
+      const whatsappText = `(منصة بلّغني) خدمة نبّهني: ${var1} ${var2} سيارتك (${var3}) تاريخ الانتهاء ${var4} — منصة بلّغني`;
       const delivery = await sendWhatsappWithSmsFallback(
         target.ownerPhone,
         whatsappText,
-        () => sendNabehniReminderSms(target.ownerPhone, var1, var2, var3, var4)
+        () => sendNabehniReminderSms(target.ownerPhone, var1, var2, var3, var4),
+        {
+          twilioContentSid: TWILIO_CONTENT_SIDS.DOC_REMINDER,
+          twilioContentVariables: {
+            "1": var1,
+            "2": var2,
+            "3": var3,
+            "4": var4,
+          },
+        }
       );
 
       if ((delivery.whatsappOk || delivery.smsOk) && doc.id) {

@@ -3053,7 +3053,7 @@ export async function sendZeroLeakNotification(params: {
         : []),
     ].join(" | ");
 
-    // 1. إرسال واتساب أولاً عبر قالب الزر التفاعلي (QUICK_REPLY: "أنا قادم الآن ✅") مع إبقاء الرابط النصي كخيار احتياطي تلقائي ريثما يعتمد القالب في Meta
+    // 1. إرسال واتساب أولاً عبر قالب الزر التفاعلي (QUICK_REPLY: "أنا قادم الآن") مع إبقاء الرابط النصي كخيار احتياطي تلقائي ريثما يعتمد القالب في Meta
     const waResult = await sendWhatsappAlertMessage(
       tag.ownerPhone,
       whatsappLines.join("\n"),
@@ -3066,15 +3066,13 @@ export async function sendZeroLeakNotification(params: {
         twilioContentVariables: effectivePhotoUrl
           ? {
               "1": var1,
-              "2": alertReasonBody,
-              "3": formattedCaller || "غير مرفق",
-              "4": quickReplyUrl || "https://balaghni.ly",
-              "5": effectivePhotoUrl,
+              "2": `${fullTitle}${fullDescription ? ` — ${fullDescription}` : ""}`,
+              "3": noteText || "بدون ملاحظة إضافية",
+              "4": formattedCaller || "غير مرفق",
             }
           : {
               "1": var1,
               "2": alertReasonBody,
-              "3": reportIdStr || shortCode || normalizedCode,
             },
       }
     );
