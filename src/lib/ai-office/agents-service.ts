@@ -212,11 +212,76 @@ export async function broadcastAiOfficeEvent(payload: {
   }
 }
 
+const STUCK_AGENT_TIMEOUT_MS = 2 * 60 * 1000; // دقيقتان كحد أقصى قبل التعافي التلقائي
+
+/**
+ * آلية التعافي التلقائي (Auto-Recovery):
+ * إذا بقي أي موظف في حالة (working أو auditing أو meeting) لأكثر من دقيقتين دون تحديث جديد،
+ * يُعاد تلقائياً إلى حالة (idle) ويُغلق أي سجل مهمة عالق لضمان عدم تجمد أي موظف في الواجهة.
+ */
+export async function recoverStuckAgents(): Promise<number> {
+  try {
+    const cutoffIso = new Date(Date.now() - STUCK_AGENT_TIMEOUT_MS).toISOString();
+    const { data: stuckAgents, error } = await supabaseAdmin
+      .from("ai_agents")
+      .select("id, name, status, updated_at")
+      .in("status", ["working", "auditing", "meeting"])
+      .lt("updated_at", cutoffIso);
+
+    if (error || !Array.isArray(stuckAgents) || stuckAgents.length === 0) {
+      return 0;
+    }
+
+    const nowIso = new Date().toISOString();
+    const stuckIds = stuckAgents.map((a) => String(a.id));
+
+    await supabaseAdmin
+      .from("ai_agents")
+      .update({
+        status: "idle",
+        current_task: null,
+        updated_at: nowIso,
+      })
+      .in("id", stuckIds);
+
+    await supabaseAdmin
+      .from("agent_tasks")
+      .update({
+        status: "failed",
+        result:
+          "تم إنهاء المهمة وإعادة الموظف تلقائياً إلى وضع الاستعداد بعد تجاوز مهلة الدقيقتين (Auto-Recovery).",
+      })
+      .eq("status", "in_progress")
+      .lt("created_at", cutoffIso);
+
+    await Promise.allSettled(
+      stuckIds.map((id) =>
+        broadcastAiOfficeEvent({
+          type: "agent_update",
+          agent: {
+            id,
+            status: "idle",
+            current_task: null,
+            updated_at: nowIso,
+          },
+        })
+      )
+    );
+
+    return stuckIds.length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function getAiOfficeSnapshot(): Promise<{
   agents: AiAgentRecord[];
   tasks: AgentTaskRecord[];
   logs: AgentLogRecord[];
 }> {
+  // تشغيل فحص التعافي التلقائي للموظفين العالقين (> دقيقتين) قبل جلب اللقطة الحية
+  await recoverStuckAgents();
+
   const [agentsRes, tasksRes, logsRes] = await Promise.all([
     supabaseAdmin.from("ai_agents").select("*"),
     supabaseAdmin

@@ -390,6 +390,17 @@ export default function AdminOfficePage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  // فحص تعافي تلقائي كل 30 ثانية إذا ظهر أي موظف مشغولاً دون طلب نشط في هذه الجلسة
+  React.useEffect(() => {
+    if (!authenticated || isExecuting) return;
+    const hasBusyAgent = agents.some((a) => a.status !== "idle");
+    if (!hasBusyAgent) return;
+    const timer = window.setInterval(() => {
+      void fetchOfficeState();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, isExecuting, agents, fetchOfficeState]);
+
   React.useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs.length]);
