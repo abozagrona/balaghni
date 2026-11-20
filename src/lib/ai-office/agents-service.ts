@@ -375,26 +375,73 @@ function getGeminiClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey });
 }
 
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`انتهت مهلة استجابة النموذج (${label}) بعد ${Math.round(timeoutMs / 1000)} ثانية.`));
+    }, timeoutMs);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 async function callGeminiAgent(params: {
   systemInstruction: string;
   input: string;
   model?: string;
+  timeoutMs?: number;
 }): Promise<string> {
   const client = getGeminiClient();
-  const modelName = params.model || "gemini-3.8-flash";
+  const primaryModel = params.model || "gemini-3.8-flash";
+  const fallbackModel = "gemini-3.5-flash-lite";
+  const timeoutMs = params.timeoutMs ?? 24000;
 
-  const interaction = await client.interactions.create({
-    model: modelName,
-    system_instruction: params.systemInstruction,
-    input: params.input,
-    store: false,
-  });
+  const attempt = async (modelName: string, limitMs: number): Promise<string> => {
+    const interaction = await withTimeout(
+      client.interactions.create({
+        model: modelName,
+        system_instruction: params.systemInstruction,
+        input: params.input,
+        store: false,
+      }),
+      limitMs,
+      modelName
+    );
+    const text = (interaction.output_text || "").trim();
+    if (!text) {
+      throw new Error(`لم يتم استلام رد نصي من النموذج (${modelName}).`);
+    }
+    return text;
+  };
 
-  const text = (interaction.output_text || "").trim();
-  if (!text) {
-    throw new Error("لم يتم استلام رد نصي من نموذج Gemini.");
+  try {
+    return await attempt(primaryModel, timeoutMs);
+  } catch (primaryErr) {
+    const msg =
+      primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+    const isTransient =
+      /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|مهلة استجابة|timeout/i.test(
+        msg
+      );
+    if (isTransient && primaryModel !== fallbackModel) {
+      console.warn(
+        `[AI Office Gemini Fallback] ${primaryModel} failed (${msg}), retrying with ${fallbackModel}...`
+      );
+      return await attempt(fallbackModel, Math.min(timeoutMs, 18000));
+    }
+    throw primaryErr;
   }
-  return text;
 }
 
 function safeReadSnippet(relPath: string, maxChars = 2600): string {
@@ -658,6 +705,7 @@ export async function executeFounderCommand(params: {
         const routeRaw = await callGeminiAgent({
           systemInstruction: rami.system_prompt,
           input: routingPrompt,
+          timeoutMs: 10000,
         });
         const parsed = extractJsonBlock(routeRaw);
         const candidateRole = String(parsed?.target_role || "").trim() as AgentRole;
@@ -807,6 +855,7 @@ ${liveContext}
       specialistFullResult = await callGeminiAgent({
         systemInstruction: selectedSpecialist.system_prompt,
         input: specialistPrompt,
+        timeoutMs: 26000,
       });
 
       await appendAgentLog({
@@ -830,6 +879,7 @@ ${liveContext}
 ${specialistFullResult.slice(0, 3500)}
 
 اكتب خلاصة تنفيذية موجزة واحترافية للمؤسس في 3 إلى 5 نقاط مركّزة توضح ما تم إنجازه والخطوة التالية المقترحة.`,
+        timeoutMs: 12000,
       });
     } catch {
       executiveSummary = `تم تنفيذ المهمة بواسطة ${selectedSpecialist.name} بنجاح، ويمكنك مراجعة التفاصيل والترقيعات الكاملة في السجل المباشر أعلاه.`;
