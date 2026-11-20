@@ -31,6 +31,9 @@ import {
   MessageSquare,
   Monitor,
   Radar,
+  BrainCircuit,
+  Zap,
+  CheckCircle2,
 } from "lucide-react";
 import { BalaghniLogo } from "@/components/brand/balaghni-logo";
 import { supabaseRealtime } from "@/lib/supabase/realtime";
@@ -38,6 +41,7 @@ import { supabaseRealtime } from "@/lib/supabase/realtime";
 type AgentRole =
   | "orchestrator"
   | "principal_architect"
+  | "skills_architect"
   | "operations"
   | "support"
   | "marketing";
@@ -48,6 +52,11 @@ type AgentLogType =
   | "security_alert"
   | "code_patch"
   | "design_proposal";
+
+type CommandTargetRole =
+  | "orchestrator"
+  | "principal_architect"
+  | "skills_architect";
 
 interface AiAgentRecord {
   id: string;
@@ -79,9 +88,29 @@ interface AgentLogRecord {
   created_at: string;
 }
 
+interface AgentSkillRecord {
+  id: string;
+  skill_name: string;
+  target_agent_role: string;
+  target_agent_id: string | null;
+  description: string;
+  skill_instructions: string;
+  status: "pending" | "active";
+  created_by: string | null;
+  task_id: string | null;
+  activated_at: string | null;
+  created_at: string;
+}
+
 const STATUS_META: Record<
   AgentStatus,
-  { label: string; shortLabel: string; dotClass: string; badgeClass: string; pulse: boolean }
+  {
+    label: string;
+    shortLabel: string;
+    dotClass: string;
+    badgeClass: string;
+    pulse: boolean;
+  }
 > = {
   idle: {
     label: "متاح (Idle)",
@@ -115,9 +144,15 @@ const STATUS_META: Record<
 
 const QUICK_COMMANDS: Array<{
   label: string;
-  target: "orchestrator" | "principal_architect";
+  target: CommandTargetRole;
   command: string;
 }> = [
+  {
+    label: "ابحث عن مهارات جديدة لتطوير الفريق والموقع",
+    target: "skills_architect",
+    command:
+      "ابحث عن مهارات جديدة لتطوير الفريق والموقع، واقترح مهارات عملية قابلة للتفعيل المباشر لرفع أداء ليلى في التسويق وكريم في الأمن السيبراني.",
+  },
   {
     label: "فحص ثغرات الأمان و RLS",
     target: "principal_architect",
@@ -136,15 +171,9 @@ const QUICK_COMMANDS: Array<{
     command:
       "أريد تقريراً تنفيذياً فورياً عن حالة مخزون ملصقات QR والطلبات المعلقة والمكتملة في Supabase.",
   },
-  {
-    label: "حملة تسويقية ليبية",
-    target: "orchestrator",
-    command:
-      "اكتب منشوراً ترويجياً جذاباً باللهجة الليبية لباقة نبّهني (100 د.ل) يبرز الخصوصية والمكالمة المشفرة.",
-  },
 ];
 
-// إحداثيات المكاتب وطاولة الاجتماعات وركن القهوة على خريطة 1000x620 (بالنسبة المئوية)
+// إحداثيات المكاتب الستة وطاولة الاجتماعات وركن القهوة على خريطة 1000x620 (بالنسبة المئوية)
 const OFFICE_COORDS: Record<
   AgentRole,
   {
@@ -157,41 +186,49 @@ const OFFICE_COORDS: Record<
   }
 > = {
   principal_architect: {
-    desk: { x: 83.5, y: 23.5 },
-    meeting: { x: 61.5, y: 55 },
-    coffee: { x: 82, y: 53 },
+    desk: { x: 83.5, y: 22.5 },
+    meeting: { x: 61.5, y: 49 },
+    coffee: { x: 54, y: 88 },
     avatarGradient: "from-[#ED001B] via-[#b80015] to-[#1a0508]",
     ringColor: "ring-[#ED001B]",
     shortRole: "الأمن والبرمجة والتصميم",
   },
+  skills_architect: {
+    desk: { x: 84, y: 52.5 },
+    meeting: { x: 60, y: 63.5 },
+    coffee: { x: 58, y: 88 },
+    avatarGradient: "from-cyan-400 via-sky-600 to-[#0B0D13]",
+    ringColor: "ring-cyan-400/80",
+    shortRole: "البحث وتطوير المهارات",
+  },
   orchestrator: {
     desk: { x: 16, y: 21 },
-    meeting: { x: 50, y: 42 },
-    coffee: { x: 88, y: 53 },
+    meeting: { x: 50, y: 39.5 },
+    coffee: { x: 46, y: 88 },
     avatarGradient: "from-white via-slate-200 to-slate-400",
     ringColor: "ring-white/80",
     shortRole: "المدير العام",
   },
   marketing: {
     desk: { x: 15, y: 50 },
-    meeting: { x: 38.5, y: 55 },
-    coffee: { x: 85, y: 53.5 },
+    meeting: { x: 38.5, y: 49 },
+    coffee: { x: 42, y: 88 },
     avatarGradient: "from-fuchsia-500 via-rose-500 to-slate-900",
     ringColor: "ring-fuchsia-400/70",
     shortRole: "التسويق والمحتوى",
   },
   operations: {
     desk: { x: 16, y: 79 },
-    meeting: { x: 43, y: 69 },
-    coffee: { x: 79, y: 54 },
+    meeting: { x: 40, y: 63.5 },
+    coffee: { x: 50, y: 88.5 },
     avatarGradient: "from-amber-400 via-orange-500 to-slate-900",
     ringColor: "ring-amber-400/70",
     shortRole: "العمليات والمخزون",
   },
   support: {
     desk: { x: 83.5, y: 79 },
-    meeting: { x: 57, y: 69 },
-    coffee: { x: 91, y: 54 },
+    meeting: { x: 50, y: 68 },
+    coffee: { x: 54, y: 88.5 },
     avatarGradient: "from-emerald-400 via-teal-500 to-slate-900",
     ringColor: "ring-emerald-400/70",
     shortRole: "خدمة العملاء",
@@ -204,6 +241,8 @@ function getRoleIcon(role: AgentRole) {
       return Crown;
     case "principal_architect":
       return ShieldCheck;
+    case "skills_architect":
+      return BrainCircuit;
     case "operations":
       return PackageCheck;
     case "support":
@@ -213,6 +252,20 @@ function getRoleIcon(role: AgentRole) {
     default:
       return Briefcase;
   }
+}
+
+function extractSkillIdFromLog(message: string): {
+  skillId: string | null;
+  cleanMessage: string;
+} {
+  const match = message.match(/^\[SKILL_ID:([a-zA-Z0-9-]+)\]\s*/);
+  if (match?.[1]) {
+    return {
+      skillId: match[1],
+      cleanMessage: message.slice(match[0].length),
+    };
+  }
+  return { skillId: null, cleanMessage: message };
 }
 
 function parseMessageParts(
@@ -252,7 +305,10 @@ function parseMessageParts(
 }
 
 function summarizeSpeechBubble(raw: string): string {
-  const withoutCode = raw.replace(/```[\s\S]*?```/g, " [كود جاهز]").trim();
+  const { cleanMessage } = extractSkillIdFromLog(raw);
+  const withoutCode = cleanMessage
+    .replace(/```[\s\S]*?```/g, " [كود جاهز]")
+    .trim();
   const singleLine = withoutCode.replace(/\s+/g, " ");
   return singleLine.length > 76 ? `${singleLine.slice(0, 74)}...` : singleLine;
 }
@@ -265,23 +321,24 @@ export default function AdminOfficePage() {
   const [agents, setAgents] = React.useState<AiAgentRecord[]>([]);
   const [tasks, setTasks] = React.useState<AgentTaskRecord[]>([]);
   const [logs, setLogs] = React.useState<AgentLogRecord[]>([]);
+  const [skills, setSkills] = React.useState<AgentSkillRecord[]>([]);
   const [realtimeConnected, setRealtimeConnected] = React.useState(false);
 
   const [commandInput, setCommandInput] = React.useState("");
-  const [targetRole, setTargetRole] = React.useState<
-    "orchestrator" | "principal_architect"
-  >("orchestrator");
+  const [targetRole, setTargetRole] =
+    React.useState<CommandTargetRole>("orchestrator");
   const [isExecuting, setIsExecuting] = React.useState(false);
+  const [activatingSkillId, setActivatingSkillId] = React.useState<
+    string | null
+  >(null);
   const [logFilter, setLogFilter] = React.useState<"all" | AgentLogType>("all");
   const [copiedKey, setCopiedKey] = React.useState<string | null>(null);
 
-  // التفاعل البصري في المكتب ثنائي الأبعاد
   const [selectedAgentId, setSelectedAgentId] = React.useState<string | null>(
     null
   );
-  const [coffeeGuestRole, setCoffeeGuestRole] = React.useState<AgentRole | null>(
-    null
-  );
+  const [coffeeGuestRole, setCoffeeGuestRole] =
+    React.useState<AgentRole | null>(null);
 
   const feedEndRef = React.useRef<HTMLDivElement | null>(null);
   const commandInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -319,6 +376,7 @@ export default function AdminOfficePage() {
       setAgents(Array.isArray(data.agents) ? data.agents : []);
       setTasks(Array.isArray(data.tasks) ? data.tasks : []);
       setLogs(Array.isArray(data.logs) ? data.logs : []);
+      setSkills(Array.isArray(data.skills) ? data.skills : []);
       setLoading(false);
     } catch {
       setErrorMsg("تعذر الاتصال بخادم غرفة العمليات.");
@@ -330,7 +388,7 @@ export default function AdminOfficePage() {
     void fetchOfficeState();
   }, [fetchOfficeState]);
 
-  // اشتراك Supabase Realtime اللحظي لمتابعة حالات الموظفين وسجل الحوارات
+  // اشتراك Supabase Realtime اللحظي لمتابعة حالات الموظفين وسجل الحوارات والمهارات
   React.useEffect(() => {
     if (!authenticated) return;
 
@@ -359,6 +417,18 @@ export default function AdminOfficePage() {
             }
             return [payload.task as AgentTaskRecord, ...prev];
           });
+        } else if (payload.type === "skill_update" && payload.skill?.id) {
+          setSkills((prev) => {
+            const exists = prev.some((s) => s.id === payload.skill.id);
+            if (exists) {
+              return prev.map((s) =>
+                s.id === payload.skill.id
+                  ? (payload.skill as AgentSkillRecord)
+                  : s
+              );
+            }
+            return [payload.skill as AgentSkillRecord, ...prev];
+          });
         } else {
           void fetchOfficeState();
         }
@@ -372,7 +442,7 @@ export default function AdminOfficePage() {
     };
   }, [authenticated, fetchOfficeState]);
 
-  // حركة طبيعية هادئة: عندما يكون الموظفون متاحين (idle)، يتناوب أحدهم أحياناً على استراحة قصيرة عند ركن القهوة
+  // تناوب هادئ على استراحة القهوة عند حالة idle
   React.useEffect(() => {
     const rotation: Array<AgentRole | null> = [
       null,
@@ -381,6 +451,8 @@ export default function AdminOfficePage() {
       "marketing",
       null,
       "operations",
+      null,
+      "skills_architect",
     ];
     let idx = 0;
     const timer = window.setInterval(() => {
@@ -415,9 +487,37 @@ export default function AdminOfficePage() {
     }
   };
 
+  const handleActivateSkill = async (skillId: string) => {
+    if (!skillId || activatingSkillId) return;
+    setActivatingSkillId(skillId);
+    setErrorMsg(null);
+    try {
+      const res = await fetch("/api/agents/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ skillId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setErrorMsg(data.error || "تعذر تفعيل المهارة حالياً.");
+      } else {
+        if (Array.isArray(data.agents)) setAgents(data.agents);
+        if (Array.isArray(data.skills)) setSkills(data.skills);
+        if (Array.isArray(data.logs)) setLogs(data.logs);
+      }
+    } catch {
+      setErrorMsg("تعذر الاتصال بالخادم لتفعيل المهارة.");
+    } finally {
+      setActivatingSkillId(null);
+    }
+  };
+
   const handleDirectOrderToAgent = (agent: AiAgentRecord) => {
     if (agent.role === "principal_architect") {
       setTargetRole("principal_architect");
+    } else if (agent.role === "skills_architect") {
+      setTargetRole("skills_architect");
     } else if (agent.role === "orchestrator") {
       setTargetRole("orchestrator");
     } else {
@@ -457,6 +557,7 @@ export default function AdminOfficePage() {
       }
       if (Array.isArray(data.agents)) setAgents(data.agents);
       if (Array.isArray(data.logs)) setLogs(data.logs);
+      if (Array.isArray(data.skills)) setSkills(data.skills);
       await fetchOfficeState();
     } catch {
       setErrorMsg("حدث خطأ في الاتصال أثناء إرسال الأمر.");
@@ -477,6 +578,12 @@ export default function AdminOfficePage() {
     return map;
   }, [agents]);
 
+  const skillById = React.useMemo(() => {
+    const map = new Map<string, AgentSkillRecord>();
+    for (const s of skills) map.set(s.id, s);
+    return map;
+  }, [skills]);
+
   const latestLogByAgentId = React.useMemo(() => {
     const map = new Map<string, AgentLogRecord>();
     for (const l of logs) {
@@ -494,6 +601,7 @@ export default function AdminOfficePage() {
   const activeAgents = agents.filter((a) => a.status !== "idle");
   const isMeetingActive = agents.some((a) => a.status === "meeting");
   const isAuditActive = agents.some((a) => a.status === "auditing");
+  const pendingSkills = skills.filter((s) => s.status === "pending");
 
   const filteredLogs = React.useMemo(() => {
     if (logFilter === "all") return logs;
@@ -553,6 +661,7 @@ export default function AdminOfficePage() {
   }
 
   const karim = agentByRole.get("principal_architect");
+  const tariq = agentByRole.get("skills_architect");
   const rami = agentByRole.get("orchestrator");
   const omar = agentByRole.get("operations");
   const sara = agentByRole.get("support");
@@ -585,13 +694,17 @@ export default function AdminOfficePage() {
                     مقر العمليات الافتراضي
                   </h1>
                   <span className="rounded-full bg-[#ED001B]/20 px-2 py-0.5 text-[10px] font-black text-[#ff4d62] ring-1 ring-[#ED001B]/45">
-                    2D LIVE HQ
+                    6 AGENTS • 2D LIVE HQ
                   </span>
                 </div>
                 <p className="text-[11px] text-white/60">
                   المؤسس: {adminName || "الأدمن الرئيسي"} • المهام المنجزة:{" "}
                   <strong className="text-white">
                     {tasks.filter((t) => t.status === "completed").length}
+                  </strong>{" "}
+                  • المهارات المفعّلة:{" "}
+                  <strong className="text-cyan-300">
+                    {skills.filter((s) => s.status === "active").length}
                   </strong>
                 </p>
               </div>
@@ -626,7 +739,7 @@ export default function AdminOfficePage() {
       </header>
 
       {/* المحتوى الرئيسي */}
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 pb-44 pt-5 sm:px-6">
+      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 pb-48 pt-5 sm:px-6">
         {errorMsg && (
           <div className="flex items-start gap-3 rounded-2xl border border-[#ED001B]/50 bg-[#ED001B]/10 px-4 py-3 text-xs text-rose-100">
             <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#ED001B]" />
@@ -634,12 +747,12 @@ export default function AdminOfficePage() {
           </div>
         )}
 
-        {/* شريط الحالة السريع للموظفين (للهواتف والانتقال السريع لأي موظف) */}
+        {/* شريط الحالة السريع للموظفين الستة */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Activity className="h-4 w-4 text-[#ED001B]" />
             <h2 className="text-sm font-black text-white">
-              خريطة المكتب التفاعلية الحية (انقر على أي مكتب أو موظف)
+              خريطة المكتب التفاعلية الحية — 6 موظفين (انقر على أي مكتب أو موظف)
             </h2>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -676,7 +789,6 @@ export default function AdminOfficePage() {
 
         {/* 1. المشهد البصري التفاعلي للمكتب (2D Interactive Virtual Office Canvas) */}
         <section className="relative overflow-hidden rounded-3xl border border-white/15 bg-[#0D1018] shadow-[0_20px_70px_rgba(0,0,0,0.65)]">
-          {/* تلميح التمرير للهواتف الصغيرة */}
           <div className="flex items-center justify-between border-b border-white/10 bg-[#121622] px-4 py-2 text-[11px] text-white/60 sm:hidden">
             <span>اسحب أفقياً لاستعراض كامل المكتب الافتراضي</span>
             <span className="font-mono text-[#ED001B]">2D MAP</span>
@@ -684,14 +796,12 @@ export default function AdminOfficePage() {
 
           <div className="overflow-x-auto">
             <div className="relative mx-auto min-w-[820px] max-w-[1220px] aspect-[1000/620] select-none bg-[#0B0D13]">
-              {/* الطبقة المعمارية SVG (المخطط، الجدران، المكاتب، طاولة الاجتماعات، ركن القهوة) */}
               <svg
                 viewBox="0 0 1000 620"
                 className="absolute inset-0 h-full w-full"
                 preserveAspectRatio="xMidYMid meet"
               >
                 <defs>
-                  {/* شبكة أرضية المكتب المعمارية */}
                   <pattern
                     id="officeFloorGrid"
                     width="32"
@@ -706,7 +816,6 @@ export default function AdminOfficePage() {
                     />
                   </pattern>
 
-                  {/* توهج نيون أحمر بلّغني */}
                   <filter
                     id="neonRedGlow"
                     x="-30%"
@@ -721,7 +830,21 @@ export default function AdminOfficePage() {
                     </feMerge>
                   </filter>
 
-                  <radialGradient id="centerFloorGlow" cx="50%" cy="54%" r="36%">
+                  <filter
+                    id="neonCyanGlow"
+                    x="-30%"
+                    y="-30%"
+                    width="160%"
+                    height="160%"
+                  >
+                    <feGaussianBlur stdDeviation="4" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+
+                  <radialGradient id="centerFloorGlow" cx="50%" cy="50%" r="36%">
                     <stop offset="0%" stopColor="rgba(237,0,27,0.12)" />
                     <stop offset="65%" stopColor="rgba(237,0,27,0.03)" />
                     <stop offset="100%" stopColor="rgba(11,13,19,0)" />
@@ -730,6 +853,11 @@ export default function AdminOfficePage() {
                   <radialGradient id="karimSuiteGlow" cx="50%" cy="50%" r="55%">
                     <stop offset="0%" stopColor="rgba(237,0,27,0.22)" />
                     <stop offset="100%" stopColor="rgba(15,18,28,0.4)" />
+                  </radialGradient>
+
+                  <radialGradient id="tariqLabGlow" cx="50%" cy="50%" r="55%">
+                    <stop offset="0%" stopColor="rgba(34,211,238,0.16)" />
+                    <stop offset="100%" stopColor="rgba(15,18,28,0.45)" />
                   </radialGradient>
 
                   <linearGradient id="deskSurface" x1="0" y1="0" x2="1" y2="1">
@@ -788,13 +916,13 @@ export default function AdminOfficePage() {
                   filter="url(#neonRedGlow)"
                 />
 
-                {/* ================= جناح كريم التنفيذي الخاص (أعلى اليمين) ================= */}
+                {/* ================= 1. جناح كريم التنفيذي الخاص (أعلى اليمين) ================= */}
                 <g>
                   <rect
                     x="695"
                     y="26"
                     width="280"
-                    height="226"
+                    height="214"
                     rx="20"
                     fill="url(#karimSuiteGlow)"
                     stroke={
@@ -810,69 +938,64 @@ export default function AdminOfficePage() {
                         : "1.5"
                     }
                   />
-                  {/* فاصل زجاجي تقني */}
                   <line
                     x1="695"
-                    y1="72"
+                    y1="68"
                     x2="695"
-                    y2="215"
+                    y2="205"
                     stroke="#ED001B"
                     strokeWidth="2"
                     strokeDasharray="6 4"
                     opacity="0.7"
                   />
-                  {/* مكتب كريم الهندسي (U-Desk) */}
                   <rect
                     x="742"
-                    y="62"
+                    y="60"
                     width="186"
-                    height="56"
+                    height="52"
                     rx="12"
                     fill="url(#karimDeskSurface)"
                     stroke="rgba(237,0,27,0.45)"
                     strokeWidth="1.5"
                   />
-                  {/* شاشتان عريضتان لكريم */}
                   <rect
                     x="764"
-                    y="70"
+                    y="68"
                     width="64"
-                    height="12"
+                    height="11"
                     rx="3"
                     fill={deskMonitorGlow(karim) ? "#ED001B" : "#252B3D"}
                     filter={deskMonitorGlow(karim) ? "url(#neonRedGlow)" : undefined}
                   />
                   <rect
                     x="840"
-                    y="70"
+                    y="68"
                     width="64"
-                    height="12"
+                    height="11"
                     rx="3"
                     fill={deskMonitorGlow(karim) ? "#ED001B" : "#252B3D"}
                     filter={deskMonitorGlow(karim) ? "url(#neonRedGlow)" : undefined}
                   />
-                  {/* خادم أمني مصغّر بجانب مكتب كريم */}
                   <rect
                     x="940"
-                    y="48"
+                    y="46"
                     width="22"
-                    height="78"
+                    height="76"
                     rx="6"
                     fill="#141824"
                     stroke="rgba(255,255,255,0.12)"
                   />
-                  <circle cx="951" cy="64" r="2.5" fill="#22c55e" />
-                  <circle cx="951" cy="76" r="2.5" fill="#ED001B" />
-                  <circle cx="951" cy="88" r="2.5" fill="#22c55e" />
-                  <circle cx="951" cy="100" r="2.5" fill="#ED001B" />
+                  <circle cx="951" cy="62" r="2.5" fill="#22c55e" />
+                  <circle cx="951" cy="74" r="2.5" fill="#ED001B" />
+                  <circle cx="951" cy="86" r="2.5" fill="#22c55e" />
+                  <circle cx="951" cy="98" r="2.5" fill="#ED001B" />
 
-                  {/* رادار الفحص الأمني التفاعلي عند حالة auditing */}
                   {karim?.status === "auditing" && (
                     <g opacity="0.85">
                       <circle
                         cx="835"
-                        cy="145"
-                        r="54"
+                        cy="138"
+                        r="50"
                         fill="none"
                         stroke="#ED001B"
                         strokeWidth="1.5"
@@ -880,8 +1003,8 @@ export default function AdminOfficePage() {
                       />
                       <circle
                         cx="835"
-                        cy="145"
-                        r="84"
+                        cy="138"
+                        r="78"
                         fill="none"
                         stroke="#ED001B"
                         strokeWidth="1"
@@ -891,7 +1014,75 @@ export default function AdminOfficePage() {
                   )}
                 </g>
 
-                {/* ================= مكتب رامي — المدير العام (أعلى اليسار) ================= */}
+                {/* ================= 2. مختبر طارق للبحث والمهارات (منتصف اليمين) ================= */}
+                <g>
+                  <rect
+                    x="700"
+                    y="252"
+                    width="275"
+                    height="134"
+                    rx="18"
+                    fill="url(#tariqLabGlow)"
+                    stroke={
+                      tariq && tariq.status !== "idle"
+                        ? "#ED001B"
+                        : "rgba(34,211,238,0.45)"
+                    }
+                    strokeWidth={tariq && tariq.status !== "idle" ? "2.2" : "1.5"}
+                  />
+                  {/* مكتب مختبر البيانات والبحث لطارق */}
+                  <rect
+                    x="754"
+                    y="272"
+                    width="174"
+                    height="44"
+                    rx="10"
+                    fill="#121A26"
+                    stroke="rgba(34,211,238,0.35)"
+                  />
+                  {/* ثلاث شاشات بحث وبيانات */}
+                  <rect
+                    x="768"
+                    y="279"
+                    width="42"
+                    height="9"
+                    rx="2.5"
+                    fill={deskMonitorGlow(tariq) ? "#ED001B" : "#164e63"}
+                    filter={
+                      deskMonitorGlow(tariq)
+                        ? "url(#neonRedGlow)"
+                        : "url(#neonCyanGlow)"
+                    }
+                  />
+                  <rect
+                    x="818"
+                    y="279"
+                    width="46"
+                    height="9"
+                    rx="2.5"
+                    fill={deskMonitorGlow(tariq) ? "#ED001B" : "#0891b2"}
+                    filter={
+                      deskMonitorGlow(tariq)
+                        ? "url(#neonRedGlow)"
+                        : "url(#neonCyanGlow)"
+                    }
+                  />
+                  <rect
+                    x="872"
+                    y="279"
+                    width="42"
+                    height="9"
+                    rx="2.5"
+                    fill={deskMonitorGlow(tariq) ? "#ED001B" : "#164e63"}
+                    filter={
+                      deskMonitorGlow(tariq)
+                        ? "url(#neonRedGlow)"
+                        : "url(#neonCyanGlow)"
+                    }
+                  />
+                </g>
+
+                {/* ================= 3. مكتب رامي — المدير العام (أعلى اليسار) ================= */}
                 <g>
                   <rect
                     x="25"
@@ -916,7 +1107,6 @@ export default function AdminOfficePage() {
                     fill="url(#deskSurface)"
                     stroke="rgba(255,255,255,0.15)"
                   />
-                  {/* شاشة حاسوب رامي */}
                   <rect
                     x="126"
                     y="66"
@@ -928,13 +1118,13 @@ export default function AdminOfficePage() {
                   />
                 </g>
 
-                {/* ================= مكتب ليلى — التسويق والمحتوى (منتصف اليسار) ================= */}
+                {/* ================= 4. مكتب ليلى — التسويق والمحتوى (منتصف اليسار) ================= */}
                 <g>
                   <rect
                     x="25"
                     y="236"
-                    width="250"
-                    height="144"
+                    width="255"
+                    height="148"
                     rx="18"
                     fill="rgba(255,255,255,0.025)"
                     stroke={
@@ -964,13 +1154,13 @@ export default function AdminOfficePage() {
                   />
                 </g>
 
-                {/* ================= مكتب عمر — العمليات والمخزون (أسفل اليسار) ================= */}
+                {/* ================= 5. مكتب عمر — العمليات والمخزون (أسفل اليسار) ================= */}
                 <g>
                   <rect
                     x="25"
-                    y="394"
+                    y="398"
                     width="275"
-                    height="198"
+                    height="194"
                     rx="18"
                     fill="rgba(255,255,255,0.025)"
                     stroke={
@@ -982,7 +1172,7 @@ export default function AdminOfficePage() {
                   />
                   <rect
                     x="76"
-                    y="514"
+                    y="516"
                     width="172"
                     height="46"
                     rx="11"
@@ -991,7 +1181,7 @@ export default function AdminOfficePage() {
                   />
                   <rect
                     x="126"
-                    y="540"
+                    y="542"
                     width="72"
                     height="10"
                     rx="3"
@@ -1000,48 +1190,13 @@ export default function AdminOfficePage() {
                   />
                 </g>
 
-                {/* ================= ركن الاستراحة والقهوة (منتصف اليمين) ================= */}
-                <g>
-                  <rect
-                    x="725"
-                    y="266"
-                    width="250"
-                    height="114"
-                    rx="18"
-                    fill="rgba(245,158,11,0.05)"
-                    stroke="rgba(245,158,11,0.28)"
-                    strokeWidth="1.5"
-                    strokeDasharray="5 4"
-                  />
-                  {/* بار القهوة */}
-                  <rect
-                    x="914"
-                    y="284"
-                    width="44"
-                    height="78"
-                    rx="10"
-                    fill="#1C1917"
-                    stroke="rgba(245,158,11,0.4)"
-                  />
-                  {/* طاولة قهوة دائرية */}
-                  <circle
-                    cx="850"
-                    cy="326"
-                    r="24"
-                    fill="#191B24"
-                    stroke="rgba(255,255,255,0.15)"
-                    strokeWidth="1.5"
-                  />
-                  <circle cx="850" cy="326" r="6" fill="rgba(245,158,11,0.35)" />
-                </g>
-
-                {/* ================= مكتب سارة — خدمة العملاء (أسفل اليمين) ================= */}
+                {/* ================= 6. مكتب سارة — خدمة العملاء (أسفل اليمين) ================= */}
                 <g>
                   <rect
                     x="695"
-                    y="394"
+                    y="398"
                     width="280"
-                    height="198"
+                    height="194"
                     rx="18"
                     fill="rgba(255,255,255,0.025)"
                     stroke={
@@ -1053,7 +1208,7 @@ export default function AdminOfficePage() {
                   />
                   <rect
                     x="748"
-                    y="514"
+                    y="516"
                     width="174"
                     height="46"
                     rx="11"
@@ -1062,7 +1217,7 @@ export default function AdminOfficePage() {
                   />
                   <rect
                     x="798"
-                    y="540"
+                    y="542"
                     width="74"
                     height="10"
                     rx="3"
@@ -1073,13 +1228,12 @@ export default function AdminOfficePage() {
 
                 {/* ================= منطقة الاجتماعات المركزية (المنتصف) ================= */}
                 <g>
-                  {/* سجادة/إطار غرفة الاجتماعات */}
                   <rect
                     x="325"
-                    y="112"
+                    y="108"
                     width="350"
-                    height="422"
-                    rx="28"
+                    height="376"
+                    rx="26"
                     fill="rgba(255,255,255,0.018)"
                     stroke={
                       isMeetingActive
@@ -1093,9 +1247,9 @@ export default function AdminOfficePage() {
                   {/* طاولة الاجتماعات البيضاوية في المنتصف */}
                   <ellipse
                     cx="500"
-                    cy="346"
+                    cy="332"
                     rx="118"
-                    ry="72"
+                    ry="68"
                     fill="url(#conferenceTable)"
                     stroke={
                       isMeetingActive ? "#ED001B" : "rgba(255,255,255,0.18)"
@@ -1103,36 +1257,63 @@ export default function AdminOfficePage() {
                     strokeWidth={isMeetingActive ? "2.5" : "1.5"}
                     filter={isMeetingActive ? "url(#neonRedGlow)" : undefined}
                   />
-                  {/* حلقة داخلية مضيئة على سطح طاولة الاجتماعات */}
                   <ellipse
                     cx="500"
-                    cy="346"
+                    cy="332"
                     rx="78"
-                    ry="40"
+                    ry="38"
                     fill="none"
                     stroke="rgba(237,0,27,0.32)"
                     strokeWidth="1.2"
                   />
 
-                  {/* كراسي طاولة الاجتماعات الـ 5 */}
-                  <circle cx="500" cy="258" r="11" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
-                  <circle cx="624" cy="340" r="11" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
-                  <circle cx="376" cy="340" r="11" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
-                  <circle cx="572" cy="430" r="11" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
-                  <circle cx="428" cy="430" r="11" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
+                  {/* كراسي طاولة الاجتماعات الستة */}
+                  <circle cx="500" cy="246" r="10" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
+                  <circle cx="624" cy="306" r="10" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
+                  <circle cx="606" cy="392" r="10" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
+                  <circle cx="500" cy="418" r="10" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
+                  <circle cx="394" cy="392" r="10" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
+                  <circle cx="376" cy="306" r="10" fill="#181C28" stroke="rgba(255,255,255,0.15)" />
                 </g>
 
-                {/* لمسات نباتات مكتبية في الزوايا */}
-                <g opacity="0.75">
-                  <circle cx="318" cy="566" r="12" fill="#0f291e" stroke="#10b981" strokeWidth="1" />
-                  <circle cx="682" cy="566" r="12" fill="#0f291e" stroke="#10b981" strokeWidth="1" />
+                {/* ================= ركن الاستراحة والقهوة (أسفل المنتصف) ================= */}
+                <g>
+                  <rect
+                    x="335"
+                    y="498"
+                    width="330"
+                    height="94"
+                    rx="18"
+                    fill="rgba(245,158,11,0.05)"
+                    stroke="rgba(245,158,11,0.3)"
+                    strokeWidth="1.5"
+                    strokeDasharray="5 4"
+                  />
+                  <rect
+                    x="592"
+                    y="514"
+                    width="58"
+                    height="62"
+                    rx="10"
+                    fill="#1C1917"
+                    stroke="rgba(245,158,11,0.42)"
+                  />
+                  <circle
+                    cx="498"
+                    cy="550"
+                    r="22"
+                    fill="#191B24"
+                    stroke="rgba(255,255,255,0.15)"
+                    strokeWidth="1.5"
+                  />
+                  <circle cx="498" cy="550" r="6" fill="rgba(245,158,11,0.38)" />
                 </g>
               </svg>
 
-              {/* ================= طبقة الهوية البصرية التفاعلية (HTML Overlay متزامن بدقة) ================= */}
+              {/* ================= طبقة الهوية البصرية والتسميات ================= */}
 
-              {/* 1. جدار الهوية الرسمي لشعار بلّغني مع إضاءة نيون حمراء (#ED001B) */}
-              <div className="pointer-events-none absolute left-1/2 top-[3.4%] z-10 -translate-x-1/2">
+              {/* جدار الهوية الرسمي لشعار بلّغني مع إضاءة نيون حمراء (#ED001B) */}
+              <div className="pointer-events-none absolute left-1/2 top-[3.2%] z-10 -translate-x-1/2">
                 <div className="flex items-center gap-2.5 rounded-2xl border border-[#ED001B]/60 bg-[#0B0D13]/95 px-4 py-1.5 shadow-[0_0_25px_rgba(237,0,27,0.45)]">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -1152,8 +1333,8 @@ export default function AdminOfficePage() {
                 </div>
               </div>
 
-              {/* 2. شاشة العرض الذكية في غرفة الاجتماعات (تظهر شعار بلّغني وحالة العمليات لحظياً) */}
-              <div className="pointer-events-none absolute left-1/2 top-[19.5%] z-10 w-[26%] -translate-x-1/2">
+              {/* شاشة العرض الذكية في غرفة الاجتماعات */}
+              <div className="pointer-events-none absolute left-1/2 top-[19%] z-10 w-[26%] -translate-x-1/2">
                 <div
                   className={`rounded-2xl border bg-[#090B10]/95 px-3 py-2 text-center shadow-xl transition-all ${
                     isAuditActive || isMeetingActive
@@ -1200,28 +1381,34 @@ export default function AdminOfficePage() {
                 </div>
               </div>
 
-              {/* 3. تسميات الأجنحة والمكاتب وركن القهوة */}
-              {/* جناح كريم الخاص */}
+              {/* تسميات الأجنحة والمكاتب الـ 6 وركن القهوة */}
               <button
                 type="button"
                 onClick={() => karim && setSelectedAgentId(karim.id)}
-                className="absolute right-[3.5%] top-[5.2%] z-10 flex items-center gap-1.5 rounded-lg bg-[#ED001B] px-2.5 py-0.5 text-[10px] font-black text-white shadow-md transition hover:scale-105"
+                className="absolute right-[3.5%] top-[5%] z-10 flex items-center gap-1.5 rounded-lg bg-[#ED001B] px-2.5 py-0.5 text-[10px] font-black text-white shadow-md transition hover:scale-105"
               >
                 <ShieldCheck className="h-3 w-3" />
-                <span>جناح كريم • الأمن والبرمجة والتصميم (+20 سنة)</span>
+                <span>جناح كريم • الأمن والبرمجة والتصميم</span>
               </button>
 
-              {/* تسمية مكتب رامي */}
+              <button
+                type="button"
+                onClick={() => tariq && setSelectedAgentId(tariq.id)}
+                className="absolute right-[3.5%] top-[41.8%] z-10 flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-950/90 px-2.5 py-0.5 text-[10px] font-black text-cyan-200 shadow-md transition hover:scale-105"
+              >
+                <BrainCircuit className="h-3 w-3 text-cyan-300" />
+                <span>مختبر طارق • البحث والمهارات الذاتية</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => rami && setSelectedAgentId(rami.id)}
-                className="absolute left-[3.5%] top-[5.2%] z-10 flex items-center gap-1.5 rounded-lg border border-white/15 bg-[#141824]/90 px-2.5 py-0.5 text-[10px] font-bold text-white/90 transition hover:border-white/40"
+                className="absolute left-[3.5%] top-[5%] z-10 flex items-center gap-1.5 rounded-lg border border-white/15 bg-[#141824]/90 px-2.5 py-0.5 text-[10px] font-bold text-white/90 transition hover:border-white/40"
               >
                 <Crown className="h-3 w-3 text-amber-300" />
                 <span>مكتب رامي • المدير العام</span>
               </button>
 
-              {/* تسمية مكتب ليلى */}
               <button
                 type="button"
                 onClick={() => layla && setSelectedAgentId(layla.id)}
@@ -1231,42 +1418,39 @@ export default function AdminOfficePage() {
                 <span>مكتب ليلى • التسويق</span>
               </button>
 
-              {/* تسمية مكتب عمر */}
               <button
                 type="button"
                 onClick={() => omar && setSelectedAgentId(omar.id)}
-                className="absolute left-[3.5%] bottom-[5%] z-10 flex items-center gap-1.5 rounded-lg border border-white/15 bg-[#141824]/90 px-2.5 py-0.5 text-[10px] font-bold text-white/85 transition hover:border-white/40"
+                className="absolute left-[3.5%] bottom-[4.8%] z-10 flex items-center gap-1.5 rounded-lg border border-white/15 bg-[#141824]/90 px-2.5 py-0.5 text-[10px] font-bold text-white/85 transition hover:border-white/40"
               >
                 <PackageCheck className="h-3 w-3 text-amber-300" />
                 <span>مكتب عمر • العمليات والمخزون</span>
               </button>
 
-              {/* تسمية مكتب سارة */}
               <button
                 type="button"
                 onClick={() => sara && setSelectedAgentId(sara.id)}
-                className="absolute right-[3.5%] bottom-[5%] z-10 flex items-center gap-1.5 rounded-lg border border-white/15 bg-[#141824]/90 px-2.5 py-0.5 text-[10px] font-bold text-white/85 transition hover:border-white/40"
+                className="absolute right-[3.5%] bottom-[4.8%] z-10 flex items-center gap-1.5 rounded-lg border border-white/15 bg-[#141824]/90 px-2.5 py-0.5 text-[10px] font-bold text-white/85 transition hover:border-white/40"
               >
                 <Headphones className="h-3 w-3 text-emerald-300" />
                 <span>مكتب سارة • خدمة العملاء</span>
               </button>
 
-              {/* تسمية ركن القهوة والاستراحة */}
-              <div className="pointer-events-none absolute right-[4%] top-[44.5%] z-10 flex items-center gap-1.5 rounded-lg border border-amber-500/35 bg-amber-950/60 px-2.5 py-0.5 text-[10px] font-bold text-amber-200">
+              <div className="pointer-events-none absolute left-1/2 top-[81.5%] z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-lg border border-amber-500/35 bg-amber-950/75 px-2.5 py-0.5 text-[10px] font-bold text-amber-200">
                 <Coffee className="h-3 w-3 text-amber-400" />
                 <span>ركن القهوة والاستراحة</span>
               </div>
 
-              {/* تسمية طاولة الاجتماعات */}
-              <div className="pointer-events-none absolute left-1/2 top-[55.5%] z-10 -translate-x-1/2 -translate-y-1/2 text-center">
+              <div className="pointer-events-none absolute left-1/2 top-[53.5%] z-10 -translate-x-1/2 -translate-y-1/2 text-center">
                 <p className="text-[10px] font-black tracking-wide text-white/50">
                   طاولة التنسيق والاجتماعات
                 </p>
               </div>
 
-              {/* ================= الشخصيات المتحركة (Realtime Animated Avatars) ================= */}
+              {/* ================= الشخصيات الست المتحركة (Realtime Avatars) ================= */}
               {agents.map((agent) => {
-                const coords = OFFICE_COORDS[agent.role] || OFFICE_COORDS.orchestrator;
+                const coords =
+                  OFFICE_COORDS[agent.role] || OFFICE_COORDS.orchestrator;
                 const Icon = getRoleIcon(agent.role);
                 const st = STATUS_META[agent.status] || STATUS_META.idle;
                 const isSelected = selectedAgentId === agent.id;
@@ -1310,7 +1494,6 @@ export default function AdminOfficePage() {
                     }}
                     className="absolute z-20 -translate-x-1/2 -translate-y-1/2"
                   >
-                    {/* فقاعة الحوار الحية (تظهر أثناء الاجتماع أو التنفيذ النشط) */}
                     <AnimatePresence>
                       {showSpeechBubble && speechText && (
                         <motion.div
@@ -1327,7 +1510,6 @@ export default function AdminOfficePage() {
                       )}
                     </AnimatePresence>
 
-                    {/* مؤثر رادار الفحص الأمني حول الشخصية عند حالة auditing */}
                     {agent.status === "auditing" && (
                       <motion.div
                         animate={{ scale: [1, 1.85], opacity: [0.75, 0] }}
@@ -1340,7 +1522,6 @@ export default function AdminOfficePage() {
                       />
                     )}
 
-                    {/* زر الشخصية القابل للنقر */}
                     <motion.button
                       type="button"
                       onClick={() =>
@@ -1362,7 +1543,6 @@ export default function AdminOfficePage() {
                       }
                       className="group relative flex flex-col items-center focus:outline-none"
                     >
-                      {/* أيقونة الحالة الطافية فوق الرأس (تروس/كود لـ working، درع/رادار لـ auditing، قهوة لـ coffee) */}
                       {agent.status === "working" && (
                         <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-[#ED001B] px-2 py-0.5 text-[9px] font-black text-white shadow-md">
                           <Cog className="h-3 w-3 animate-spin" />
@@ -1382,7 +1562,6 @@ export default function AdminOfficePage() {
                         </span>
                       )}
 
-                      {/* دائرة الأفاتار */}
                       <div
                         className={`relative flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br ${coords.avatarGradient} ring-2 transition-transform group-hover:scale-110 ${
                           isSelected
@@ -1399,7 +1578,6 @@ export default function AdminOfficePage() {
                               : "text-white"
                           }`}
                         />
-                        {/* نقطة الحالة الحية */}
                         <span
                           className={`absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full border-2 border-[#0B0D13] ${
                             st.dotClass
@@ -1407,7 +1585,6 @@ export default function AdminOfficePage() {
                         />
                       </div>
 
-                      {/* بطاقة الاسم والدور تحت الشخصية */}
                       <div className="mt-1.5 rounded-xl border border-white/15 bg-[#0B0D13]/92 px-2.5 py-0.5 text-center shadow-lg backdrop-blur-sm">
                         <p className="text-[11px] font-black leading-tight text-white">
                           {agent.name}
@@ -1438,6 +1615,8 @@ export default function AdminOfficePage() {
                       className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${
                         selectedAgent.role === "principal_architect"
                           ? "bg-[#ED001B] text-white"
+                          : selectedAgent.role === "skills_architect"
+                          ? "bg-cyan-500 text-slate-950"
                           : selectedAgent.role === "orchestrator"
                           ? "bg-white text-[#0B0D13]"
                           : "bg-white/10 text-white"
@@ -1487,6 +1666,8 @@ export default function AdminOfficePage() {
                       <span>
                         {selectedAgent.role === "principal_architect"
                           ? "توجيه أمر مباشر لكريم"
+                          : selectedAgent.role === "skills_architect"
+                          ? "توجيه أمر مباشر لطارق"
                           : `إرسال مهمة إلى ${selectedAgent.name}`}
                       </span>
                     </button>
@@ -1505,13 +1686,79 @@ export default function AdminOfficePage() {
           </AnimatePresence>
         </section>
 
-        {/* 2. لوحة السجل المباشر (Live Feed) + أزرار نسخ الأكواد وفلاتر التصنيف */}
+        {/* شريط المهارات المكتشفة من طارق بانتظار الاعتماد (إن وجدت) */}
+        {pendingSkills.length > 0 && (
+          <section className="rounded-3xl border border-cyan-500/40 bg-gradient-to-l from-cyan-950/35 via-[#111520] to-[#11141E] p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BrainCircuit className="h-4 w-4 text-cyan-400" />
+                <h2 className="text-xs font-black text-white">
+                  مهارات ذاتية جديدة من مختبر طارق بانتظار اعتمادك ({pendingSkills.length})
+                </h2>
+              </div>
+              <span className="text-[10px] font-semibold text-cyan-200/75">
+                عند التفعيل تُدمج المهارة فوراً في system_prompt الموظف
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {pendingSkills.map((sk) => {
+                const targetAgent =
+                  sk.target_agent_id && agentById.get(sk.target_agent_id)
+                    ? agentById.get(sk.target_agent_id)
+                    : agentByRole.get(sk.target_agent_role as AgentRole);
+                const isActivating = activatingSkillId === sk.id;
+                return (
+                  <div
+                    key={sk.id}
+                    className="flex flex-col justify-between gap-2.5 rounded-2xl border border-cyan-500/25 bg-black/35 p-3.5"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-black text-white">
+                          {sk.skill_name}
+                        </span>
+                        <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+                          {targetAgent
+                            ? `تطوير: ${targetAgent.name}`
+                            : "تطوير موقع بلّغني"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-white/75">
+                        {sk.description}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isActivating}
+                      onClick={() => void handleActivateSkill(sk.id)}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#ED001B] px-3 py-2 text-xs font-black text-white shadow-md transition hover:bg-[#c90017] disabled:opacity-60"
+                    >
+                      {isActivating ? (
+                        <>
+                          <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                          <span>جارٍ الدمج والتفعيل...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="h-3.5 w-3.5" />
+                          <span>اعتماد وتفعيل المهارة</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* 2. لوحة السجل المباشر (Live Feed) + أزرار تفعيل المهارات ونسخ الأكواد وفلاتر التصنيف */}
         <section className="flex flex-1 flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#11141E] shadow-2xl">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#151824] px-5 py-3.5">
             <div className="flex items-center gap-2.5">
               <Sparkles className="h-4 w-4 text-[#ED001B]" />
               <h2 className="text-sm font-black text-white">
-                السجل المباشر لنقاشات الفريق والترقيعات (Live Feed)
+                السجل المباشر لنقاشات الفريق والترقيعات والمهارات (Live Feed)
               </h2>
               <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-white/80">
                 {filteredLogs.length}
@@ -1524,7 +1771,7 @@ export default function AdminOfficePage() {
                   { id: "all", label: "الكل" },
                   { id: "security_alert", label: "تنبيهات أمنية" },
                   { id: "code_patch", label: "ترقيعات برمجية" },
-                  { id: "design_proposal", label: "مقترحات تصميم" },
+                  { id: "design_proposal", label: "مهارات وتصميم" },
                   { id: "info", label: "حوارات" },
                 ] as const
               ).map((tab) => (
@@ -1563,7 +1810,11 @@ export default function AdminOfficePage() {
                 const SpeakerIcon = speaker
                   ? getRoleIcon(speaker.role)
                   : Terminal;
-                const parts = parseMessageParts(log.message);
+                const { skillId, cleanMessage } = extractSkillIdFromLog(
+                  log.message
+                );
+                const linkedSkill = skillId ? skillById.get(skillId) : undefined;
+                const parts = parseMessageParts(cleanMessage);
                 const isSecurity = log.log_type === "security_alert";
                 const isCodePatch = log.log_type === "code_patch";
                 const isDesign = log.log_type === "design_proposal";
@@ -1572,7 +1823,9 @@ export default function AdminOfficePage() {
                   <div
                     key={log.id}
                     className={`rounded-2xl border p-4 transition ${
-                      isSecurity
+                      linkedSkill
+                        ? "border-cyan-500/45 bg-cyan-950/20"
+                        : isSecurity
                         ? "border-[#ED001B]/60 bg-[#ED001B]/10"
                         : isCodePatch
                         ? "border-emerald-500/35 bg-[#0D1318]"
@@ -1587,6 +1840,8 @@ export default function AdminOfficePage() {
                           className={`flex h-8 w-8 items-center justify-center rounded-xl ${
                             speaker?.role === "principal_architect"
                               ? "bg-[#ED001B] text-white"
+                              : speaker?.role === "skills_architect"
+                              ? "bg-cyan-500 text-slate-950"
                               : speaker?.role === "orchestrator"
                               ? "bg-white text-[#0B0D13]"
                               : "bg-white/10 text-white"
@@ -1607,19 +1862,25 @@ export default function AdminOfficePage() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {isSecurity && (
+                        {linkedSkill && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/20 px-2.5 py-0.5 text-[10px] font-black text-cyan-200 ring-1 ring-cyan-500/40">
+                            <BrainCircuit className="h-3 w-3" />
+                            مهارة تطويرية ذاتية
+                          </span>
+                        )}
+                        {!linkedSkill && isSecurity && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-[#ED001B] px-2.5 py-0.5 text-[10px] font-black text-white">
                             <ShieldAlert className="h-3 w-3" />
                             تنبيه / تشخيص أمني
                           </span>
                         )}
-                        {isCodePatch && (
+                        {!linkedSkill && isCodePatch && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-black text-emerald-300 ring-1 ring-emerald-500/40">
                             <FileCode2 className="h-3 w-3" />
                             ترقيع برمجي جاهز
                           </span>
                         )}
-                        {isDesign && (
+                        {!linkedSkill && isDesign && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-fuchsia-500/20 px-2.5 py-0.5 text-[10px] font-black text-fuchsia-200 ring-1 ring-fuchsia-500/40">
                             <Palette className="h-3 w-3" />
                             مقترح تصميم UI/UX
@@ -1690,6 +1951,39 @@ export default function AdminOfficePage() {
                           </p>
                         )
                       )}
+
+                      {/* زر اعتماد وتفعيل المهارة داخل بطاقة السجل المباشر */}
+                      {linkedSkill && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3">
+                          {linkedSkill.status === "active" ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300">
+                              <CheckCircle2 className="h-4 w-4" />
+                              تم اعتماد وتفعيل المهارة ودمجها تلقائياً في تعليمات الموظف ✓
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={activatingSkillId === linkedSkill.id}
+                              onClick={() =>
+                                void handleActivateSkill(linkedSkill.id)
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#ED001B] px-4 py-2 text-xs font-black text-white shadow-md transition hover:bg-[#c90017] disabled:opacity-60"
+                            >
+                              {activatingSkillId === linkedSkill.id ? (
+                                <>
+                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                  <span>جارٍ دمج المهارة في قاعدة البيانات...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Zap className="h-3.5 w-3.5" />
+                                  <span>اعتماد وتفعيل المهارة</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1704,11 +1998,11 @@ export default function AdminOfficePage() {
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-[#0B0D13]/95 backdrop-blur-xl">
         <div className="mx-auto max-w-7xl space-y-2.5 px-4 py-3.5 sm:px-6">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex rounded-xl border border-white/10 bg-[#131620] p-1">
+            <div className="inline-flex flex-wrap rounded-xl border border-white/10 bg-[#131620] p-1">
               <button
                 type="button"
                 onClick={() => setTargetRole("orchestrator")}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-black transition ${
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition ${
                   targetRole === "orchestrator"
                     ? "bg-white text-[#0B0D13]"
                     : "text-white/65 hover:text-white"
@@ -1720,18 +2014,30 @@ export default function AdminOfficePage() {
               <button
                 type="button"
                 onClick={() => setTargetRole("principal_architect")}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-black transition ${
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition ${
                   targetRole === "principal_architect"
                     ? "bg-[#ED001B] text-white"
                     : "text-white/65 hover:text-white"
                 }`}
               >
                 <ShieldCheck className="h-3.5 w-3.5" />
-                أمر مباشر لكريم (الأمن والبرمجة)
+                مباشر لكريم (الأمن والبرمجة)
+              </button>
+              <button
+                type="button"
+                onClick={() => setTargetRole("skills_architect")}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition ${
+                  targetRole === "skills_architect"
+                    ? "bg-cyan-500 text-slate-950"
+                    : "text-white/65 hover:text-white"
+                }`}
+              >
+                <BrainCircuit className="h-3.5 w-3.5" />
+                مباشر لطارق (المهارات)
               </button>
             </div>
 
-            <div className="hidden flex-wrap items-center gap-1.5 md:flex">
+            <div className="hidden flex-wrap items-center gap-1.5 lg:flex">
               {QUICK_COMMANDS.map((q) => (
                 <button
                   key={q.label}
@@ -1742,7 +2048,11 @@ export default function AdminOfficePage() {
                     setCommandInput(q.command);
                     commandInputRef.current?.focus();
                   }}
-                  className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-bold text-white/75 transition hover:border-[#ED001B]/50 hover:bg-[#ED001B]/10 hover:text-white disabled:opacity-50"
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-bold transition disabled:opacity-50 ${
+                    q.target === "skills_architect"
+                      ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20"
+                      : "border-white/10 bg-white/5 text-white/75 hover:border-[#ED001B]/50 hover:bg-[#ED001B]/10 hover:text-white"
+                  }`}
                 >
                   {q.label}
                 </button>
@@ -1760,6 +2070,8 @@ export default function AdminOfficePage() {
               placeholder={
                 targetRole === "principal_architect"
                   ? "اكتب أمراً مباشراً إلى كريم (فحص ثغرات، RLS، كود، أو تحسين UI/UX)..."
+                  : targetRole === "skills_architect"
+                  ? "اكتب أمراً مباشراً إلى طارق للبحث عن مهارات جديدة وتطوير قدرات الفريق والموقع..."
                   : "اكتب أمرك التنفيذي إلى رامي المدير العام ليوزعه على الفريق..."
               }
               className="h-12 flex-1 rounded-2xl border border-white/15 bg-[#131620] px-4 text-sm text-white placeholder:text-white/40 focus:border-[#ED001B] focus:outline-none focus:ring-2 focus:ring-[#ED001B]/30 disabled:opacity-60"

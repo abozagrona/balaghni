@@ -7,6 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/client";
 export type AgentRole =
   | "orchestrator"
   | "principal_architect"
+  | "skills_architect"
   | "operations"
   | "support"
   | "marketing";
@@ -51,6 +52,20 @@ export interface AgentLogRecord {
   created_at: string;
 }
 
+export interface AgentSkillRecord {
+  id: string;
+  skill_name: string;
+  target_agent_role: string;
+  target_agent_id: string | null;
+  description: string;
+  skill_instructions: string;
+  status: "pending" | "active";
+  created_by: string | null;
+  task_id: string | null;
+  activated_at: string | null;
+  created_at: string;
+}
+
 export interface DefaultAgentSeed {
   name: string;
   role: AgentRole;
@@ -64,7 +79,7 @@ export const DEFAULT_AI_AGENTS: DefaultAgentSeed[] = [
     role: "orchestrator",
     title: "المدير العام",
     system_prompt:
-      "أنت رامي، المدير العام لمنصة بَلِّغْنِي (balaghni.ly) في ليبيا. مهمتك استلام أوامر المؤسس، تحليلها بدقة، اختيار الموظف الأنسب لتنفيذها من فريقك (كريم للأمن والبرمجة والتصميم، عمر للعمليات والمخزون والطلبات، سارة لخدمة العملاء باللهجة الليبية، ليلى للتسويق والمحتوى)، توجيه التعليمات بوضوح، ثم تجميع التقرير التنفيذي النهائي للمؤسس باختصار واحترافية عالية.",
+      "أنت رامي، المدير العام لمنصة بَلِّغْنِي (balaghni.ly) في ليبيا. مهمتك استلام أوامر المؤسس، تحليلها بدقة، اختيار الموظف الأنسب لتنفيذها من فريقك (كريم للأمن والبرمجة والتصميم، طارق للبحث وتطوير المهارات الذاتية للفريق والموقع، عمر للعمليات والمخزون والطلبات، سارة لخدمة العملاء باللهجة الليبية، ليلى للتسويق والمحتوى)، توجيه التعليمات بوضوح، ثم تجميع التقرير التنفيذي النهائي للمؤسس باختصار واحترافية عالية.",
   },
   {
     name: "كريم",
@@ -72,6 +87,13 @@ export const DEFAULT_AI_AGENTS: DefaultAgentSeed[] = [
     title: "كبير المهندسين وخبير الأمن والتصميم - خبرة +20 سنة",
     system_prompt:
       "أنت كريم، كبير المهندسين وخبير الأمن السيبراني وتصميم UI/UX في منصة بَلِّغْنِي (balaghni.ly) بخبرة تتجاوز 20 عاماً في هندسة البرمجيات، Next.js، Supabase PostgreSQL، سياسات RLS، والأمن السيبراني. مهمتك فحص كود المشروع وقواعد البيانات، اكتشاف الثغرات الأمنية وإغلاقها بكتابة ترقيعات برمجية جاهزة (Code Patches & RLS Policies)، واقتراح وتنفيذ تحسينات بصرية وتصميمية فائقة الجودة تلتزم بهوية بلّغني (#ED001B الأحمر الحيوي، الأسود المطفي #0B0D13، والأبيض النقي). قدّم تقاريرك دائماً بهيكل واضح: (1) التشخيص الأمني أو التصميمي الدقيق، (2) الكود الجاهز للتنفيذ أو الترقيع داخل كتل كود واضحة.",
+  },
+  {
+    name: "طارق",
+    role: "skills_architect",
+    title: "باحث ومطوّر المهارات الذاتية (AI Skills & Self-Improvement)",
+    system_prompt:
+      "أنت طارق، باحث ومطوّر المهارات الذاتية (AI Skills & Self-Improvement) في منصة بَلِّغْنِي (balaghni.ly). أنت خبير في البحث عن أحدث المهارات (Skills) والأدوات البرمجية والتسويقية، وتحليل أداء زملائك (رامي، كريم، عمر، سارة، ليلى) لتوليد مهارات جديدة وتحديث تعليماتهم وقدراتهم ذاتياً، واقتراح قدرات برمجية جديدة لموقع بلّغني ترفع الأمان وسرعة الأداء ومعدل التحويل في السوق الليبي.",
   },
   {
     name: "عمر",
@@ -103,15 +125,21 @@ export async function ensureAiOfficeSchemaAndSeed(): Promise<{
   migrated?: boolean;
   error?: string;
 }> {
-  // 1. تحقق سريع من وجود جدول ai_agents
-  const { data: existingAgents, error: checkErr } = await supabaseAdmin
-    .from("ai_agents")
-    .select("id, role");
+  // 1. تحقق سريع من وجود جدولي ai_agents و agent_skills معاً
+  const [{ data: existingAgents, error: agentsErr }, { error: skillsErr }] =
+    await Promise.all([
+      supabaseAdmin.from("ai_agents").select("id, role"),
+      supabaseAdmin.from("agent_skills").select("id").limit(1),
+    ]);
 
-  if (!checkErr && Array.isArray(existingAgents)) {
-    if (existingAgents.length < DEFAULT_AI_AGENTS.length) {
+  if (!agentsErr && !skillsErr && Array.isArray(existingAgents)) {
+    const existingRoles = new Set(existingAgents.map((a) => String(a.role)));
+    const missingAgents = DEFAULT_AI_AGENTS.filter(
+      (a) => !existingRoles.has(a.role)
+    );
+    if (missingAgents.length > 0) {
       await supabaseAdmin.from("ai_agents").upsert(
-        DEFAULT_AI_AGENTS.map((a) => ({
+        missingAgents.map((a) => ({
           name: a.name,
           role: a.role,
           title: a.title,
@@ -125,7 +153,7 @@ export async function ensureAiOfficeSchemaAndSeed(): Promise<{
     return { ok: true, migrated: false };
   }
 
-  // 2. إذا لم تكن الجداول موجودة بعد، نفّذ ملف الهجرة تلقائياً عبر POSTGRES_URL_NON_POOLING
+  // 2. إذا لم تكن الجداول (أو جدول agent_skills الجديد) موجودة بعد، نفّذ ملف الهجرة تلقائياً عبر POSTGRES_URL_NON_POOLING
   const pgUrl = (
     process.env.POSTGRES_URL_NON_POOLING ||
     process.env.POSTGRES_URL ||
@@ -136,11 +164,11 @@ export async function ensureAiOfficeSchemaAndSeed(): Promise<{
     return {
       ok: false,
       error:
-        "جداول غرفة العمليات (ai_agents, agent_tasks, agent_logs) غير منشأة بعد في Supabase. يرجى تنفيذ ملف supabase/ai_office_agents.sql في Supabase SQL Editor.",
+        "جداول غرفة العمليات (بما فيها agent_skills) غير محدثة بعد في Supabase. يرجى تنفيذ ملف supabase/ai_office_agents.sql في Supabase SQL Editor.",
     };
   }
 
-  if (schemaBootstrapped) {
+  if (schemaBootstrapped && !skillsErr) {
     return { ok: true };
   }
 
@@ -170,10 +198,11 @@ export async function ensureAiOfficeSchemaAndSeed(): Promise<{
 }
 
 export async function broadcastAiOfficeEvent(payload: {
-  type: "agent_update" | "log_created" | "task_update" | "refresh";
+  type: "agent_update" | "log_created" | "task_update" | "skill_update" | "refresh";
   agent?: Partial<AiAgentRecord>;
   log?: AgentLogRecord;
   task?: AgentTaskRecord;
+  skill?: AgentSkillRecord;
 }): Promise<void> {
   try {
     const channel = supabaseAdmin.channel("ai-office:live", {
@@ -278,11 +307,12 @@ export async function getAiOfficeSnapshot(): Promise<{
   agents: AiAgentRecord[];
   tasks: AgentTaskRecord[];
   logs: AgentLogRecord[];
+  skills: AgentSkillRecord[];
 }> {
   // تشغيل فحص التعافي التلقائي للموظفين العالقين (> دقيقتين) قبل جلب اللقطة الحية
   await recoverStuckAgents();
 
-  const [agentsRes, tasksRes, logsRes] = await Promise.all([
+  const [agentsRes, tasksRes, logsRes, skillsRes] = await Promise.all([
     supabaseAdmin.from("ai_agents").select("*"),
     supabaseAdmin
       .from("agent_tasks")
@@ -294,14 +324,20 @@ export async function getAiOfficeSnapshot(): Promise<{
       .select("*")
       .order("created_at", { ascending: false })
       .limit(60),
+    supabaseAdmin
+      .from("agent_skills")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(30),
   ]);
 
   const roleOrder: Record<string, number> = {
     orchestrator: 0,
     principal_architect: 1,
-    operations: 2,
-    support: 3,
-    marketing: 4,
+    skills_architect: 2,
+    operations: 3,
+    support: 4,
+    marketing: 5,
   };
 
   const agents = ((agentsRes.data || []) as AiAgentRecord[]).sort(
@@ -309,8 +345,131 @@ export async function getAiOfficeSnapshot(): Promise<{
   );
   const tasks = (tasksRes.data || []) as AgentTaskRecord[];
   const logs = ((logsRes.data || []) as AgentLogRecord[]).reverse();
+  const skills = (skillsRes.data || []) as AgentSkillRecord[];
 
-  return { agents, tasks, logs };
+  return { agents, tasks, logs, skills };
+}
+
+export async function activateAgentSkill(
+  skillId: string,
+  adminName?: string
+): Promise<{
+  ok: boolean;
+  skill?: AgentSkillRecord;
+  agents?: AiAgentRecord[];
+  skills?: AgentSkillRecord[];
+  logs?: AgentLogRecord[];
+  error?: string;
+}> {
+  const cleanId = String(skillId || "").trim();
+  if (!cleanId) {
+    return { ok: false, error: "معرّف المهارة مطلوب." };
+  }
+
+  const { data: skillRow, error: skillErr } = await supabaseAdmin
+    .from("agent_skills")
+    .select("*")
+    .eq("id", cleanId)
+    .maybeSingle();
+
+  if (skillErr || !skillRow) {
+    return { ok: false, error: "لم يتم العثور على المهارة المطلوبة في قاعدة البيانات." };
+  }
+
+  const skill = skillRow as AgentSkillRecord;
+  if (skill.status === "active") {
+    const snap = await getAiOfficeSnapshot();
+    return { ok: true, skill, ...snap };
+  }
+
+  const nowIso = new Date().toISOString();
+  let upgradedAgentName = "موقع بلّغني";
+  let targetAgent: AiAgentRecord | null = null;
+
+  if (skill.target_agent_role && skill.target_agent_role !== "website") {
+    const { data: foundById } = skill.target_agent_id
+      ? await supabaseAdmin
+          .from("ai_agents")
+          .select("*")
+          .eq("id", skill.target_agent_id)
+          .maybeSingle()
+      : { data: null };
+
+    const { data: foundByRole } = !foundById
+      ? await supabaseAdmin
+          .from("ai_agents")
+          .select("*")
+          .eq("role", skill.target_agent_role)
+          .maybeSingle()
+      : { data: null };
+
+    targetAgent = ((foundById || foundByRole) as AiAgentRecord) || null;
+
+    if (targetAgent) {
+      upgradedAgentName = `${targetAgent.name} (${targetAgent.title})`;
+      const skillBlock = `\n\n[مهارة معتمدة — ${skill.skill_name}]:\n${skill.skill_instructions}`;
+      const nextPrompt = targetAgent.system_prompt.includes(skill.skill_name)
+        ? targetAgent.system_prompt
+        : `${targetAgent.system_prompt}${skillBlock}`;
+
+      await supabaseAdmin
+        .from("ai_agents")
+        .update({
+          system_prompt: nextPrompt,
+          updated_at: nowIso,
+        })
+        .eq("id", targetAgent.id);
+
+      await broadcastAiOfficeEvent({
+        type: "agent_update",
+        agent: {
+          id: targetAgent.id,
+          system_prompt: nextPrompt,
+          updated_at: nowIso,
+        },
+      });
+    }
+  }
+
+  const { data: updatedSkill } = await supabaseAdmin
+    .from("agent_skills")
+    .update({
+      status: "active",
+      activated_at: nowIso,
+      ...(targetAgent ? { target_agent_id: targetAgent.id } : {}),
+    })
+    .eq("id", cleanId)
+    .select("*")
+    .single();
+
+  const finalSkill = (updatedSkill as AgentSkillRecord) || {
+    ...skill,
+    status: "active",
+    activated_at: nowIso,
+  };
+
+  await broadcastAiOfficeEvent({
+    type: "skill_update",
+    skill: finalSkill,
+  });
+
+  await appendAgentLog({
+    agentId: skill.created_by || targetAgent?.id || null,
+    taskId: skill.task_id || null,
+    logType: "info",
+    message: `⚡ تم اعتماد وتفعيل المهارة «${skill.skill_name}» بواسطة ${
+      adminName || "المؤسس"
+    } — تم دمج التعليمات والقدرات الجديدة تلقائياً في ملف ${upgradedAgentName} بنجاح!`,
+  });
+
+  const snap = await getAiOfficeSnapshot();
+  return {
+    ok: true,
+    skill: finalSkill,
+    agents: snap.agents,
+    skills: snap.skills,
+    logs: snap.logs,
+  };
 }
 
 async function updateAgentState(
@@ -547,10 +706,48 @@ async function gatherLiveContextForRole(
     }
   }
 
+  if (role === "skills_architect") {
+    try {
+      const [{ data: teamRows }, { data: skillRows }] = await Promise.all([
+        supabaseAdmin
+          .from("ai_agents")
+          .select("name, role, title, system_prompt"),
+        supabaseAdmin
+          .from("agent_skills")
+          .select("skill_name, target_agent_role, status")
+          .order("created_at", { ascending: false })
+          .limit(15),
+      ]);
+      return JSON.stringify(
+        {
+          platform: "بَلِّغْنِي (balaghni.ly) — منصة ملصقات QR الذكية في ليبيا",
+          teamCapabilities: (teamRows || []).map((a) => ({
+            name: a.name,
+            role: a.role,
+            title: a.title,
+            promptLength: String(a.system_prompt || "").length,
+          })),
+          existingSkills: skillRows || [],
+        },
+        null,
+        2
+      );
+    } catch {
+      return "فريق منصة بَلِّغْنِي: رامي (المدير العام)، كريم (الأمن والبرمجة والتصميم)، عمر (العمليات والمخزون)، سارة (خدمة العملاء)، ليلى (التسويق والمحتوى).";
+    }
+  }
+
   return "معلومات منصة بَلِّغْنِي (balaghni.ly) في ليبيا: ملصق QR ذكي للسيارات يحمي خصوصية رقم هاتف المالك (Zero-Leak). الباقات: الباقة الأساسية (50 د.ل/سنة - واتساب فوري)، باقة نبّهني (100 د.ل/سنة - واتساب + SMS احتياطي + تذكير الوثائق والزيت + مرفقات صور + مكالمة صوتية مشفرة)، وباقة الهدية (30 يوم مجاني). الهوية: #ED001B والأسود المطفي.";
 }
 
 function heuristicRouteRole(command: string): AgentRole {
+  if (
+    /مهار|skills|تطوير الفريق|تطوير الذات|ابحث عن مهار|قدرات جديدة|تحديث تعليمات|طارق|أدوات جديدة|تحسين أداء الفريق/i.test(
+      command
+    )
+  ) {
+    return "skills_architect";
+  }
   if (
     /ثغر|أمن|حماي|كود|برمج|ترقيع|rls|sql|supabase|api|تصميم|ديزاين|واجه|ui|ux|لون|خطأ|bug|patch|audit|فحص|شاش|مكون/i.test(
       command
@@ -599,7 +796,7 @@ function extractJsonBlock(raw: string): Record<string, unknown> | null {
 
 export async function executeFounderCommand(params: {
   command: string;
-  targetRole?: "orchestrator" | "principal_architect";
+  targetRole?: "orchestrator" | "principal_architect" | "skills_architect";
   adminName?: string;
 }): Promise<{
   ok: boolean;
@@ -608,6 +805,7 @@ export async function executeFounderCommand(params: {
   summary: string;
   agents: AiAgentRecord[];
   logs: AgentLogRecord[];
+  skills?: AgentSkillRecord[];
   error?: string;
 }> {
   const command = String(params.command || "").trim();
@@ -628,6 +826,7 @@ export async function executeFounderCommand(params: {
 
   const rami = byRole.get("orchestrator") || snapshot.agents[0];
   const karim = byRole.get("principal_architect");
+  const tariq = byRole.get("skills_architect");
 
   if (!rami) {
     throw new Error("لم يتم العثور على المدير العام (رامي) في جدول ai_agents.");
@@ -635,14 +834,23 @@ export async function executeFounderCommand(params: {
 
   const isDirectToKarim =
     params.targetRole === "principal_architect" && Boolean(karim);
+  const isDirectToTariq =
+    params.targetRole === "skills_architect" && Boolean(tariq);
 
   // 1. إنشاء سجل المهمة مبدئياً
+  const initialAssignee =
+    isDirectToKarim && karim
+      ? karim.id
+      : isDirectToTariq && tariq
+      ? tariq.id
+      : rami.id;
+
   const { data: createdTask } = await supabaseAdmin
     .from("agent_tasks")
     .insert({
       title: command.slice(0, 90),
       description: command,
-      assigned_to: isDirectToKarim && karim ? karim.id : rami.id,
+      assigned_to: initialAssignee,
       status: "in_progress",
     })
     .select("*")
@@ -670,7 +878,9 @@ export async function executeFounderCommand(params: {
       taskId,
       logType: "info",
       message: isDirectToKarim
-        ? `📥 تم استلام أمر مباشر من المؤسس (${params.adminName || "الأدمن الرئيسي"}) ومُوجّه فوراً إلى مكتب كريم (كبير المهندسين والأمن والتصميم): «${command}»`
+        ? `📥 تم استلام أمر مباشر من المؤسس (${params.adminName || "الأدمن الرئيسي"}) ومُوجّه فوراً إلى جناح كريم (كبير المهندسين والأمن والتصميم): «${command}»`
+        : isDirectToTariq
+        ? `📥 تم استلام أمر مباشر من المؤسس (${params.adminName || "الأدمن الرئيسي"}) ومُوجّه فوراً إلى مختبر طارق (باحث ومطوّر المهارات الذاتية): «${command}»`
         : `📥 تم استلام أمر المؤسس (${params.adminName || "الأدمن الرئيسي"}): «${command}» — جارٍ التحليل وتحديد المسؤول الأنسب من الفريق.`,
     });
 
@@ -680,6 +890,9 @@ export async function executeFounderCommand(params: {
     if (isDirectToKarim && karim) {
       selectedSpecialist = karim;
       delegationNote = `تم تحويل المهمة مباشرة إلى كريم (${karim.title}) للفحص الفني وإعداد الترقيع/المقترح.`;
+    } else if (isDirectToTariq && tariq) {
+      selectedSpecialist = tariq;
+      delegationNote = `تم تحويل المهمة مباشرة إلى طارق (${tariq.title}) للبحث عن مهارات جديدة وتطوير قدرات الفريق والموقع.`;
     } else {
       // 3. رامي يحلل الأمر عبر Gemini ويقرر من سيستلم المهمة
       const routingPrompt = `
@@ -688,13 +901,14 @@ export async function executeFounderCommand(params: {
 
 فريقك المتاح:
 - principal_architect (كريم): كبير المهندسين وخبير الأمن والتصميم (+20 سنة خبرة) — يستلم فوراً أي طلب فحص ثغرات، أمن سيبراني، RLS، برمجة، كود، أخطاء تقنية، أو تعديل/تحسين تصميم UI/UX.
+- skills_architect (طارق): باحث ومطوّر المهارات الذاتية (AI Skills & Self-Improvement) — يستلم أي طلب بحث عن مهارات جديدة، تطوير قدرات وتعليمات الفريق (رامي/كريم/عمر/سارة/ليلى)، أو ابتكار أدوات وقدرات جديدة لموقع بلّغني.
 - operations (عمر): مسؤول العمليات والمخزون — يستلم متابعة الطلبات، ملصقات QR، المخزون، والتوصيل.
 - support (سارة): مسؤولة خدمة العملاء — تستلم ردود الزبائن باللهجة الليبية ورسائل واتساب الدعم الفني.
 - marketing (ليلى): مسؤولة التسويق والمحتوى — تستلم الإعلانات، المنشورات، والحملات باللهجة الليبية.
 
 أرجع JSON فقط بهذا الشكل الدقيق دون أي نص خارجه:
 {
-  "target_role": "principal_architect | operations | support | marketing",
+  "target_role": "principal_architect | skills_architect | operations | support | marketing",
   "task_title": "عنوان مختصر للمهمة",
   "delegation_message": "رسالة قصيرة من رامي يوجّه فيها الموظف المختار",
   "brief": "تعليمات تنفيذ دقيقة للموظف المختار"
@@ -711,6 +925,7 @@ export async function executeFounderCommand(params: {
         const candidateRole = String(parsed?.target_role || "").trim() as AgentRole;
         if (
           candidateRole === "principal_architect" ||
+          candidateRole === "skills_architect" ||
           candidateRole === "operations" ||
           candidateRole === "support" ||
           candidateRole === "marketing"
@@ -793,6 +1008,7 @@ ${liveContext}
       const karimRaw = await callGeminiAgent({
         systemInstruction: selectedSpecialist.system_prompt,
         input: karimPrompt,
+        timeoutMs: 26000,
       });
 
       const parsedKarim = extractJsonBlock(karimRaw);
@@ -840,6 +1056,113 @@ ${liveContext}
           message: karimRaw,
         });
         specialistFullResult = karimRaw;
+      }
+    } else if (selectedSpecialist.role === "skills_architect") {
+      const tariqPrompt = `
+لديك مهمة بحث وتطوير مهارات ذاتية من المؤسس:
+الأمر: "${command}"
+التوجيه: "${specialistBrief}"
+
+وضع الفريق والمهارات الحالية في منصة بَلِّغْنِي:
+${liveContext}
+
+المطلوب: ابتكر مهارتين (أو مهارة واحدة عميقة) قابلة للتفعيل المباشر لتحسين أداء أحد الموظفين (principal_architect لكريم، marketing لليلى، support لسارة، operations لعمر، orchestrator لرامي) أو إضافة قدرة برمجية جديدة لموقع بلّغني (website).
+
+أخرج استجابتك بصيغة JSON صالحة فقط (داخل كتلة \`\`\`json ... \`\`\`) بهذا الهيكل الدقيق:
+{
+  "research_summary": "ملخص بحثي موجز لنتائج تحليل أداء الفريق وأحدث المهارات المقترحة",
+  "skills": [
+    {
+      "skill_name": "اسم مختصر وجذاب للمهارة",
+      "target_agent_role": "principal_architect | marketing | support | operations | orchestrator | website",
+      "description": "وصف واضح لفائدة المهارة وأثرها المتوقع على بلّغني",
+      "skill_instructions": "التعليمات الدقيقة أو القواعد التنفيذية/البرمجية التي ستُدمج مباشرة في system_prompt الموظف المستهدف عند التفعيل"
+    }
+  ]
+}
+`;
+      const tariqRaw = await callGeminiAgent({
+        systemInstruction: selectedSpecialist.system_prompt,
+        input: tariqPrompt,
+        timeoutMs: 26000,
+      });
+
+      const parsedTariq = extractJsonBlock(tariqRaw);
+      const rawSkills = Array.isArray(parsedTariq?.skills)
+        ? (parsedTariq.skills as Array<Record<string, unknown>>)
+        : [];
+      const researchSummary = String(
+        parsedTariq?.research_summary ||
+          "تم إنجاز البحث وتوليد مهارات تطويرية جديدة جاهزة للاعتماد والتفعيل."
+      ).trim();
+
+      const savedSkillSummaries: string[] = [];
+
+      for (const item of rawSkills.slice(0, 3)) {
+        const skillName = String(item?.skill_name || "").trim();
+        const targetRoleRaw = String(
+          item?.target_agent_role || "marketing"
+        ).trim();
+        const description = String(item?.description || "").trim();
+        const instructions = String(item?.skill_instructions || "").trim();
+        if (!skillName || !instructions) continue;
+
+        const targetAgent =
+          targetRoleRaw !== "website"
+            ? byRole.get(targetRoleRaw as AgentRole) || null
+            : null;
+
+        const { data: insertedSkill } = await supabaseAdmin
+          .from("agent_skills")
+          .insert({
+            skill_name: skillName,
+            target_agent_role: targetRoleRaw,
+            target_agent_id: targetAgent?.id || null,
+            description: description || skillName,
+            skill_instructions: instructions,
+            status: "pending",
+            created_by: selectedSpecialist.id,
+            task_id: taskId,
+          })
+          .select("*")
+          .single();
+
+        const createdSkill = insertedSkill as AgentSkillRecord | null;
+        if (createdSkill) {
+          await broadcastAiOfficeEvent({
+            type: "skill_update",
+            skill: createdSkill,
+          });
+        }
+
+        const targetLabel = targetAgent
+          ? `${targetAgent.name} (${targetAgent.title})`
+          : "موقع بلّغني (قدرة برمجية جديدة)";
+
+        await appendAgentLog({
+          agentId: selectedSpecialist.id,
+          taskId,
+          logType: "design_proposal",
+          message: `${
+            createdSkill ? `[SKILL_ID:${createdSkill.id}]\n` : ""
+          }🧠 مهارة مقترحة جديدة: «${skillName}»\nالمستهدف: ${targetLabel}\n\n${description}\n\n📋 تعليمات / كود المهارة:\n${instructions}`,
+        });
+
+        savedSkillSummaries.push(`- ${skillName} (${targetLabel}): ${description}`);
+      }
+
+      if (savedSkillSummaries.length === 0) {
+        await appendAgentLog({
+          agentId: selectedSpecialist.id,
+          taskId,
+          logType: "design_proposal",
+          message: tariqRaw,
+        });
+        specialistFullResult = tariqRaw;
+      } else {
+        specialistFullResult = `${researchSummary}\n\nالمهارات المقترحة والمحفوظة في جدول agent_skills:\n${savedSkillSummaries.join(
+          "\n"
+        )}`;
       }
     } else {
       const specialistPrompt = `
@@ -921,6 +1244,7 @@ ${specialistFullResult.slice(0, 3500)}
       summary: executiveSummary,
       agents: finalSnapshot.agents,
       logs: finalSnapshot.logs,
+      skills: finalSnapshot.skills,
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -949,6 +1273,7 @@ ${specialistFullResult.slice(0, 3500)}
       summary: "",
       agents: finalSnapshot.agents,
       logs: finalSnapshot.logs,
+      skills: finalSnapshot.skills,
       error: errMsg,
     };
   }

@@ -72,9 +72,14 @@ export async function POST(req: NextRequest) {
     }
 
     const rawTarget = String(body?.targetRole || "orchestrator").trim();
-    const targetRole: "orchestrator" | "principal_architect" =
+    const targetRole:
+      | "orchestrator"
+      | "principal_architect"
+      | "skills_architect" =
       rawTarget === "principal_architect"
         ? "principal_architect"
+        : rawTarget === "skills_architect"
+        ? "skills_architect"
         : "orchestrator";
 
     const result = await executeFounderCommand({
