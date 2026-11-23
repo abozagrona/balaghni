@@ -27,11 +27,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { LibyaPhoneInput } from "@/components/ui/libya-phone-input";
 import {
-  supabaseRealtime,
-  parseReportStatusFromRow,
-  type ReportRealtimePayload,
-} from "@/lib/supabase/realtime";
-import {
   FlaggedNotePreview,
   type FlaggedSpan,
 } from "@/components/scan/flagged-note-preview";
@@ -160,6 +155,7 @@ export function ScanForm({
     React.useState<MediaStream | null>(null);
 
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const [reportAccessToken, setReportAccessToken] = React.useState<string | null>(null);
   const [moderationState, setModerationState] =
     React.useState<ModerationModalState | null>(null);
 
@@ -250,61 +246,25 @@ export function ScanForm({
 
     const hasRealReportId = Boolean(reportId && !reportId.startsWith("rep_"));
     const normalizedTag = tagCode.trim().toUpperCase();
-    const channelName = hasRealReportId
-      ? `report-live:${reportId}`
-      : `report-tag:${normalizedTag}`;
-    const pgFilter = hasRealReportId
-      ? `id=eq.${reportId}`
-      : `tag_code=eq.${normalizedTag}`;
 
-    const channel = supabaseRealtime
-      .channel(channelName)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "reports",
-          filter: pgFilter,
-        },
-        (payload) => {
-          const row = (payload.new || {}) as Record<string, unknown>;
-          if (hasRealReportId && row.id && String(row.id) !== String(reportId)) {
-            return;
-          }
-          const parsed = parseReportStatusFromRow(
-            typeof row.reason_badge === "string" ? row.reason_badge : null,
-            typeof row.message === "string" ? row.message : null
-          );
-          applyRealtimeState(parsed);
-        }
-      )
-      .on("broadcast", { event: "report_update" }, ({ payload }) => {
-        const data = (payload || {}) as Partial<ReportRealtimePayload>;
-        if (
-          hasRealReportId &&
-          data.reportId &&
-          String(data.reportId) !== String(reportId)
-        ) {
-          return;
-        }
-        applyRealtimeState({
-          deliveryStatus: data.deliveryStatus,
-          ownerReply: data.ownerReply ?? null,
-          isSmsFallback: Boolean(data.isSmsFallback),
-        });
-      })
-      .subscribe();
+    if (!hasRealReportId || !reportAccessToken) {
+      return;
+    }
 
     let stopped = false;
-    const silentFallbackInterval = window.setInterval(async () => {
+    const pollStatus = async () => {
       if (stopped) return;
       try {
         const res = await fetch(
           `/api/notify?tagCode=${encodeURIComponent(
             normalizedTag
           )}&reportId=${encodeURIComponent(reportId || "")}`,
-          { cache: "no-store" }
+          {
+            cache: "no-store",
+            headers: {
+              "x-report-token": reportAccessToken,
+            },
+          }
         );
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) return;
@@ -325,14 +285,18 @@ export function ScanForm({
       } catch {
         // ignore transient fallback fetch error
       }
-    }, 4000);
+    };
+
+    void pollStatus();
+    const silentFallbackInterval = window.setInterval(() => {
+      void pollStatus();
+    }, 3500);
 
     return () => {
       stopped = true;
       window.clearInterval(silentFallbackInterval);
-      void supabaseRealtime.removeChannel(channel);
     };
-  }, [isSuccess, tagCode, reportId]);
+  }, [isSuccess, tagCode, reportId, reportAccessToken]);
 
   // استعادة حالة القفل النهائي في الجلسة إن وجدت
   React.useEffect(() => {
@@ -374,12 +338,20 @@ export function ScanForm({
       return;
     }
 
+    if (!reportAccessToken) {
+      setReminderError("انتهت جلسة البلاغ. يرجى إعادة المحاولة من صفحة البلاغ.");
+      return;
+    }
+
     setIsSendingReminder(true);
     setReminderError(null);
     try {
       const res = await fetch("/api/notify/remind", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-report-token": reportAccessToken,
+        },
         body: JSON.stringify({ tagCode, reportId }),
       });
       const data = await res.json().catch(() => ({}));
@@ -417,6 +389,10 @@ export function ScanForm({
 
   const handleInitiateVoiceCall = async () => {
     if (isStartingCall || activeCallCode) return;
+    if (!reportAccessToken) {
+      setReminderError("انتهت جلسة البلاغ. يرجى إعادة المحاولة من صفحة البلاغ.");
+      return;
+    }
     setIsStartingCall(true);
     setReminderError(null);
 
@@ -440,7 +416,10 @@ export function ScanForm({
     try {
       const res = await fetch("/api/notify/call", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-report-token": reportAccessToken,
+        },
         body: JSON.stringify({ tagCode, reportId }),
       });
       const data = await res.json().catch(() => ({}));
@@ -585,6 +564,7 @@ export function ScanForm({
       clearScanDraft(tagCode);
       setSubmittedReporterPhone(fullLibyaPhone || null);
       setReportId(notifyData.report_id || null);
+      setReportAccessToken(notifyData.report_access_token || null);
       setDeliveredChannel(notifyData.delivered_channel || "BOTH");
       setSentAtLabel(
         new Date().toLocaleTimeString("ar-LY", {
@@ -933,19 +913,25 @@ export function ScanForm({
                             <p className="text-xs font-bold leading-relaxed">
                               ملاحظة: يرجى التواصل مع خدمة العملاء إذا لم توجد استجابة من صاحب السيارة، حيث انتهت مهلة الانتظار ولا يمكن إرسال تنبيهات إضافية.
                             </p>
-                            <a
-                              href={`https://wa.me/${(
-                                process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "218910000000"
-                              ).replace(/[^\d]/g, "")}?text=${encodeURIComponent(
-                                `مرحباً خدمة عملاء بَلِّغْنِي، انتهت مهلة الانتظار (10 دقائق) ولم يستجب صاحب المركبة للملصق (${tagCode}).`
-                              )}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-sm transition hover:bg-[#1fb857]"
-                            >
-                              <MessageCircle className="h-4 w-4" />
-                              التواصل مع خدمة العملاء
-                            </a>
+                            {(() => {
+                              const supportDigits = (
+                                process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || ""
+                              ).replace(/[^\d]/g, "");
+                              if (!supportDigits) return null;
+                              return (
+                                <a
+                                  href={`https://wa.me/${supportDigits}?text=${encodeURIComponent(
+                                    `مرحباً خدمة عملاء بَلِّغْنِي، انتهت مهلة الانتظار (10 دقائق) ولم يستجب صاحب المركبة للملصق (${tagCode}).`
+                                  )}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 py-3 text-xs font-black text-slate-950 shadow-sm transition hover:bg-[#1fb857]"
+                                >
+                                  <MessageCircle className="h-4 w-4" />
+                                  التواصل مع خدمة العملاء
+                                </a>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>

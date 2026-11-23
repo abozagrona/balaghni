@@ -13,8 +13,10 @@ export default function IncomingEncryptedCallPage() {
 
   const [loading, setLoading] = React.useState(true);
   const [meta, setMeta] = React.useState<{
+    roomCode: string;
     tagCode: string;
     vehicleLabel: string;
+    ownerReplyToken: string;
   } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -25,10 +27,12 @@ export default function IncomingEncryptedCallPage() {
     })
       .then((res) => res.json())
       .then((data) => {
-        if (data?.ok) {
+        if (data?.ok && data?.callCode && data?.ownerReplyToken) {
           setMeta({
+            roomCode: String(data.callCode),
             tagCode: data.tagCode || callCode,
             vehicleLabel: data.vehicleLabel || data.tagCode || "مركبتك",
+            ownerReplyToken: String(data.ownerReplyToken),
           });
         } else {
           setError(data?.error || "رابط المكالمة غير صالح أو منتهي الصلاحية.");
@@ -43,9 +47,13 @@ export default function IncomingEncryptedCallPage() {
   }, [callCode]);
 
   const handleOwnerQuickReply = () => {
+    if (!meta?.ownerReplyToken) return;
     void fetch("/api/notify/call", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-call-owner-token": meta.ownerReplyToken,
+      },
       body: JSON.stringify({ callCode }),
     }).catch(() => {});
   };
@@ -78,7 +86,7 @@ export default function IncomingEncryptedCallPage() {
           </div>
         ) : (
           <AnonymousVoiceCall
-            callCode={callCode}
+            callCode={meta.roomCode}
             tagCode={meta.tagCode}
             vehicleLabel={meta.vehicleLabel}
             role="callee"

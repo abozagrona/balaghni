@@ -11,9 +11,9 @@ import {
   attachOwnerSessionCookie,
 } from "@/lib/security-tokens";
 import {
-  checkPinRateLimit,
-  recordPinFailure,
-  clearPinFailures,
+  checkPinRateLimitAsync,
+  recordPinFailureAsync,
+  clearPinFailuresAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
           );
         }
       } else {
-        const proofCheck = verifyAndConsumeOtpProof(
+        const proofCheck = await verifyAndConsumeOtpProof(
           request,
           body.otpProofToken,
           fullPhone
@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
 
     const ip = getClientIp(request);
     const rateKey = `recovery_key:${fullPhone}:${ip}`;
-    const rateLimit = checkPinRateLimit(rateKey);
+    const rateLimit = await checkPinRateLimitAsync(rateKey);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!result.ok || !result.record) {
-      recordPinFailure(rateKey);
+      await recordPinFailureAsync(rateKey);
       return NextResponse.json(
         {
           ok: false,
@@ -151,7 +151,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    clearPinFailures(rateKey);
+    await clearPinFailuresAsync(rateKey);
     const ownerToken = createOwnerSessionToken({
       tagCode: result.record.tagCode,
       ownerPhone: result.record.ownerPhone || fullPhone,

@@ -24,6 +24,12 @@ import {
   encodePasskeyCredentialRecord,
   extractRawCredentialId,
 } from "@/lib/security-tokens";
+import {
+  consumeDistributedRateLimit,
+  getClientIp,
+  canonicalizeRateIp,
+  canonicalizeAdminRateIdentifier,
+} from "@/lib/rate-limiter";
 
 function extractAdminCandidateToken(req: NextRequest, bodySessionToken?: unknown): string {
   const authHeader = req.headers.get("authorization") || "";
@@ -159,6 +165,28 @@ export async function POST(req: NextRequest) {
       (action === "auth" && body.mode === "lookup_passkey") ||
       body.mode === "lookup_passkey"
     ) {
+      const clientIp = canonicalizeRateIp(getClientIp(req)) || "127.0.0.1";
+      const lookupLimit = await consumeDistributedRateLimit(
+        "admin:lookup:ip",
+        clientIp,
+        15,
+        15 * 60 * 1000,
+        "fail_closed"
+      );
+      if (!lookupLimit.allowed) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              lookupLimit.source === "fail_closed"
+                ? lookupLimit.reason || "خدمة التحقق الأمني غير متاحة مؤقتاً."
+                : "تم تجاوز الحد المسموح لمحاولات التحقق. يرجى الانتظار والمحاولة لاحقاً.",
+            retryAfterSeconds: lookupLimit.retryAfterSeconds,
+          },
+          { status: lookupLimit.source === "fail_closed" ? 503 : 429 }
+        );
+      }
+
       const hostHeader = req.headers.get("host") || "localhost";
       const rpId = hostHeader.split(":")[0] || "localhost";
       const { challenge, challengeToken } = createWebAuthnChallenge(rpId, "admin");
@@ -179,6 +207,28 @@ export async function POST(req: NextRequest) {
       (action === "auth" && body.mode === "passkey_login") ||
       Boolean(body.credential_id && !body.password && action !== "auth")
     ) {
+      const clientIp = canonicalizeRateIp(getClientIp(req)) || "127.0.0.1";
+      const ipLimit = await consumeDistributedRateLimit(
+        "admin:auth:ip",
+        clientIp,
+        10,
+        15 * 60 * 1000,
+        "fail_closed"
+      );
+      if (!ipLimit.allowed) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              ipLimit.source === "fail_closed"
+                ? ipLimit.reason || "خدمة التحقق الأمني غير متاحة مؤقتاً."
+                : "تم تجاوز الحد المسموح لمحاولات تسجيل الدخول الإداري. يرجى الانتظار 15 دقيقة.",
+            retryAfterSeconds: ipLimit.retryAfterSeconds,
+          },
+          { status: ipLimit.source === "fail_closed" ? 503 : 429 }
+        );
+      }
+
       const credentialId = extractRawCredentialId(
         String(
           body.credential_id || body.credentialId || body.passkeyCredentialId || ""
@@ -187,9 +237,36 @@ export async function POST(req: NextRequest) {
 
       if (!credentialId) {
         return NextResponse.json(
-          { ok: false, error: "معرّف البصمة غير صالح." },
+          { ok: false, error: "تعذر التحقق من بيانات تسجيل الدخول الإدارية." },
           { status: 400 }
         );
+      }
+
+      const normalizedIdentifier = canonicalizeAdminRateIdentifier(
+        body.identifier,
+        credentialId
+      );
+      if (normalizedIdentifier) {
+        const idLimit = await consumeDistributedRateLimit(
+          "admin:auth:id",
+          normalizedIdentifier,
+          6,
+          15 * 60 * 1000,
+          "fail_closed"
+        );
+        if (!idLimit.allowed) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error:
+                idLimit.source === "fail_closed"
+                  ? idLimit.reason || "خدمة التحقق الأمني غير متاحة مؤقتاً."
+                  : "تم تجاوز الحد المسموح لمحاولات تسجيل الدخول الإداري. يرجى الانتظار 15 دقيقة.",
+              retryAfterSeconds: idLimit.retryAfterSeconds,
+            },
+            { status: idLimit.source === "fail_closed" ? 503 : 429 }
+          );
+        }
       }
 
       const authRes = await verifyAdminAuthentication({
@@ -202,9 +279,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             ok: false,
-            error:
-              authRes.error ||
-              "لم يتم العثور على حساب مشرف نشط مطابق لهذه البصمة.",
+            error: "تعذر التحقق من بيانات تسجيل الدخول الإدارية.",
           },
           { status: 401 }
         );
@@ -213,7 +288,7 @@ export async function POST(req: NextRequest) {
       // التحقق التشفيري الإلزامي من التحدي والتوقيع الرقمي لمفتاح المرور
       const storedRecord =
         authRes.storedPasskeyRecord || authRes.adminProfile.passkeyCredentialId || "";
-      const assertionVerification = verifyWebAuthnAssertion({
+      const assertionVerification = await verifyWebAuthnAssertion({
         req,
         challengeTokenFromBody: body.challengeToken,
         expectedScope: "admin",
@@ -228,9 +303,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             ok: false,
-            error:
-              assertionVerification.error ||
-              "فشل التحقق التشفيري من بصمة المشرف.",
+            error: "تعذر التحقق من بيانات تسجيل الدخول الإدارية.",
           },
           { status: 401 }
         );
@@ -276,7 +349,7 @@ export async function POST(req: NextRequest) {
         ).trim();
 
         if (mode === "enroll_passkey") {
-          const regVerify = verifyWebAuthnRegistration({
+          const regVerify = await verifyWebAuthnRegistration({
             req,
             challengeTokenFromBody: body.challengeToken,
             expectedScope: "admin",
@@ -332,6 +405,58 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // حماية تسجيل الدخول بكلمة المرور بـ Distributed Rate Limiting (fail_closed)
+      if (!mode || mode === "password_login" || mode === "change_own_password") {
+        const clientIp = getClientIp(req);
+        const ipLimit = await consumeDistributedRateLimit(
+          "admin:auth:ip",
+          clientIp,
+          10,
+          15 * 60 * 1000,
+          "fail_closed"
+        );
+        if (!ipLimit.allowed) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error:
+                ipLimit.source === "fail_closed"
+                  ? ipLimit.reason || "خدمة التحقق الأمني غير متاحة مؤقتاً."
+                  : "تم تجاوز الحد المسموح لمحاولات تسجيل الدخول الإداري. يرجى الانتظار 15 دقيقة.",
+              retryAfterSeconds: ipLimit.retryAfterSeconds,
+            },
+            { status: ipLimit.source === "fail_closed" ? 503 : 429 }
+          );
+        }
+
+        const normalizedIdentifier = canonicalizeAdminRateIdentifier(
+          body.identifier,
+          adminId
+        );
+        if (normalizedIdentifier) {
+          const idLimit = await consumeDistributedRateLimit(
+            "admin:auth:id",
+            normalizedIdentifier,
+            6,
+            15 * 60 * 1000,
+            "fail_closed"
+          );
+          if (!idLimit.allowed) {
+            return NextResponse.json(
+              {
+                ok: false,
+                error:
+                  idLimit.source === "fail_closed"
+                    ? idLimit.reason || "خدمة التحقق الأمني غير متاحة مؤقتاً."
+                    : "تم تجاوز الحد المسموح لمحاولات تسجيل الدخول الإداري. يرجى الانتظار 15 دقيقة.",
+                retryAfterSeconds: idLimit.retryAfterSeconds,
+              },
+              { status: idLimit.source === "fail_closed" ? 503 : 429 }
+            );
+          }
+        }
+      }
+
       const res = await verifyAdminAuthentication({
         mode: mode || "password_login",
         identifier: body.identifier,
@@ -346,6 +471,16 @@ export async function POST(req: NextRequest) {
         const response = NextResponse.json(res, { status: 200 });
         attachAdminSessionCookie(response, res.sessionToken);
         return response;
+      }
+
+      if (!res.ok && (!mode || mode === "password_login")) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "تعذر التحقق من بيانات تسجيل الدخول الإدارية.",
+          },
+          { status: 401 }
+        );
       }
 
       return NextResponse.json(res, { status: res.ok ? 200 : 401 });
@@ -392,6 +527,29 @@ export async function POST(req: NextRequest) {
       });
       attachAdminSessionCookie(res, refreshedToken);
       return res;
+    }
+
+    // حماية موزّعة بوضع fail_closed لجميع العمليات الإدارية الموثقة (60 عملية لكل 10 دقائق لكل مشرف+IP)
+    const adminActionIp = getClientIp(req);
+    const adminOpLimit = await consumeDistributedRateLimit(
+      "admin:action",
+      `${effectiveAdminId}:${adminActionIp}`,
+      60,
+      10 * 60 * 1000,
+      "fail_closed"
+    );
+    if (!adminOpLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            adminOpLimit.source === "fail_closed"
+              ? adminOpLimit.reason || "خدمة التحقق الأمني غير متاحة مؤقتاً."
+              : "تم تجاوز الحد المسموح للعمليات الإدارية المتتالية. يرجى الانتظار قليلاً.",
+          retryAfterSeconds: adminOpLimit.retryAfterSeconds,
+        },
+        { status: adminOpLimit.source === "fail_closed" ? 503 : 429 }
+      );
     }
 
     // 2. إدارة دورة حياة الملصقات (تعديل المركبة، تبديل الحالة، ضبط المصنع، إعادة تعيين أمان المالك)
@@ -499,21 +657,35 @@ export async function POST(req: NextRequest) {
         permissions: body.permissions as AdminPermission[] | undefined,
       });
       const overview = await getExecutiveAdminOverview();
-      return NextResponse.json({
-        ...res,
-        auditLogs: overview.auditLogs,
-      });
+      return NextResponse.json(
+        {
+          ...res,
+          auditLogs: overview.auditLogs,
+        },
+        { status: res.ok ? 200 : 403 }
+      );
     }
 
     // 5. منطقة الطوارئ وتصفير بيانات الاختبار (Danger Zone)
     if (action === "danger_reset") {
-      await adminDangerZoneResetSystem({
+      const resetRes = await adminDangerZoneResetSystem({
         adminId: effectiveAdminId,
         adminName: effectiveAdminName,
+        confirmReset: body.confirmReset === true,
+        confirmationText:
+          typeof body.confirmationText === "string"
+            ? body.confirmationText
+            : "",
       });
+      if (!resetRes.ok) {
+        return NextResponse.json(resetRes, {
+          status: resetRes.blockedInProduction ? 403 : 400,
+        });
+      }
       const overview = await getExecutiveAdminOverview();
       return NextResponse.json({
         ok: true,
+        summary: resetRes.summary,
         ...overview,
       });
     }

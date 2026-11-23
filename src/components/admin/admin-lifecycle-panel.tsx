@@ -354,13 +354,25 @@ export function AdminLifecyclePanel({
             size="sm"
             disabled={busyAction === "wipe_all"}
             onClick={() => {
-              if (
-                window.confirm(
-                  "تحذير: سيتم مسح جميع الطلبات والبلاغات وحسابات المستخدمين وكافة الملصقات القديمة من قاعدة البيانات مع الإبقاء على حساب الأدمن الرئيسي فقط. هل أنت متأكد؟"
-                )
-              ) {
-                runAction("wipe_all", { action: "wipe_all_old_data" });
+              const proceed = window.confirm(
+                "تحذير خطير: سيتم مسح جميع الطلبات والبلاغات والملصقات القديمة في بيئة التطوير فقط (هذه العملية محظورة نهائياً في الإنتاج والمعاينة، ولا تمس سجل التدقيق). هل تريد المتابعة؟"
+              );
+              if (!proceed) return;
+              const typed = window.prompt(
+                "للتأكيد النهائي اكتب العبارة التالية حرفياً:\nWIPE_NON_PRODUCTION_DATA"
+              );
+              if (typed?.trim() !== "WIPE_NON_PRODUCTION_DATA") {
+                setMessage({
+                  type: "err",
+                  text: "تم إلغاء عملية المسح لأن عبارة التأكيد غير مطابقة.",
+                });
+                return;
               }
+              runAction("wipe_all", {
+                action: "wipe_all_old_data",
+                confirmWipe: true,
+                confirmationText: typed.trim(),
+              });
             }}
             className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
           >

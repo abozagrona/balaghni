@@ -5,6 +5,7 @@ import {
 } from "@/lib/supabase/client";
 import { clearAdminSessionCookie } from "@/lib/security-tokens";
 import { executeFounderCommand } from "@/lib/ai-office/agents-service";
+import { consumeDistributedRateLimit, getClientIp } from "@/lib/rate-limiter";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -60,6 +61,23 @@ export async function POST(req: NextRequest) {
           error: activeCheck.error || "غير مصرح لك بتشغيل أوامر غرفة العمليات.",
         },
         { status: 403 }
+      );
+    }
+
+    const rateRes = await consumeDistributedRateLimit(
+      "ai_cmd",
+      `${activeCheck.profile.username || "admin"}:${getClientIp(req)}`,
+      20,
+      5 * 60 * 1000
+    );
+    if (!rateRes.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `تم تجاوز الحد المسموح لأوامر غرفة العمليات مؤقتاً. يرجى الانتظار ${rateRes.retryAfterSeconds} ثانية.`,
+          retryAfterSeconds: rateRes.retryAfterSeconds,
+        },
+        { status: 429 }
       );
     }
 

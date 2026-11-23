@@ -1,14 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 
-const rawSupabaseUrl = (
-  process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
-  "https://aivxhxnvgqxylugqrjei.supabase.co"
-).replace(/\/+$/, "");
+const UNCONFIGURED_SUPABASE_URL = "https://unconfigured.invalid";
+const UNCONFIGURED_SUPABASE_KEY = "unconfigured";
 
-const rawSupabaseAnonKey = (
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-  "sb_publishable_wUsqBoHbhbuvVitBDo2wuw_xOhU-IEe"
-)
+const rawSupabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "")
+  .replace(/\/+$/, "");
+
+const rawSupabaseAnonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "")
   .replace(/^["']|["']$/g, "")
   .trim()
   .replace(/^Sb_publishable_/, "sb_publishable_");
@@ -25,8 +23,8 @@ export interface ReportRealtimePayload {
 }
 
 export const supabaseRealtime = createClient(
-  rawSupabaseUrl,
-  rawSupabaseAnonKey,
+  rawSupabaseUrl || UNCONFIGURED_SUPABASE_URL,
+  rawSupabaseAnonKey || UNCONFIGURED_SUPABASE_KEY,
   {
     auth: {
       autoRefreshToken: false,

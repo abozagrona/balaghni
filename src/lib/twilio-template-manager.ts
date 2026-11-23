@@ -23,15 +23,17 @@ export function getTwilioCredentials() {
   const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
   const authToken = (process.env.TWILIO_AUTH_TOKEN || "").trim();
   const whatsappNumber = (
-    process.env.TWILIO_WHATSAPP_NUMBER || "+19789919899"
+    process.env.TWILIO_WHATSAPP_NUMBER ||
+    process.env.TWILIO_WHATSAPP_FROM ||
+    ""
   ).trim();
   const messagingServiceSid = (
     process.env.TWILIO_MESSAGING_SERVICE_SID || ""
   ).trim();
 
-  if (!accountSid || !authToken) {
+  if (!accountSid || !authToken || !whatsappNumber) {
     throw new Error(
-      "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be configured."
+      "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_WHATSAPP_NUMBER (or TWILIO_WHATSAPP_FROM) must be configured."
     );
   }
 

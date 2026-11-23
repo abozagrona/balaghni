@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
+  isLocalJsonStoreAllowedInCurrentEnv,
   supabaseAdmin,
   syncTagActivationToLocalStore,
 } from "@/lib/supabase/client";
@@ -208,6 +209,20 @@ const STORE_PATH = path.join(
 );
 
 function loadStore(): LocalLifecycleStore {
+  const empty: LocalLifecycleStore = {
+    stickers: {},
+    vendors: [],
+    settlements: [],
+    giftRedemptions: {},
+    corporateLeads: [],
+    unassignedPaidOrders: [],
+    orders: [],
+    salesLedger: [],
+    custodyClosures: [],
+  };
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return empty;
+  }
   try {
     if (fs.existsSync(STORE_PATH)) {
       const parsed = JSON.parse(fs.readFileSync(STORE_PATH, "utf8"));
@@ -230,20 +245,13 @@ function loadStore(): LocalLifecycleStore {
   } catch {
     // ignore read error
   }
-  return {
-    stickers: {},
-    vendors: [],
-    settlements: [],
-    giftRedemptions: {},
-    corporateLeads: [],
-    unassignedPaidOrders: [],
-    orders: [],
-    salesLedger: [],
-    custodyClosures: [],
-  };
+  return empty;
 }
 
 function saveStore(store: LocalLifecycleStore) {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return;
+  }
   try {
     fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
     fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf8");
@@ -1481,17 +1489,121 @@ export interface GiftStickersSummary {
   items: GiftStickerItem[];
 }
 
+export interface GiftStickersImportAuditPayload {
+  adminId?: string | null;
+  adminName?: string | null;
+  actionType:
+    | "GIFT_STICKERS_IMPORT_INITIATED"
+    | "GIFT_STICKERS_IMPORT_EXECUTED"
+    | "GIFT_STICKERS_IMPORT_FAILED"
+    | "GIFT_STICKERS_IMPORT_BLOCKED";
+  outcome: "initiated" | "executed" | "failed" | "blocked";
+  importedCount: number;
+  requestedCount?: number;
+  reason?: string | null;
+}
+
+let customGiftStickersAuditExecutor:
+  | ((
+      entry: GiftStickersImportAuditPayload & { createdAt: string }
+    ) => Promise<{ ok: boolean; error?: string }>)
+  | null = null;
+
+export function setGiftStickersImportAuditExecutorForTest(
+  executor:
+    | ((
+        entry: GiftStickersImportAuditPayload & { createdAt: string }
+      ) => Promise<{ ok: boolean; error?: string }>)
+    | null
+): void {
+  customGiftStickersAuditExecutor = executor;
+}
+
+export async function recordGiftStickersImportAuditLog(
+  payload: GiftStickersImportAuditPayload
+): Promise<{ ok: boolean; error?: string }> {
+  const createdAt = new Date().toISOString();
+  const safeAdminId =
+    typeof payload.adminId === "string" && payload.adminId.trim()
+      ? payload.adminId.trim()
+      : null;
+  // تجنب تسجيل أي رقم هاتف في حقل adminName إذا كان المعرف هاتفاً
+  const rawName =
+    typeof payload.adminName === "string" ? payload.adminName.trim() : "";
+  const safeAdminName =
+    rawName && !/^\+?\d[\d\s-]{6,}$/.test(rawName)
+      ? rawName
+      : "مدير النظام الرئيسي";
+
+  if (customGiftStickersAuditExecutor) {
+    return customGiftStickersAuditExecutor({
+      ...payload,
+      adminId: safeAdminId,
+      adminName: safeAdminName,
+      createdAt,
+    });
+  }
+
+  const detailsObj = {
+    adminId: safeAdminId,
+    operation: "import_gift_stickers",
+    outcome: payload.outcome,
+    importedCount: payload.importedCount,
+    requestedCount: payload.requestedCount ?? payload.importedCount,
+    reason: payload.reason || null,
+    timestamp: createdAt,
+  };
+  const detailsStr = JSON.stringify(detailsObj);
+
+  try {
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const { error } = await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_id: safeAdminId && uuidRe.test(safeAdminId) ? safeAdminId : null,
+      admin_name: safeAdminName,
+      action_type: payload.actionType,
+      target_item: "GIFT_STICKERS_BATCH",
+      details: detailsStr,
+      created_at: createdAt,
+    });
+
+    if (error) {
+      return { ok: false, error: "gift_import_audit_log_db_insert_failed" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "gift_import_audit_log_db_exception" };
+  }
+}
+
 export async function importGiftStickers(
-  rawCodes: string[]
-): Promise<{ ok: boolean; importedCount: number; codes: string[]; error?: string }> {
+  rawCodes: string[],
+  actor?: { adminId?: string | null; adminName?: string | null }
+): Promise<{
+  ok: boolean;
+  importedCount: number;
+  codes: string[];
+  auditLogFailed?: boolean;
+  error?: string;
+}> {
+  const requestedCount = Array.isArray(rawCodes) ? rawCodes.length : 0;
   const codes = Array.from(
     new Set(
-      rawCodes
+      (Array.isArray(rawCodes) ? rawCodes : [])
         .map((c) => formatBalaghniTagCode(c))
         .filter((c) => /^LY-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c))
     )
   );
   if (codes.length === 0) {
+    await recordGiftStickersImportAuditLog({
+      adminId: actor?.adminId,
+      adminName: actor?.adminName,
+      actionType: "GIFT_STICKERS_IMPORT_FAILED",
+      outcome: "failed",
+      importedCount: 0,
+      requestedCount,
+      reason: "invalid_or_empty_codes",
+    });
     return {
       ok: false,
       importedCount: 0,
@@ -1500,8 +1612,29 @@ export async function importGiftStickers(
     };
   }
 
+  // Fail-Closed: توثيق بدء عملية استيراد ملصقات الهدايا الحساسة قبل إدراج أي ملصق
+  const preAudit = await recordGiftStickersImportAuditLog({
+    adminId: actor?.adminId,
+    adminName: actor?.adminName,
+    actionType: "GIFT_STICKERS_IMPORT_INITIATED",
+    outcome: "initiated",
+    importedCount: 0,
+    requestedCount: codes.length,
+  });
+  if (!preAudit.ok) {
+    return {
+      ok: false,
+      importedCount: 0,
+      codes: [],
+      auditLogFailed: true,
+      error:
+        "تم إيقاف استيراد ملصقات الهدايا تلقائياً لتعذر توثيق العملية في سجل التدقيق الدائم (Fail-Closed).",
+    };
+  }
+
   const nowIso = new Date().toISOString();
   const store = loadStore();
+  const importedCodes: string[] = [];
 
   for (const code of codes) {
     const pinHash = crypto
@@ -1509,6 +1642,7 @@ export async function importGiftStickers(
       .update(String(crypto.randomInt(100000, 1000000)))
       .digest("hex");
 
+    let tagSaved = false;
     try {
       const { error: tagErr } = await supabaseAdmin.from("tags").upsert(
         {
@@ -1526,8 +1660,10 @@ export async function importGiftStickers(
         },
         { onConflict: "tag_code" }
       );
-      if (tagErr) {
-        await supabaseAdmin.from("tags").upsert(
+      if (!tagErr) {
+        tagSaved = true;
+      } else {
+        const { error: fallbackErr } = await supabaseAdmin.from("tags").upsert(
           {
             tag_code: code,
             activation_pin_hash: pinHash,
@@ -1540,9 +1676,30 @@ export async function importGiftStickers(
           },
           { onConflict: "tag_code" }
         );
+        if (!fallbackErr) {
+          tagSaved = true;
+        }
       }
     } catch {
-      // ignore
+      tagSaved = false;
+    }
+
+    if (!tagSaved) {
+      await recordGiftStickersImportAuditLog({
+        adminId: actor?.adminId,
+        adminName: actor?.adminName,
+        actionType: "GIFT_STICKERS_IMPORT_FAILED",
+        outcome: "failed",
+        importedCount: importedCodes.length,
+        requestedCount: codes.length,
+        reason: "db_upsert_failed",
+      });
+      return {
+        ok: false,
+        importedCount: importedCodes.length,
+        codes: importedCodes,
+        error: "تعذر حفظ ملصقات الهدايا في قاعدة البيانات.",
+      };
     }
 
     try {
@@ -1564,7 +1721,7 @@ export async function importGiftStickers(
         { onConflict: "code" }
       );
     } catch {
-      // ignore
+      // ignore secondary stickers sync error if primary tags succeeded
     }
 
     store.stickers[code] = {
@@ -1582,10 +1739,31 @@ export async function importGiftStickers(
       createdAt: store.stickers[code]?.createdAt || nowIso,
       updatedAt: nowIso,
     };
+    importedCodes.push(code);
+  }
+
+  // Fail-Closed: لا نسجل أو نُرجع نجاحاً غير موثق في سجل التدقيق
+  const postAudit = await recordGiftStickersImportAuditLog({
+    adminId: actor?.adminId,
+    adminName: actor?.adminName,
+    actionType: "GIFT_STICKERS_IMPORT_EXECUTED",
+    outcome: "executed",
+    importedCount: importedCodes.length,
+    requestedCount: codes.length,
+  });
+  if (!postAudit.ok) {
+    return {
+      ok: false,
+      importedCount: 0,
+      codes: [],
+      auditLogFailed: true,
+      error:
+        "تعذر توثيق اكتمال استيراد ملصقات الهدايا في سجل التدقيق الدائم (Fail-Closed).",
+    };
   }
 
   saveStore(store);
-  return { ok: true, importedCount: codes.length, codes };
+  return { ok: true, importedCount: importedCodes.length, codes: importedCodes };
 }
 
 export async function listGiftStickersSummary(): Promise<GiftStickersSummary> {
@@ -3066,10 +3244,236 @@ export async function assignOrderToSticker(
   return { ok: true };
 }
 
-export async function wipeAllOldData(): Promise<{
+export const LIFECYCLE_WIPE_CONFIRMATION_TEXT = "WIPE_NON_PRODUCTION_DATA";
+export const LIFECYCLE_WIPE_GLOBAL_LOCK_KEY = "global_system_wipe";
+
+export interface LifecycleWipeAuditPayload {
+  adminId?: string | null;
+  adminName?: string | null;
+  actionType:
+    | "LIFECYCLE_WIPE_BLOCKED"
+    | "LIFECYCLE_WIPE_INITIATED"
+    | "LIFECYCLE_WIPE_EXECUTED"
+    | "LIFECYCLE_WIPE_FAILED";
+  outcome: "blocked" | "initiated" | "succeeded" | "failed";
+  attemptType: string;
+  reason?: string;
+  clearedTables?: string[];
+}
+
+export type LifecycleWipeAuditExecutor = (
+  entry: LifecycleWipeAuditPayload & { createdAt: string }
+) => Promise<{ ok: boolean; error?: string }>;
+
+let customLifecycleWipeAuditExecutor: LifecycleWipeAuditExecutor | null = null;
+let customLifecycleWipeDbDeleteExecutor:
+  | ((tableName: string) => Promise<{ ok: boolean }>)
+  | null = null;
+
+export function setLifecycleWipeAuditExecutorForTest(
+  executor: LifecycleWipeAuditExecutor | null
+): void {
+  customLifecycleWipeAuditExecutor = executor;
+}
+
+export function setLifecycleWipeDbDeleteExecutorForTest(
+  executor: ((tableName: string) => Promise<{ ok: boolean }>) | null
+): void {
+  customLifecycleWipeDbDeleteExecutor = executor;
+}
+
+function appendLocalAdminAuditEntry(entry: {
+  id: string;
+  adminId: string | null;
+  adminName: string;
+  actionType: string;
+  actionDetails: string;
+  tagCode: string | null;
+  createdAt: string;
+}): void {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return;
+  }
+  try {
+    const adminStorePath = path.join(
+      process.cwd(),
+      "src",
+      "data",
+      "local-admin-store.json"
+    );
+    let parsed: Record<string, unknown> = {
+      rateLimits: {},
+      lastLogins: {},
+      notifyCooldowns: {},
+      auditLogs: [],
+    };
+    if (fs.existsSync(adminStorePath)) {
+      const raw = JSON.parse(fs.readFileSync(adminStorePath, "utf8"));
+      if (raw && typeof raw === "object") {
+        parsed = raw as Record<string, unknown>;
+      }
+    }
+    const existingLogs = Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [];
+    parsed.auditLogs = [entry, ...existingLogs].slice(0, 250);
+    fs.mkdirSync(path.dirname(adminStorePath), { recursive: true });
+    fs.writeFileSync(adminStorePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  } catch {
+    // ignore read-only serverless filesystem
+  }
+}
+
+export async function recordLifecycleWipeAuditLog(
+  payload: LifecycleWipeAuditPayload
+): Promise<{ ok: boolean; error?: string }> {
+  const createdAt = new Date().toISOString();
+  const safeAdminId =
+    typeof payload.adminId === "string" && payload.adminId.trim()
+      ? payload.adminId.trim()
+      : null;
+  const safeAdminName =
+    typeof payload.adminName === "string" && payload.adminName.trim()
+      ? payload.adminName.trim()
+      : "مدير النظام الرئيسي";
+
+  if (customLifecycleWipeAuditExecutor) {
+    return customLifecycleWipeAuditExecutor({
+      ...payload,
+      adminId: safeAdminId,
+      adminName: safeAdminName,
+      createdAt,
+    });
+  }
+
+  const detailsObj = {
+    adminId: safeAdminId,
+    adminName: safeAdminName,
+    outcome: payload.outcome,
+    attemptType: payload.attemptType,
+    reason: payload.reason || null,
+    clearedTables: payload.clearedTables || [],
+    timestamp: createdAt,
+  };
+  const detailsStr = JSON.stringify(detailsObj);
+
+  try {
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const { error } = await supabaseAdmin.from("admin_audit_logs").insert({
+      admin_id: safeAdminId && uuidRe.test(safeAdminId) ? safeAdminId : null,
+      admin_name: safeAdminName,
+      action_type: payload.actionType,
+      target_item: "SYSTEM_LIFECYCLE_WIPE",
+      details: detailsStr,
+      created_at: createdAt,
+    });
+
+    appendLocalAdminAuditEntry({
+      id: `aud_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      adminId: safeAdminId,
+      adminName: safeAdminName,
+      actionType: payload.actionType,
+      actionDetails: detailsStr,
+      tagCode: null,
+      createdAt,
+    });
+
+    if (error) {
+      return { ok: false, error: "audit_log_db_insert_failed" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "audit_log_db_exception" };
+  }
+}
+
+/**
+ * حاجز بيئي مركزي صارم (Fail-Closed): يمنع المسح التدميري افتراضياً في جميع البيئات
+ * (الإنتاج، المعاينة، وحتى التطوير ما لم يُفعّل ALLOW_DESTRUCTIVE_LIFECYCLE_WIPE="true" صراحةً).
+ */
+export function assertDestructiveLifecycleWipeAllowed(): {
+  allowed: boolean;
+  reason?: string;
+} {
+  if (process.env.NODE_ENV === "production") {
+    return {
+      allowed: false,
+      reason:
+        "عملية مسح البيانات الشامل محظورة نهائياً في بيئة الإنتاج (NODE_ENV=production).",
+    };
+  }
+  if (process.env.VERCEL_ENV === "production") {
+    return {
+      allowed: false,
+      reason:
+        "عملية مسح البيانات الشامل محظورة نهائياً في بيئة الإنتاج (VERCEL_ENV=production).",
+    };
+  }
+  if (process.env.VERCEL_ENV === "preview") {
+    return {
+      allowed: false,
+      reason:
+        "عملية مسح البيانات الشامل محظورة في بيئة المعاينة (VERCEL_ENV=preview).",
+    };
+  }
+  if (process.env.ALLOW_DESTRUCTIVE_LIFECYCLE_WIPE !== "true") {
+    return {
+      allowed: false,
+      reason:
+        "عملية مسح البيانات الشامل معطّلة افتراضياً وتتطلب التفعيل الصريح (ALLOW_DESTRUCTIVE_LIFECYCLE_WIPE=true) في بيئة التطوير فقط.",
+    };
+  }
+  return { allowed: true };
+}
+
+export async function wipeAllOldData(actor?: {
+  adminId?: string | null;
+  adminName?: string | null;
+}): Promise<{
   ok: boolean;
+  blockedByEnvironment?: boolean;
+  auditLogFailed?: boolean;
   clearedTables: string[];
+  error?: string;
 }> {
+  const guard = assertDestructiveLifecycleWipeAllowed();
+  if (!guard.allowed) {
+    await recordLifecycleWipeAuditLog({
+      adminId: actor?.adminId,
+      adminName: actor?.adminName,
+      actionType: "LIFECYCLE_WIPE_BLOCKED",
+      outcome: "blocked",
+      attemptType: "environment_guard",
+      reason: guard.reason,
+    });
+    return {
+      ok: false,
+      blockedByEnvironment: true,
+      clearedTables: [],
+      error: guard.reason,
+    };
+  }
+
+  // Fail-Closed: إلزام توثيق بدء العملية في سجل التدقيق الدائم قبل حذف أي بيانات
+  const preAudit = await recordLifecycleWipeAuditLog({
+    adminId: actor?.adminId,
+    adminName: actor?.adminName,
+    actionType: "LIFECYCLE_WIPE_INITIATED",
+    outcome: "initiated",
+    attemptType: "authorized_execution",
+  });
+
+  if (!preAudit.ok) {
+    return {
+      ok: false,
+      auditLogFailed: true,
+      clearedTables: [],
+      error:
+        "تم إيقاف عملية مسح البيانات تلقائياً لتعذر توثيق العملية في سجل التدقيق الدائم (Fail-Closed).",
+    };
+  }
+
+  // استثناء أمني صريح: جدولا "admin_audit_logs" و "ai_audit_logs" مستثنيان نهائياً من قائمة الحذف
+  // للحفاظ على سلامة السجل التدقيقي والأثر الجنائي ومنع طمس سجل العمليات.
   const tables = [
     "reports",
     "vehicle_documents",
@@ -3081,12 +3485,17 @@ export async function wipeAllOldData(): Promise<{
     "stickers",
     "tags",
     "vendors",
-    "admin_audit_logs",
   ];
   const clearedTables: string[] = [];
 
   for (const tbl of tables) {
     try {
+      if (customLifecycleWipeDbDeleteExecutor) {
+        const res = await customLifecycleWipeDbDeleteExecutor(tbl);
+        if (res.ok) clearedTables.push(tbl);
+        continue;
+      }
+
       const { error } = await supabaseAdmin
         .from(tbl)
         .delete()
@@ -3107,24 +3516,77 @@ export async function wipeAllOldData(): Promise<{
     }
   }
 
-  saveStore({
-    stickers: {},
-    vendors: [],
-    settlements: [],
-    giftRedemptions: {},
-    corporateLeads: [],
-    unassignedPaidOrders: [],
-    orders: [],
-  });
+  if (!customLifecycleWipeDbDeleteExecutor) {
+    saveStore({
+      stickers: {},
+      vendors: [],
+      settlements: [],
+      giftRedemptions: {},
+      corporateLeads: [],
+      unassignedPaidOrders: [],
+      orders: [],
+    });
 
-  for (const fname of ["local-tags-store.json", "local-admin-store.json"]) {
+    // تصفير local-tags-store.json فقط دون حذف local-admin-store.json حفاظاً على auditLogs المحلية
     try {
-      const fpath = path.join(process.cwd(), "src", "data", fname);
-      if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
+      const tagsStorePath = path.join(
+        process.cwd(),
+        "src",
+        "data",
+        "local-tags-store.json"
+      );
+      if (fs.existsSync(tagsStorePath)) {
+        fs.writeFileSync(tagsStorePath, "{}\n", "utf8");
+      }
+    } catch {
+      // ignore
+    }
+
+    // تنظيف الحقول العابرة فقط في local-admin-store.json مع الحفاظ الكامل على auditLogs و lastLogins
+    try {
+      const adminStorePath = path.join(
+        process.cwd(),
+        "src",
+        "data",
+        "local-admin-store.json"
+      );
+      if (fs.existsSync(adminStorePath)) {
+        const parsed = JSON.parse(fs.readFileSync(adminStorePath, "utf8"));
+        const preservedAuditLogs = Array.isArray(parsed?.auditLogs)
+          ? parsed.auditLogs
+          : [];
+        const preservedLastLogins =
+          parsed?.lastLogins && typeof parsed.lastLogins === "object"
+            ? parsed.lastLogins
+            : {};
+        fs.writeFileSync(
+          adminStorePath,
+          `${JSON.stringify(
+            {
+              rateLimits: {},
+              lastLogins: preservedLastLogins,
+              notifyCooldowns: {},
+              auditLogs: preservedAuditLogs,
+            },
+            null,
+            2
+          )}\n`,
+          "utf8"
+        );
+      }
     } catch {
       // ignore
     }
   }
+
+  await recordLifecycleWipeAuditLog({
+    adminId: actor?.adminId,
+    adminName: actor?.adminName,
+    actionType: "LIFECYCLE_WIPE_EXECUTED",
+    outcome: "succeeded",
+    attemptType: "authorized_execution",
+    clearedTables,
+  });
 
   return { ok: true, clearedTables };
 }

@@ -132,17 +132,25 @@ export function SiteFooter() {
                   الأحكام والشروط
                 </Link>
               </li>
-              <li>
-                <a
-                  href="https://wa.me/218910000000"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 font-bold text-[#25D366] transition-opacity hover:opacity-85"
-                >
-                  <MessageCircle className="h-4 w-4 fill-current" />
-                  <span>تواصل معنا (واتساب)</span>
-                </a>
-              </li>
+              {(() => {
+                const supportDigits = (
+                  process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || ""
+                ).replace(/[^\d]/g, "");
+                if (!supportDigits) return null;
+                return (
+                  <li>
+                    <a
+                      href={`https://wa.me/${supportDigits}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 font-bold text-[#25D366] transition-opacity hover:opacity-85"
+                    >
+                      <MessageCircle className="h-4 w-4 fill-current" />
+                      <span>تواصل معنا (واتساب)</span>
+                    </a>
+                  </li>
+                );
+              })()}
             </ul>
           </div>
         </div>

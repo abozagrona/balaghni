@@ -281,9 +281,14 @@ export default function OwnerLoginPage() {
     }
   };
 
-  const supportWhatsappUrl = `https://wa.me/218910000000?text=${encodeURIComponent(
-    "السلام عليكم فريق دعم بَلِّغْنِي، أحتاج مساعدة بخصوص الدخول إلى لوحة تحكم سيارتي."
-  )}`;
+  const supportWhatsappDigits = (
+    process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || ""
+  ).replace(/[^\d]/g, "");
+  const supportWhatsappUrl = supportWhatsappDigits
+    ? `https://wa.me/${supportWhatsappDigits}?text=${encodeURIComponent(
+        "السلام عليكم فريق دعم بَلِّغْنِي، أحتاج مساعدة بخصوص الدخول إلى لوحة تحكم سيارتي."
+      )}`
+    : null;
 
   return (
     <div className="min-h-dvh bg-[#0B0D13] text-white flex flex-col justify-between relative overflow-hidden">
@@ -451,17 +456,19 @@ export default function OwnerLoginPage() {
         </div>
 
         {/* أسفل الصفحة: رابط تواصل مع الدعم الفني عبر واتساب */}
-        <div className="mt-6 text-center">
-          <a
-            href={supportWhatsappUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-full border border-[#25D366]/35 bg-[#25D366]/12 px-5 py-2.5 text-xs font-bold text-[#25D366] transition hover:bg-[#25D366]/20 sm:text-sm"
-          >
-            <MessageCircle className="h-4 w-4 fill-current" />
-            <span>تواصل مع الدعم الفني (واتساب)</span>
-          </a>
-        </div>
+        {supportWhatsappUrl && (
+          <div className="mt-6 text-center">
+            <a
+              href={supportWhatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-full border border-[#25D366]/35 bg-[#25D366]/12 px-5 py-2.5 text-xs font-bold text-[#25D366] transition hover:bg-[#25D366]/20 sm:text-sm"
+            >
+              <MessageCircle className="h-4 w-4 fill-current" />
+              <span>تواصل مع الدعم الفني (واتساب)</span>
+            </a>
+          </div>
+        )}
       </main>
 
       {/* نافذة التحقق الذكي عبر واتساب ورسائل SMS */}

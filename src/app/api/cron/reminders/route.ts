@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/client";
 import {
@@ -183,9 +184,14 @@ async function handleRemindersCron(request: NextRequest) {
     : "";
 
   let isAuthorized = false;
-  if (cronSecret && bearer === cronSecret) {
-    isAuthorized = true;
-  } else {
+  if (cronSecret && bearer) {
+    const a = Buffer.from(bearer, "utf8");
+    const b = Buffer.from(cronSecret, "utf8");
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+      isAuthorized = true;
+    }
+  }
+  if (!isAuthorized) {
     // السماح أيضاً لمدير النظام الرئيسي (SUPER_ADMIN) بتشغيل الفحص يدوياً من لوحة الإدارة عبر جلسته الموقّعة
     const { verifyAdminActionPermission } = await import("@/lib/supabase/client");
     const adminCookie = request.cookies.get("balaghni_admin_session")?.value || "";

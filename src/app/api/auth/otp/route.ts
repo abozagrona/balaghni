@@ -3,12 +3,12 @@ import { createClient } from "@supabase/supabase-js";
 import {
   requestSmartOtp,
   verifyOtpCode,
-  getOtpSession,
+  getOtpSessionAsync,
 } from "@/lib/otp-service";
 import { formatLibyaPhoneForOtp } from "@/lib/utils";
 import {
-  checkOtpRateLimit,
-  recordOtpAttempt,
+  checkOtpRateLimitAsync,
+  recordOtpAttemptAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 import {
@@ -22,22 +22,26 @@ import {
  */
 function getIsolatedOtpSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
+  const serviceKey = (
+    process.env.SUPABASE_SECRET_KEY?.trim() ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    ""
+  ).replace(/^["']|["']$/g, "");
 
-  const isValidJwt =
-    serviceRoleKey.startsWith("eyJ") && serviceRoleKey.split(".").length === 3;
+  const isValidServiceKey =
+    serviceKey.startsWith("sb_secret_") ||
+    (serviceKey.startsWith("eyJ") &&
+      serviceKey.split(".").length === 3 &&
+      serviceKey.length > 100);
 
-  if (!serviceRoleKey || !isValidJwt) {
-    console.warn(
-      "[OTP Route Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY في Vercel غير مكتمل أو غير مضبوط بصيغة JWT صحيحة (يجب أن يبدأ بـ eyJ ويحتوي على نقطتين .)."
+  if (!supabaseUrl || !isValidServiceKey) {
+    console.error(
+      "[OTP Route] إعداد خدمة Supabase غير مكتمل؛ تم رفض الطلب بأمان (Fail-Closed)."
     );
+    return null;
   }
 
-  const keyToUse = isValidJwt ? serviceRoleKey : anonKey;
-  if (!supabaseUrl || !keyToUse) return null;
-
-  return createClient(supabaseUrl, keyToUse, {
+  return createClient(supabaseUrl, serviceKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -50,8 +54,17 @@ function getIsolatedOtpSupabaseClient() {
  */
 export async function POST(req: NextRequest) {
   try {
-    // تهيئة وفحص عميل Supabase المعزول والتحقق من سلامة المفتاح في سجل الخادم
-    getIsolatedOtpSupabaseClient();
+    // التحقق الصارم من جاهزية مفتاح الخدمة (يُمنع السقوط إلى anon key)
+    const otpClient = getIsolatedOtpSupabaseClient();
+    if (!otpClient) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "خدمة التحقق غير مهيأة حالياً. يرجى المحاولة لاحقاً.",
+        },
+        { status: 503 }
+      );
+    }
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || "send").trim().toLowerCase();
     const rawPhone = String(body.phone || body.ownerPhone || "").trim();
@@ -68,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     // 1. إرسال رمز التحقق (طلب أولي، أو تبديل، أو إعادة إرسال) مع حماية Rate Limiting (3 طلبات كل 10 دقائق)
     if (action === "send" || action === "resend") {
-      const rateLimitCheck = checkOtpRateLimit(formattedPhone, clientIp);
+      const rateLimitCheck = await checkOtpRateLimitAsync(formattedPhone, clientIp);
       if (!rateLimitCheck.allowed) {
         const minutesLeft =
           Math.ceil(rateLimitCheck.resetMs / (60 * 1000)) || 1;
@@ -113,8 +126,8 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // تسجيل محاولة الإرسال الناجحة في سجل Rate Limiting
-      recordOtpAttempt(formattedPhone, clientIp);
+      // تسجيل محاولة الإرسال الناجحة في سجل Rate Limiting المركزي
+      await recordOtpAttemptAsync(formattedPhone, clientIp);
 
       return NextResponse.json({
         ok: true,
@@ -166,7 +179,7 @@ export async function POST(req: NextRequest) {
       if (!formatted) {
         return NextResponse.json({ ok: false, active: false });
       }
-      const sess = getOtpSession(formatted);
+      const sess = await getOtpSessionAsync(formatted);
       if (!sess) {
         return NextResponse.json({ ok: true, active: false });
       }

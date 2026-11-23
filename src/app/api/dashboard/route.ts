@@ -106,7 +106,7 @@ export async function GET(request: NextRequest) {
   }
 
   const [data, lifecycle] = await Promise.all([
-    getTagDashboardData(tagCode),
+    getTagDashboardData(tagCode, { includeSignedPhotoUrls: true }),
     getStickerLifecycle(tagCode),
   ]);
   if (!data.ok || !data.tag) {
@@ -299,7 +299,7 @@ export async function POST(request: NextRequest) {
         expiryDate,
       });
 
-      return NextResponse.json(res);
+      return NextResponse.json(res, { status: res.ok ? 200 : 400 });
     }
 
     if (action === "add_maintenance") {

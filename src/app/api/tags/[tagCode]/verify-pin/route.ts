@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyTagScratchPin } from "@/lib/supabase/client";
 import { formatBalaghniTagCode } from "@/lib/utils";
 import {
-  checkPinRateLimit,
-  recordPinFailure,
-  clearPinFailures,
+  checkPinRateLimitAsync,
+  recordPinFailureAsync,
+  clearPinFailuresAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const clientIp = getClientIp(request);
-    const rateLimit = checkPinRateLimit(formattedCode, clientIp);
+    const rateLimit = await checkPinRateLimitAsync(formattedCode, clientIp);
     if (!rateLimit.allowed) {
       const minutesLeft = Math.ceil(rateLimit.resetMs / (60 * 1000)) || 1;
       return NextResponse.json(
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     if (!result.ok) {
-      recordPinFailure(formattedCode, clientIp);
+      await recordPinFailureAsync(formattedCode, clientIp);
       return NextResponse.json(
         {
           ok: false,
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    clearPinFailures(formattedCode, clientIp);
+    await clearPinFailuresAsync(formattedCode, clientIp);
     return NextResponse.json({
       ok: true,
       message: "تم التحقق من رمز الخدش السري بنجاح.",

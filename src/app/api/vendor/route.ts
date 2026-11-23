@@ -14,9 +14,9 @@ import {
   clearVendorSessionCookie,
 } from "@/lib/security-tokens";
 import {
-  checkPinRateLimit,
-  recordPinFailure,
-  clearPinFailures,
+  checkPinRateLimitAsync,
+  recordPinFailureAsync,
+  clearPinFailuresAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
 
       const ip = getClientIp(req);
       const rateKey = `vendor_pin:${phone.replace(/[^\d]/g, "").slice(-9)}:${ip}`;
-      const rateLimit = checkPinRateLimit(rateKey);
+      const rateLimit = await checkPinRateLimitAsync(rateKey);
       if (!rateLimit.allowed) {
         return NextResponse.json(
           {
@@ -90,14 +90,14 @@ export async function POST(req: NextRequest) {
 
       const auth = await authenticateVendor(phone, pin);
       if (!auth.ok || !auth.vendor) {
-        recordPinFailure(rateKey);
+        await recordPinFailureAsync(rateKey);
         return NextResponse.json(
           { ok: false, error: auth.error || "تعذر تسجيل الدخول." },
           { status: 401 }
         );
       }
 
-      clearPinFailures(rateKey);
+      await clearPinFailuresAsync(rateKey);
       const inventory = await getVendorInventory(auth.vendor.id);
       const vendorToken = createVendorSessionToken({
         vendorId: auth.vendor.id,

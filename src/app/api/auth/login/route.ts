@@ -13,9 +13,9 @@ import {
   clearOwnerSessionCookie,
 } from "@/lib/security-tokens";
 import {
-  checkPinRateLimit,
-  recordPinFailure,
-  clearPinFailures,
+  checkPinRateLimitAsync,
+  recordPinFailureAsync,
+  clearPinFailuresAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
       }
 
       const storedRecord = result.storedPasskeyRecord || "";
-      const assertionCheck = verifyWebAuthnAssertion({
+      const assertionCheck = await verifyWebAuthnAssertion({
         req: request,
         challengeTokenFromBody: body.challengeToken,
         expectedScope: "owner",
@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
 
     // 3. الدخول المباشر بعد التحقق الفعلي من رمز الـ OTP على الخادم (يرفض الثقة براية المتصفح وحدها)
     if (otpVerified || body.otpProofToken) {
-      const proofCheck = verifyAndConsumeOtpProof(
+      const proofCheck = await verifyAndConsumeOtpProof(
         request,
         body.otpProofToken,
         fullPhone
@@ -173,7 +173,7 @@ export async function POST(request: NextRequest) {
     // 4. الدخول التقليدي برمز المرور (PIN) مع حماية القفل بعد المحاولات الخاطئة
     const ip = getClientIp(request);
     const rateKey = `login_pin:${fullPhone}:${ip}`;
-    const rateLimit = checkPinRateLimit(rateKey);
+    const rateLimit = await checkPinRateLimitAsync(rateKey);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
@@ -191,7 +191,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!result.ok || !result.record) {
-      const failInfo = recordPinFailure(rateKey);
+      const failInfo = await recordPinFailureAsync(rateKey);
       return NextResponse.json(
         {
           ok: false,
@@ -202,7 +202,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    clearPinFailures(rateKey);
+    await clearPinFailuresAsync(rateKey);
     const ownerToken = createOwnerSessionToken({
       tagCode: result.record.tagCode,
       ownerPhone: result.record.ownerPhone || fullPhone,

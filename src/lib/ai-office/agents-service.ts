@@ -3,6 +3,10 @@ import path from "node:path";
 import { GoogleGenAI } from "@google/genai";
 import { Client as PgClient } from "pg";
 import { supabaseAdmin } from "@/lib/supabase/client";
+import {
+  assertAgentToolAllowed,
+  validateSkillProposal,
+} from "@/lib/ai-office/skill-guard";
 
 export type AgentRole =
   | "orchestrator"
@@ -382,6 +386,20 @@ export async function activateAgentSkill(
     return { ok: true, skill, ...snap };
   }
 
+  // التحقق الخادمي الصارم قبل الاعتماد والتفعيل: منع تعديل طارق لنفسه أو حقن تعليمات تتجاوز الصلاحيات
+  const validation = validateSkillProposal({
+    skillName: skill.skill_name,
+    targetAgentRole: skill.target_agent_role,
+    description: skill.description,
+    skillInstructions: skill.skill_instructions,
+  });
+  if (!validation.valid) {
+    return {
+      ok: false,
+      error: validation.reason || "مرفوض أمنياً: المهارة تخالف سياسات الأمان.",
+    };
+  }
+
   const nowIso = new Date().toISOString();
   let upgradedAgentName = "موقع بلّغني";
   let targetAgent: AiAgentRecord | null = null;
@@ -405,13 +423,25 @@ export async function activateAgentSkill(
 
     targetAgent = ((foundById || foundByRole) as AiAgentRecord) || null;
 
+    if (targetAgent && targetAgent.role === "skills_architect") {
+      return {
+        ok: false,
+        error:
+          "مرفوض أمنياً: لا يُسمح بتعديل تعليمات طارق (skills_architect) عبر نظام المهارات.",
+      };
+    }
+
     if (targetAgent) {
       upgradedAgentName = `${targetAgent.name} (${targetAgent.title})`;
-      const skillBlock = `\n\n[مهارة معتمدة — ${skill.skill_name}]:\n${skill.skill_instructions}`;
-      const nextPrompt = targetAgent.system_prompt.includes(skill.skill_name)
+      const safeName = validation.sanitizedName || skill.skill_name;
+      const safeInstructions =
+        validation.sanitizedInstructions || skill.skill_instructions;
+      const skillBlock = `\n\n[مهارة معتمدة — ${safeName}]:\n${safeInstructions}`;
+      const nextPrompt = targetAgent.system_prompt.includes(safeName)
         ? targetAgent.system_prompt
         : `${targetAgent.system_prompt}${skillBlock}`;
 
+      // تحديث system_prompt فقط — يُحظر تماماً لمس role أو allowed_tools أو immutable_security_guardrails
       await supabaseAdmin
         .from("ai_agents")
         .update({
@@ -1107,6 +1137,28 @@ ${liveContext}
         const instructions = String(item?.skill_instructions || "").trim();
         if (!skillName || !instructions) continue;
 
+        const toolPerm = assertAgentToolAllowed(
+          "skills_architect",
+          "propose_skill_draft"
+        );
+        const skillValidation = validateSkillProposal({
+          skillName,
+          targetAgentRole: targetRoleRaw,
+          description,
+          skillInstructions: instructions,
+        });
+        if (!toolPerm.allowed || !skillValidation.valid) {
+          await appendAgentLog({
+            agentId: selectedSpecialist.id,
+            taskId,
+            logType: "security_alert",
+            message: `🛡️ تم حظر مهارة مقترحة من طارق قبل الحفظ: «${skillName}» — السبب: ${
+              skillValidation.reason || toolPerm.reason
+            }`,
+          });
+          continue;
+        }
+
         const targetAgent =
           targetRoleRaw !== "website"
             ? byRole.get(targetRoleRaw as AgentRole) || null
@@ -1115,11 +1167,11 @@ ${liveContext}
         const { data: insertedSkill } = await supabaseAdmin
           .from("agent_skills")
           .insert({
-            skill_name: skillName,
+            skill_name: skillValidation.sanitizedName || skillName,
             target_agent_role: targetRoleRaw,
             target_agent_id: targetAgent?.id || null,
-            description: description || skillName,
-            skill_instructions: instructions,
+            description: skillValidation.sanitizedDescription || description || skillName,
+            skill_instructions: skillValidation.sanitizedInstructions || instructions,
             status: "pending",
             created_by: selectedSpecialist.id,
             task_id: taskId,

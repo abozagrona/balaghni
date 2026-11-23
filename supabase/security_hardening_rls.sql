@@ -1,17 +1,30 @@
 -- =============================================================================
--- بَلِّغْنِي | BALAGHNI — سكربت التحصين الأمني لقاعدة البيانات (Row Level Security)
+-- بَلِّغْنِي | BALAGHNI — سكربت التحصين الأمني لقاعدة البيانات (Row Level Security)
 -- المرحلة الثانية: إغلاق صلاحيات الوصول المفتوح (anon / public) وحصرها بـ service_role
 -- =============================================================================
--- تنبيه هام قبل التنفيذ في Supabase SQL Editor:
--- 1. تأكد من إضافة المتغير SUPABASE_SERVICE_ROLE_KEY في إعدادات بيئة الخادم (Vercel / .env.local).
--- 2. تأكد من إضافة المتغير SESSION_HMAC_SECRET (مفتاح عشوائي بطول 32 بايت على الأقل) لتوقيع الجلسات.
--- 3. جميع مسارات الخادم (Next.js API Routes) أصبحت تعمل حصرياً عبر الخادم باستخدام SUPABASE_SERVICE_ROLE_KEY،
---    لذلك فإن إغلاق صلاحيات (anon) لن يؤثر على أي وظيفة في الموقع بل يمنع أي استعلام مباشر من المتصفح.
+-- توثيق الجداول الـ 14 والسياسات القديمة التي يتم استبدالها:
+--   1. tags: كانت تمنح anon قراءة وتحديث وإدراج مفتوح (Allow public read/update/insert) -> تُحصر بـ service_role (تفعيل QR وفحص الملاحظات وبيانات المالك تمر عبر /api/tags/* و/api/dashboard).
+--   2. stickers: مخزون الملصقات غير المفعلة ورموز الخدش -> تُحصر بـ service_role (عبر /api/stickers/* و/api/orders).
+--   3. orders: طلبات العملاء وأرقام هواتفهم وعناوينهم -> تُحصر بـ service_role (عبر /api/orders و/api/admin).
+--   4. reports: بلاغات المركبات وreporter_phone -> تُحصر بـ service_role (عبر /api/notify و/api/dashboard).
+--   5. vehicle_documents: وثائق الصيانة والرخص لخدمة نبّهني -> تُحصر بـ service_role (عبر /api/dashboard و/api/cron/reminders).
+--   6. maintenance_records: سجلات الصيانة وتكاليفها -> تُحصر بـ service_role (عبر /api/dashboard).
+--   7. admin_profiles: حسابات المشرفين وpin_hash -> تُحصر بـ service_role (عبر /api/auth/login و/api/admin).
+--   8. admin_audit_logs: سجل التدقيق الإداري -> تُحصر بـ service_role.
+--   9. vendors: بيانات المناديب والتجار -> تُحصر بـ service_role (عبر /api/vendor و/api/admin).
+--  10. vendor_settlements: التسويات المالية للمناديب -> تُحصر بـ service_role.
+--  11. corporate_leads: طلبات الشركات والأساطيل -> تُحصر بـ service_role (عبر /api/corporate-leads).
+--  12. otp_verifications: رموز التحقق المؤقتة OTP -> تُحصر بـ service_role (عبر /api/auth/otp).
+--  13. gift_redemptions: استرداد الهدايا -> تُحصر بـ service_role.
+--  14. visual_overrides: إعدادات المظهر الإدارية -> تُحصر بـ service_role (عبر /api/visual-overrides).
+--
+-- ملاحظة: جميع مسارات Next.js API تعمل خادمياً عبر SUPABASE_SERVICE_ROLE_KEY وتتحقق
+-- من جلسات HMAC-SHA256 الموقعة (admin_session, owner_session, vendor_session).
 -- =============================================================================
 
 BEGIN;
 
--- 1. تفعيل RLS وإلغاء جميع السياسات المفتوحة (USING (true)) على كافة جداول المنصة
+-- 1. تفعيل RLS وإلغاء جميع السياسات المفتوحة على كافة جداول المنصة
 DO $$
 DECLARE
   tbl text;
@@ -52,7 +65,7 @@ BEGIN
       END LOOP;
 
       -- سحب الصلاحيات المباشرة من الأدوار العامة (anon و authenticated)
-      EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon, authenticated;', tbl);
+      EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC, anon, authenticated;', tbl);
 
       -- منح الصلاحيات الكاملة لدور الخادم الموثوق (service_role) فقط
       EXECUTE format('GRANT ALL ON TABLE public.%I TO service_role;', tbl);
@@ -67,7 +80,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- 2. تحصين حاوية صور البلاغات (Storage Bucket: report-photos)
+-- 2. تحصين حاوية صور البلاغات (Storage Bucket: report-photos) وجعلها خاصة (Private)
 DO $$
 DECLARE
   pol record;
@@ -76,15 +89,15 @@ BEGIN
     SELECT 1 FROM information_schema.tables
     WHERE table_schema = 'storage' AND table_name = 'buckets'
   ) THEN
-    -- ضبط قيود الحاوية: الحد الأقصى 5 ميجابايت، وأنواع الصور المسموحة فقط (JPEG, PNG, WebP)
+    -- جعل الحاوية خاصة (public = false) والوصول عبر روابط موقّعة من الخادم فقط
     UPDATE storage.buckets
     SET
-      public = true,
+      public = false,
       file_size_limit = 5242880,
       allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/webp']
     WHERE id = 'report-photos';
 
-    -- حذف السياسات المفتوحة القديمة للرفع أو الحذف عبر anon على report-photos
+    -- حذف أي سياسات قراءة أو رفع عامة على report-photos
     FOR pol IN
       SELECT policyname
       FROM pg_policies
@@ -99,16 +112,11 @@ BEGIN
       EXECUTE format('DROP POLICY IF EXISTS %I ON storage.objects;', pol.policyname);
     END LOOP;
 
-    -- السماح بالقراءة العامة لعرض صور البلاغات فقط، وحصر الرفع والتعديل والحذف بالخادم (service_role)
+    -- حصر القراءة والرفع والتعديل والحذف بالخادم (service_role) فقط — بدون أي وصول عام
     DROP POLICY IF EXISTS "report_photos_public_read" ON storage.objects;
-    CREATE POLICY "report_photos_public_read"
-      ON storage.objects
-      FOR SELECT
-      TO public
-      USING (bucket_id = 'report-photos');
-
     DROP POLICY IF EXISTS "report_photos_service_role_write" ON storage.objects;
-    CREATE POLICY "report_photos_service_role_write"
+    DROP POLICY IF EXISTS "report_photos_service_role_only" ON storage.objects;
+    CREATE POLICY "report_photos_service_role_only"
       ON storage.objects
       FOR ALL
       TO service_role

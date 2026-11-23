@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createCorporateLead } from "@/lib/lifecycle-service";
 import {
-  checkOrderRateLimit,
-  recordOrderAttempt,
+  checkOrderRateLimitAsync,
+  recordOrderAttemptAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
 
     const ip = getClientIp(req);
     const rateKeyPhone = contactPhone || companyName;
-    const rateLimit = checkOrderRateLimit(rateKeyPhone, ip);
+    const rateLimit = await checkOrderRateLimitAsync(rateKeyPhone, ip);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
         { status: 429 }
       );
     }
-    recordOrderAttempt(rateKeyPhone, ip);
+    await recordOrderAttemptAsync(rateKeyPhone, ip);
 
     const res = await createCorporateLead({
       companyName,

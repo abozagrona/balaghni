@@ -12,8 +12,8 @@ import {
   attachOwnerSessionCookie,
 } from "@/lib/security-tokens";
 import {
-  checkOrderRateLimit,
-  recordOrderAttempt,
+  checkOrderRateLimitAsync,
+  recordOrderAttemptAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -43,7 +43,7 @@ export async function POST(
 
     // 1. فحص حدود المعدل (Rate Limit) لمنع استنزاف التفعيلات
     const ip = getClientIp(req);
-    const rateLimit = checkOrderRateLimit(formattedPhone, ip);
+    const rateLimit = await checkOrderRateLimitAsync(formattedPhone, ip);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
@@ -56,7 +56,7 @@ export async function POST(
     }
 
     // 2. إلزام التحقق الفعلي من رقم الهاتف عبر رمز التحقق (OTP Proof Token) الموقّع من الخادم
-    const otpProofCheck = verifyAndConsumeOtpProof(
+    const otpProofCheck = await verifyAndConsumeOtpProof(
       req,
       body.otpProofToken,
       formattedPhone
@@ -74,7 +74,7 @@ export async function POST(
       );
     }
 
-    recordOrderAttempt(formattedPhone, ip);
+    await recordOrderAttemptAsync(formattedPhone, ip);
 
     const ownerName = String(body.ownerName || "").trim();
     const vehicleInfo = String(body.vehicleInfo || "").trim();

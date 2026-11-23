@@ -14,9 +14,9 @@ import {
   extractRawCredentialId,
 } from "@/lib/security-tokens";
 import {
-  checkPasskeyRateLimit,
+  checkPasskeyRateLimitAsync,
   getClientIp,
-  recordPasskeyAttempt,
+  recordPasskeyAttemptAsync,
 } from "@/lib/rate-limiter";
 
 const PRODUCTION_ORIGINS = [
@@ -125,14 +125,14 @@ export async function GET(request: NextRequest) {
     resolveWebAuthnContext(request);
   const headers = buildCorsHeaders(origin, isOriginAllowed);
   const clientIp = getClientIp(request);
-  const pkLimit = checkPasskeyRateLimit(clientIp);
+  const pkLimit = await checkPasskeyRateLimitAsync(clientIp);
   if (!pkLimit.allowed) {
     return NextResponse.json(
       { ok: false, error: pkLimit.reason },
       { status: 429, headers }
     );
   }
-  recordPasskeyAttempt(clientIp);
+  await recordPasskeyAttemptAsync(clientIp);
 
   const phone = request.nextUrl.searchParams.get("phone") || "";
   const tagCode = request.nextUrl.searchParams.get("tagCode") || "";
@@ -198,14 +198,14 @@ export async function POST(request: NextRequest) {
   const headers = buildCorsHeaders(origin, isOriginAllowed);
 
   const clientIp = getClientIp(request);
-  const pkLimit = checkPasskeyRateLimit(clientIp);
+  const pkLimit = await checkPasskeyRateLimitAsync(clientIp);
   if (!pkLimit.allowed) {
     return NextResponse.json(
       { ok: false, error: pkLimit.reason },
       { status: 429, headers }
     );
   }
-  recordPasskeyAttempt(clientIp);
+  await recordPasskeyAttemptAsync(clientIp);
 
   if (!isOriginAllowed) {
     return NextResponse.json(
@@ -240,7 +240,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const regVerify = verifyWebAuthnRegistration({
+    const regVerify = await verifyWebAuthnRegistration({
       req: request,
       challengeTokenFromBody: body.challengeToken,
       expectedScope: "owner",

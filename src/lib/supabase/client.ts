@@ -12,17 +12,18 @@ import {
   verifySecurityToken,
   extractRawCredentialId,
   createReportReplySignature,
+  buildSignedReportLiveChannel,
   type BaseTokenPayload,
 } from "@/lib/security-tokens";
+import { registerWhatsappDelivery } from "@/lib/delivery-fallback";
 
-const rawSupabaseUrl = (
-  process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
-  "https://aivxhxnvgqxylugqrjei.supabase.co"
-).replace(/\/+$/, "");
+const UNCONFIGURED_SUPABASE_URL = "https://unconfigured.invalid";
+const UNCONFIGURED_SUPABASE_KEY = "unconfigured";
 
-const rawSupabaseAnonKey =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-  "sb_publishable_wUsqBoHbhbuvVitBDo2wuw_xOhU-IEe";
+const rawSupabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "")
+  .replace(/\/+$/, "");
+
+const rawSupabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
 
 const normalizeSupabaseKey = (raw: string | undefined): string => {
   const trimmed = (raw || "").trim().replace(/^["']|["']$/g, "").trim();
@@ -45,19 +46,27 @@ const serviceCandidates = [
 const validServiceKey = serviceCandidates.find(isValidKeyFormat) || "";
 const isValidServiceJwt = Boolean(validServiceKey);
 
-if (serviceCandidates.some(Boolean) && !isValidServiceJwt) {
+if (!rawSupabaseUrl && typeof window === "undefined") {
   console.warn(
-    "[Supabase Config Warning] المفتاح SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY في Vercel غير مكتمل أو بصيغة غير صالحة."
+    "[Supabase Config Warning] المتغير NEXT_PUBLIC_SUPABASE_URL غير مضبوط؛ لن يتم الاتصال بأي مشروع افتراضي."
   );
 }
 
+if (serviceCandidates.some(Boolean) && !isValidServiceJwt) {
+  console.warn(
+    "[Supabase Config Warning] مفتاح خدمة Supabase في بيئة الخادم غير مكتمل أو بصيغة غير صالحة."
+  );
+}
+
+const effectiveSupabaseUrl = rawSupabaseUrl || UNCONFIGURED_SUPABASE_URL;
+
 // على الخادم (Server-Side) نستخدم مفتاح الخدمة (Service Role) لتجاوز قيود RLS العامة بأمان
 const defaultClientKey =
-  typeof window === "undefined" && isValidServiceJwt
-    ? validServiceKey
-    : normalizedAnonKey;
+  typeof window === "undefined"
+    ? validServiceKey || UNCONFIGURED_SUPABASE_KEY
+    : normalizedAnonKey || UNCONFIGURED_SUPABASE_KEY;
 
-export const supabase = createClient(rawSupabaseUrl, defaultClientKey, {
+export const supabase = createClient(effectiveSupabaseUrl, defaultClientKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false,
@@ -65,8 +74,8 @@ export const supabase = createClient(rawSupabaseUrl, defaultClientKey, {
 });
 
 export const supabaseAdmin = createClient(
-  rawSupabaseUrl,
-  isValidServiceJwt ? validServiceKey : normalizedAnonKey,
+  effectiveSupabaseUrl,
+  isValidServiceJwt ? validServiceKey : UNCONFIGURED_SUPABASE_KEY,
   {
     auth: {
       autoRefreshToken: false,
@@ -75,7 +84,42 @@ export const supabaseAdmin = createClient(
   }
 );
 
-export async function broadcastReportRealtimeUpdate(params: {
+export function sanitizeReportBroadcastPayload(params: {
+  reportId?: string | null;
+  tagCode?: string | null;
+  deliveryStatus: "sent" | "delivered" | "read" | "replied";
+  ownerReply?: string | null;
+  isSmsFallback?: boolean;
+  reasonBadge?: string;
+}): {
+  reportId?: string;
+  tagCode?: string;
+  deliveryStatus: "sent" | "delivered" | "read" | "replied";
+  ownerReply: string | null;
+  isSmsFallback: boolean;
+  reasonBadge?: string;
+} {
+  const reportId = String(params.reportId || "").trim() || undefined;
+  const tagCode = String(params.tagCode || "").trim().toUpperCase() || undefined;
+  const ownerReply =
+    typeof params.ownerReply === "string" && params.ownerReply.trim()
+      ? params.ownerReply.trim().slice(0, 280)
+      : null;
+  // قائمة بيضاء صارمة للحقول المسموح ببثها فقط — يُمنع نهائياً بث أي أرقام هواتف أو صور أو PII
+  return {
+    reportId,
+    tagCode,
+    deliveryStatus: params.deliveryStatus,
+    ownerReply,
+    isSmsFallback: Boolean(params.isSmsFallback),
+    reasonBadge:
+      typeof params.reasonBadge === "string"
+        ? params.reasonBadge.trim().slice(0, 120)
+        : undefined,
+  };
+}
+
+export async function broadcastReportRealtimeUpdate(_params: {
   reportId?: string | null;
   tagCode?: string | null;
   deliveryStatus: "sent" | "delivered" | "read" | "replied";
@@ -83,33 +127,8 @@ export async function broadcastReportRealtimeUpdate(params: {
   isSmsFallback?: boolean;
   reasonBadge?: string;
 }): Promise<void> {
-  const reportId = String(params.reportId || "").trim();
-  const tagCode = String(params.tagCode || "").trim().toUpperCase();
-  const payload = {
-    reportId: reportId || undefined,
-    tagCode: tagCode || undefined,
-    deliveryStatus: params.deliveryStatus,
-    ownerReply: params.ownerReply ?? null,
-    isSmsFallback: Boolean(params.isSmsFallback),
-    reasonBadge: params.reasonBadge,
-  };
-
-  const channels = [
-    reportId ? `report-live:${reportId}` : null,
-    tagCode ? `report-tag:${tagCode}` : null,
-  ].filter(Boolean) as string[];
-
-  await Promise.all(
-    channels.map(async (channelName) => {
-      try {
-        const ch = supabaseAdmin.channel(channelName);
-        await ch.httpSend("report_update", payload);
-        await supabaseAdmin.removeChannel(ch);
-      } catch {
-        // ignore transient realtime broadcast failure
-      }
-    })
-  );
+  // الخيار B المعتمد: تم إلغاء بث تحديثات البلاغات وردود المالك (ownerReply) عبر Supabase Realtime نهائياً.
+  // التحديثات تُقرأ حصراً عبر مسار الخادم المصادق (/api/notify) باستخدام توكن report_access في الترويسة.
 }
 
 export type TagStatus = "LOCKED" | "ACTIVE" | "REVOKED";
@@ -201,6 +220,126 @@ export function hashSha256(value: string): string {
 
 export const hashPinSha256 = hashSha256;
 
+const ADMIN_SCRYPT_N = 16384;
+const ADMIN_SCRYPT_R = 8;
+const ADMIN_SCRYPT_P = 1;
+const ADMIN_SCRYPT_KEYLEN = 64;
+const ADMIN_SCRYPT_MAXMEM = 32 * 1024 * 1024;
+const ADMIN_SCRYPT_SALT_BYTES = 16;
+
+/**
+ * تجزئة PIN/كلمة مرور المشرف باستخدام خوارزمية scrypt المملحة بصيغة ذات إصدار واضح:
+ * v2:scrypt:16384:8:1:<16-byte-salt-hex>:<64-byte-derived-key-hex>
+ * لا يتم تسجيل PIN أو Salt أو Hash في أي سجل Logs.
+ */
+export function hashAdminPinScrypt(rawPin: string, customSaltHex?: string): string {
+  const cleanPin = String(rawPin || "").trim();
+  if (!cleanPin) {
+    throw new Error("لا يمكن تجزئة رمز مشرف فارغ.");
+  }
+  const saltBuf =
+    customSaltHex && /^[0-9a-f]{32,64}$/i.test(customSaltHex)
+      ? Buffer.from(customSaltHex, "hex")
+      : crypto.randomBytes(ADMIN_SCRYPT_SALT_BYTES);
+  const derived = crypto.scryptSync(cleanPin, saltBuf, ADMIN_SCRYPT_KEYLEN, {
+    N: ADMIN_SCRYPT_N,
+    r: ADMIN_SCRYPT_R,
+    p: ADMIN_SCRYPT_P,
+    maxmem: ADMIN_SCRYPT_MAXMEM,
+  });
+  return `v2:scrypt:${ADMIN_SCRYPT_N}:${ADMIN_SCRYPT_R}:${ADMIN_SCRYPT_P}:${saltBuf.toString("hex")}:${derived.toString("hex")}`;
+}
+
+export function isAdminPinScryptV2(storedHash?: string | null): boolean {
+  const raw = String(storedHash || "").trim();
+  return /^v2:scrypt:\d+:\d+:\d+:[0-9a-f]{32,64}:[0-9a-f]{128}$/i.test(raw);
+}
+
+/**
+ * التحقق الآمن (Timing-Safe) من PIN/كلمة مرور المشرف مع دعم:
+ * 1. الصيغة الحديثة المملحة v2:scrypt:N:r:p:saltHex:hashHex
+ * 2. الصيغة القديمة المؤقتة (64-char hex SHA-256) مع تحديد needsUpgrade=true لترقيتها تلقائياً عند نجاح الدخول
+ * 3. رفض أي صيغة تالفة أو غير معروفة أو نصية خام (Fail-Closed)
+ */
+export function verifyAdminPinHash(
+  rawInputPin: string,
+  storedPinHash?: string | null
+): {
+  valid: boolean;
+  needsUpgrade: boolean;
+  format: "v2_scrypt" | "legacy_sha256" | "invalid";
+} {
+  const cleanInput = String(rawInputPin || "").trim();
+  const cleanStored = String(storedPinHash || "").trim();
+
+  if (!cleanInput || !cleanStored) {
+    return { valid: false, needsUpgrade: false, format: "invalid" };
+  }
+
+  if (cleanStored.startsWith("v2:scrypt:")) {
+    const parts = cleanStored.split(":");
+    if (parts.length !== 7) {
+      return { valid: false, needsUpgrade: false, format: "invalid" };
+    }
+    const nVal = Number(parts[2]);
+    const rVal = Number(parts[3]);
+    const pVal = Number(parts[4]);
+    const saltHex = parts[5] || "";
+    const expectedHex = parts[6] || "";
+
+    if (
+      !Number.isInteger(nVal) ||
+      nVal < 1024 ||
+      nVal > 65536 ||
+      (nVal & (nVal - 1)) !== 0 ||
+      !Number.isInteger(rVal) ||
+      rVal < 1 ||
+      rVal > 32 ||
+      !Number.isInteger(pVal) ||
+      pVal < 1 ||
+      pVal > 16 ||
+      !/^[0-9a-f]{32,64}$/i.test(saltHex) ||
+      !/^[0-9a-f]{128}$/i.test(expectedHex)
+    ) {
+      return { valid: false, needsUpgrade: false, format: "invalid" };
+    }
+
+    try {
+      const saltBuf = Buffer.from(saltHex, "hex");
+      const expectedBuf = Buffer.from(expectedHex, "hex");
+      const derivedBuf = crypto.scryptSync(cleanInput, saltBuf, expectedBuf.length, {
+        N: nVal,
+        r: rVal,
+        p: pVal,
+        maxmem: ADMIN_SCRYPT_MAXMEM,
+      });
+      if (derivedBuf.length !== expectedBuf.length) {
+        return { valid: false, needsUpgrade: false, format: "invalid" };
+      }
+      const matched = crypto.timingSafeEqual(derivedBuf, expectedBuf);
+      return { valid: matched, needsUpgrade: false, format: "v2_scrypt" };
+    } catch {
+      return { valid: false, needsUpgrade: false, format: "invalid" };
+    }
+  }
+
+  // دعم التحقق المؤقت من الصيغة القديمة (SHA-256 بطول 64 محرفاً سداسياً عشرياً فقط)
+  if (/^[0-9a-f]{64}$/i.test(cleanStored)) {
+    const inputShaHex = hashSha256(cleanInput).toLowerCase();
+    const expectedBuf = Buffer.from(cleanStored.toLowerCase(), "hex");
+    const inputBuf = Buffer.from(inputShaHex, "hex");
+    if (
+      inputBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(inputBuf, expectedBuf)
+    ) {
+      return { valid: true, needsUpgrade: true, format: "legacy_sha256" };
+    }
+    return { valid: false, needsUpgrade: false, format: "legacy_sha256" };
+  }
+
+  return { valid: false, needsUpgrade: false, format: "invalid" };
+}
+
 function normalizeStatus(raw?: string | null): TagStatus {
   const upper = String(raw || "").toUpperCase();
   if (upper === "ACTIVE") return "ACTIVE";
@@ -218,17 +357,39 @@ export const LEGACY_TEST_CODES = new Set([
 
 export const INITIAL_SEED_TAGS: Record<string, StoredTagRow> = {};
 
+/**
+ * حاجز بيئي مركزي (A-03): يمنع قراءة أو كتابة ملفات التخزين المحلي (local-*.json)
+ * في بيئتي الإنتاج (production) والمعاينة (preview)، لمنع أي Fallback صامت من Supabase إلى ملفات JSON.
+ * يُسمح بها حصراً في التطوير المحلي ما لم يُفعّل ALLOW_LOCAL_JSON_FALLBACK="true" صراحةً في بيئة اختبار معزولة.
+ */
+export function isLocalJsonStoreAllowedInCurrentEnv(): boolean {
+  const isProdNode = process.env.NODE_ENV === "production";
+  const isProdOrPreviewVercel =
+    process.env.VERCEL_ENV === "production" ||
+    process.env.VERCEL_ENV === "preview";
+  if (isProdNode || isProdOrPreviewVercel) {
+    return process.env.ALLOW_LOCAL_JSON_FALLBACK === "true";
+  }
+  if (process.env.ALLOW_LOCAL_JSON_FALLBACK === "false") {
+    return false;
+  }
+  return true;
+}
+
 function loadSyncedStore(): Record<string, StoredTagRow> {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return {};
+  }
   const map: Record<string, StoredTagRow> = {};
 
-  // 1. شحن الملصقات المعتمدة أولاً (تضمن تواجدها دائماً على Vercel وجميع البيئات السحابية)
+  // 1. شحن الملصقات المعتمدة أولاً (في بيئة التطوير المحلي فقط)
   for (const [k, v] of Object.entries(INITIAL_SEED_TAGS)) {
     if (!LEGACY_TEST_CODES.has(k.toUpperCase())) {
       map[k.toUpperCase()] = { ...v };
     }
   }
 
-  // 2. دمج أي تحديثات لاحقة من ملف التخزين المحلي إن وُجد
+  // 2. دمج أي تحديثات لاحقة من ملف التخزين المحلي إن وُجد (في بيئة التطوير المحلي فقط)
   try {
     if (fs.existsSync(LOCAL_STORE_PATH)) {
       const saved = JSON.parse(
@@ -251,6 +412,9 @@ function loadSyncedStore(): Record<string, StoredTagRow> {
 }
 
 function saveToSyncedStore(row: StoredTagRow) {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return;
+  }
   try {
     let saved: Record<string, StoredTagRow> = {};
     if (fs.existsSync(LOCAL_STORE_PATH)) {
@@ -265,6 +429,9 @@ function saveToSyncedStore(row: StoredTagRow) {
 }
 
 function removeFromSyncedStore(tagCode: string) {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return;
+  }
   try {
     if (fs.existsSync(LOCAL_STORE_PATH)) {
       const saved = JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf8"));
@@ -1179,6 +1346,9 @@ function loadDashboardStore(): SyncedTagDashboardStore {
     reports: {},
     maintenance: {},
   };
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return empty;
+  }
   try {
     if (fs.existsSync(DASHBOARD_STORE_PATH)) {
       const parsed = JSON.parse(
@@ -1197,6 +1367,9 @@ function loadDashboardStore(): SyncedTagDashboardStore {
 }
 
 function saveDashboardStore(store: SyncedTagDashboardStore) {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return;
+  }
   try {
     fs.mkdirSync(path.dirname(DASHBOARD_STORE_PATH), { recursive: true });
     fs.writeFileSync(
@@ -1213,7 +1386,10 @@ function saveDashboardStore(store: SyncedTagDashboardStore) {
  * جلب بيانات لوحة تحكم المالك الحقيقية لملصق محدد من Supabase (جدول tags + vehicle_documents + reports + maintenance_records)
  * بدون أي بيانات افتراضية أو وهمية
  */
-export async function getTagDashboardData(rawTagCode: string): Promise<{
+export async function getTagDashboardData(
+  rawTagCode: string,
+  options?: { includeSignedPhotoUrls?: boolean }
+): Promise<{
   ok: boolean;
   error?: string;
   tag?: VehicleTagRecord;
@@ -1361,6 +1537,26 @@ export async function getTagDashboardData(rawTagCode: string): Promise<{
     // ignore
   }
 
+  if (options?.includeSignedPhotoUrls === true && reports.length > 0) {
+    reports = await Promise.all(
+      reports.map(async (r) => ({
+        ...r,
+        photoUrl: r.photoUrl
+          ? await createShortLivedReportPhotoSignedUrl(
+              r.photoUrl,
+              REPORT_PHOTO_SIGNED_TTL_SECONDS,
+              normalizedCode
+            )
+          : null,
+      }))
+    );
+  } else if (reports.length > 0) {
+    reports = reports.map((r) => ({
+      ...r,
+      photoUrl: null,
+    }));
+  }
+
   return {
     ok: true,
     tag,
@@ -1381,33 +1577,98 @@ export async function upsertVehicleDocumentForTag(params: {
   expiryDate: string;
 }): Promise<{ ok: boolean; document?: VehicleDocumentRecord; error?: string }> {
   const normalizedCode = params.tagCode.toUpperCase().trim();
-  const docId = params.id || `doc_${Date.now().toString(36)}`;
+  const cleanId = params.id ? String(params.id).trim() : "";
+  const cleanTitle = params.title.trim();
+  const cleanSubtitle = (params.subtitle || "").trim();
+  const cleanExpiryDate = params.expiryDate.trim();
   const nowIso = new Date().toISOString();
+  const db = getLifecycleAdminDb();
 
-  const docRecord: VehicleDocumentRecord = {
-    id: docId,
-    tagCode: normalizedCode,
-    title: params.title.trim(),
-    subtitle: (params.subtitle || "").trim(),
-    expiryDate: params.expiryDate.trim(),
-    createdAt: nowIso,
-  };
+  let savedId = cleanId;
+  let savedCreatedAt = nowIso;
 
   try {
-    await supabaseAdmin.from("vehicle_documents").upsert({
-      id: params.id || undefined,
-      tag_code: normalizedCode,
-      title: docRecord.title,
-      subtitle: docRecord.subtitle,
-      expiry_date: docRecord.expiryDate,
-    });
-  } catch {
-    // ignore if remote table not created yet
+    if (!cleanId) {
+      // إنشاء وثيقة جديدة عبر INSERT صريح دون upsert
+      const { data, error } = await db
+        .from("vehicle_documents")
+        .insert({
+          tag_code: normalizedCode,
+          title: cleanTitle,
+          subtitle: cleanSubtitle,
+          expiry_date: cleanExpiryDate,
+        })
+        .select("id, tag_code, title, subtitle, expiry_date, created_at")
+        .single();
+
+      if (error || !data) {
+        return {
+          ok: false,
+          error: error
+            ? `تعذر حفظ الوثيقة في قاعدة البيانات: ${error.message}`
+            : "تعذر إنشاء الوثيقة في قاعدة البيانات.",
+        };
+      }
+
+      savedId = String((data as { id: string }).id);
+      savedCreatedAt = String(
+        (data as { created_at?: string }).created_at || nowIso
+      );
+    } else {
+      // تعديل مشروط بملكية السجل (id + tag_code معاً) دون السماح بتغيير tag_code
+      const { data, error } = await db
+        .from("vehicle_documents")
+        .update({
+          title: cleanTitle,
+          subtitle: cleanSubtitle,
+          expiry_date: cleanExpiryDate,
+        })
+        .eq("id", cleanId)
+        .eq("tag_code", normalizedCode)
+        .select("id, tag_code, title, subtitle, expiry_date, created_at")
+        .maybeSingle();
+
+      if (error) {
+        return {
+          ok: false,
+          error: `تعذر تحديث الوثيقة في قاعدة البيانات: ${error.message}`,
+        };
+      }
+
+      if (!data) {
+        return {
+          ok: false,
+          error: "الوثيقة المطلوبة غير موجودة أو لا تتبع لهذا الوسم.",
+        };
+      }
+
+      savedId = String((data as { id: string }).id);
+      savedCreatedAt = String(
+        (data as { created_at?: string }).created_at || nowIso
+      );
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? `تعذر حفظ الوثيقة: ${err.message}`
+          : "تعذر حفظ الوثيقة نتيجة خطأ في قاعدة البيانات.",
+    };
   }
+
+  const docRecord: VehicleDocumentRecord = {
+    id: savedId,
+    tagCode: normalizedCode,
+    title: cleanTitle,
+    subtitle: cleanSubtitle,
+    expiryDate: cleanExpiryDate,
+    createdAt: savedCreatedAt,
+  };
 
   const store = loadDashboardStore();
   const currentList = store.documents[normalizedCode] || [];
-  const existingIdx = currentList.findIndex((d) => d.id === docId);
+  const existingIdx = currentList.findIndex((d) => d.id === savedId);
   if (existingIdx >= 0) {
     currentList[existingIdx] = docRecord;
   } else {
@@ -1604,7 +1865,7 @@ export interface AdminTeamMemberRecord {
   phone: string;
   permissions: AdminPermission[];
   mustChangePassword: boolean;
-  passkeyCredentialId?: string | null;
+  hasPasskey: boolean;
   status: "ACTIVE" | "FROZEN";
   lastLogin?: string | null;
   createdAt: string;
@@ -1634,6 +1895,9 @@ function loadAdminStore(): AdminStoreData {
     notifyCooldowns: {},
     auditLogs: [],
   };
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return fallback;
+  }
 
   try {
     if (fs.existsSync(ADMIN_STORE_PATH)) {
@@ -1657,6 +1921,9 @@ function loadAdminStore(): AdminStoreData {
 }
 
 function saveAdminStore(data: AdminStoreData) {
+  if (!isLocalJsonStoreAllowedInCurrentEnv()) {
+    return;
+  }
   try {
     fs.mkdirSync(path.dirname(ADMIN_STORE_PATH), { recursive: true });
     fs.writeFileSync(ADMIN_STORE_PATH, JSON.stringify(data, null, 2), "utf8");
@@ -1780,19 +2047,17 @@ async function findAdminProfileByPhone(
   const normalizedTarget = normalizeAdminPhoneKey(clean);
   const digits = clean.replace(/\D/g, "");
 
+  if (!isValidServiceJwt) {
+    lastAdminDbError = {
+      message: "تعذر الوصول إلى حسابات الإدارة لعدم توفر مفتاح الخدمة الصالح.",
+    };
+    return null;
+  }
+
   try {
-    let { data, error } = await supabaseAdmin.from("admin_profiles").select("*");
-    if (error && isValidServiceJwt && validServiceKey !== normalizedAnonKey) {
-      // في حال كان مفتاح الخدمة في Vercel غير متطابق مع المشروع، جرب المفتاح العام كاحتياط
-      const fallbackClient = createClient(rawSupabaseUrl, normalizedAnonKey, {
-        auth: { autoRefreshToken: false, persistSession: false },
-      });
-      const retry = await fallbackClient.from("admin_profiles").select("*");
-      if (!retry.error && Array.isArray(retry.data)) {
-        data = retry.data;
-        error = null;
-      }
-    }
+    const { data, error } = await getLifecycleAdminDb()
+      .from("admin_profiles")
+      .select("*");
     if (error) {
       lastAdminDbError = { code: error.code, message: error.message };
     }
@@ -1968,8 +2233,11 @@ export async function verifyAdminAuthentication(params: {
     }
 
     if (params.currentPassword) {
-      const currHash = hashSha256(params.currentPassword.trim()).toLowerCase();
-      if (currHash !== String(profileRow.pin_hash || "").toLowerCase()) {
+      const currCheck = verifyAdminPinHash(
+        params.currentPassword.trim(),
+        profileRow.pin_hash
+      );
+      if (!currCheck.valid) {
         return {
           ok: false,
           error: "كلمة المرور الحالية غير صحيحة.",
@@ -1977,7 +2245,7 @@ export async function verifyAdminAuthentication(params: {
       }
     }
 
-    const newHash = hashSha256(newPass);
+    const newHash = hashAdminPinScrypt(newPass);
     const updatedPermissions = serializePermissionsForDb(
       parsePermissionsFromDb(profileRow.permissions),
       false // إلغاء إلزام تغيير كلمة المرور بعد تغييرها بنجاح
@@ -2299,10 +2567,8 @@ export async function verifyAdminAuthentication(params: {
     return registerFailedAttempt("حقل كلمة المرور فارغ");
   }
 
-  const inputHash = hashSha256(rawPassword).toLowerCase();
-  const storedHash = String(profileRow.pin_hash || "").trim().toLowerCase();
-
-  if (inputHash !== storedHash && rawPassword !== storedHash) {
+  const pinVerification = verifyAdminPinHash(rawPassword, profileRow.pin_hash);
+  if (!pinVerification.valid) {
     return registerFailedAttempt("كلمة المرور غير مطابقة");
   }
 
@@ -2313,13 +2579,29 @@ export async function verifyAdminAuthentication(params: {
   store.lastLogins[profileRow.id] = nowIso;
   saveAdminStore(store);
 
-  try {
-    await supabase
-      .from("admin_profiles")
-      .update({ last_login: nowIso })
-      .eq("id", profileRow.id);
-  } catch {
-    // ignore
+  // ترقية تلقائية آمنة ومتزامنة (Compare-and-Swap) من SHA-256 القديم إلى v2:scrypt
+  // لا يتم تسجيل PIN أو Salt أو Hash في أي سجل تدقيق أو console
+  if (pinVerification.needsUpgrade) {
+    try {
+      const upgradedHash = hashAdminPinScrypt(rawPassword);
+      const legacyStoredHash = String(profileRow.pin_hash || "").trim();
+      await supabaseAdmin
+        .from("admin_profiles")
+        .update({ pin_hash: upgradedHash, last_login: nowIso })
+        .eq("id", profileRow.id)
+        .eq("pin_hash", legacyStoredHash);
+    } catch {
+      // في حال تعذر التحديث المتزامن لا نكسر جلسة الدخول الصالحة
+    }
+  } else {
+    try {
+      await supabaseAdmin
+        .from("admin_profiles")
+        .update({ last_login: nowIso })
+        .eq("id", profileRow.id);
+    } catch {
+      // ignore
+    }
   }
 
   await recordAdminAuditLog({
@@ -2795,21 +3077,130 @@ export async function validateScanTargetAndCooldown(tagCode: string): Promise<{
   return { ok: true, tag };
 }
 
+export const REPORT_PHOTO_SIGNED_TTL_SECONDS = 15 * 60; // 15 دقيقة
+
+function getAllowedSupabaseStorageHost(): string {
+  try {
+    return new URL(rawSupabaseUrl).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function decodeSafelyTwice(input: string): string | null {
+  let cur = input;
+  for (let i = 0; i < 2; i++) {
+    try {
+      const next = decodeURIComponent(cur);
+      if (next === cur) break;
+      cur = next;
+    } catch {
+      return null;
+    }
+  }
+  // إذا بقيت علامة % بعد فك الترميز مرتين، نعتبره ترميزاً مشبوهاً/متعدداً ونرفضه
+  if (/%[0-9a-fA-F]{2}/.test(cur)) return null;
+  return cur;
+}
+
 /**
- * رفع صورة البلاغ المرفقة إلى Supabase Storage (bucket: report-photos)
- * بعد التحقق من أن الحجم لا يتجاوز 5 ميجابايت وفحص البصمة الحقيقية للصورة (Magic Bytes)
+ * استخراج objectPath الداخلي من قيمة photo_url مع منع Path Traversal والترميز المزدوج
+ * وقبول روابط Supabase Storage الخاصة بمشروعنا وحاوية report-photos فقط
+ */
+export function extractReportPhotoObjectPath(
+  rawUrlOrPath: string | null | undefined,
+  expectedTagCode?: string
+): string | null {
+  const val = String(rawUrlOrPath || "").trim();
+  if (!val || val.includes("\0") || val.includes("\\")) return null;
+
+  let candidate = "";
+
+  if (!/^https?:\/\//i.test(val)) {
+    if (val.includes("?") || val.includes("#") || val.startsWith("/")) return null;
+    const decoded = decodeSafelyTwice(val);
+    if (!decoded) return null;
+    candidate = decoded.replace(/^\/+/, "");
+  } else {
+    try {
+      const parsed = new URL(val);
+      const allowedHost = getAllowedSupabaseStorageHost();
+      if (parsed.protocol !== "https:" || !allowedHost || parsed.hostname.toLowerCase() !== allowedHost) {
+        return null;
+      }
+      const allowedPrefixes = [
+        "/storage/v1/object/public/report-photos/",
+        "/storage/v1/object/sign/report-photos/",
+      ];
+      const matchedPrefix = allowedPrefixes.find((p) => parsed.pathname.startsWith(p));
+      if (!matchedPrefix) return null;
+
+      const rawRel = parsed.pathname.slice(matchedPrefix.length);
+      const decodedRel = decodeSafelyTwice(rawRel);
+      if (!decodedRel) return null;
+      candidate = decodedRel.replace(/^\/+/, "");
+    } catch {
+      return null;
+    }
+  }
+
+  // منع أي محاولة Path Traversal أو مسارات خارج الصيغة الصارمة <TAG_CODE>/<FILE_NAME>
+  if (!candidate || candidate.includes("..") || candidate.includes("//")) return null;
+  if (!/^[A-Z0-9-]{3,32}\/[A-Za-z0-9._-]{4,128}$/.test(candidate)) {
+    return null;
+  }
+
+  if (expectedTagCode) {
+    const normTag = expectedTagCode.toUpperCase().trim();
+    if (normTag && !candidate.startsWith(`${normTag}/`)) {
+      return null;
+    }
+  }
+
+  return candidate;
+}
+
+/**
+ * توليد رابط موقّع قصير الصلاحية (15 دقيقة) لصورة البلاغ بعد التحقق من الصلاحية.
+ * يرفض أي رابط خارجي أو مسار غير معروف ويعيد null عند أي خطأ (دون أي fallback لرابط عام).
+ */
+export async function createShortLivedReportPhotoSignedUrl(
+  rawUrlOrPath: string | null | undefined,
+  ttlSeconds: number = REPORT_PHOTO_SIGNED_TTL_SECONDS,
+  expectedTagCode?: string
+): Promise<string | null> {
+  const objectPath = extractReportPhotoObjectPath(rawUrlOrPath, expectedTagCode);
+  if (!objectPath) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await getLifecycleAdminDb().storage
+      .from("report-photos")
+      .createSignedUrl(objectPath, ttlSeconds);
+    if (error) return null;
+    return data?.signedUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * رفع صورة البلاغ المرفقة إلى Supabase Storage (bucket: report-photos الخاص)
+ * وإرجاع objectPath فقط لتخزينه في reports.photo_url دون كشف أي رابط موقع دائم
  */
 export async function uploadReportPhoto(
   tagCode: string,
   imageEntry: FormDataEntryValue | null
-): Promise<{ url: string | null; error?: string }> {
-  if (!imageEntry || typeof imageEntry === "string") return { url: null };
+): Promise<{ url: string | null; objectPath?: string | null; error?: string }> {
+  if (!imageEntry || typeof imageEntry === "string") return { url: null, objectPath: null };
   const file = imageEntry as File;
-  if (!file.size || file.size <= 0) return { url: null };
+  if (!file.size || file.size <= 0) return { url: null, objectPath: null };
 
   if (file.size > MAX_REPORT_PHOTO_BYTES) {
     return {
       url: null,
+      objectPath: null,
       error: "حجم الصورة المرفقة يتجاوز الحد الأقصى المسموح به (5 ميجابايت).",
     };
   }
@@ -2823,6 +3214,7 @@ export async function uploadReportPhoto(
     if (!detected) {
       return {
         url: null,
+        objectPath: null,
         error: "صيغة الملف المرفوع غير مدعومة. يُسمح فقط بصور حقيقية (JPEG, PNG, WebP).",
       };
     }
@@ -2830,17 +3222,7 @@ export async function uploadReportPhoto(
     const randomHex = crypto.randomBytes(6).toString("hex");
     const objectPath = `${normalizedCode}/${Date.now()}-${randomHex}.${detected.ext}`;
 
-    const { error: createErr } = await supabaseAdmin.storage.createBucket(
-      bucketName,
-      { public: true }
-    );
-    if (createErr && !/already exists/i.test(createErr.message || "")) {
-      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
-    } else if (createErr) {
-      await supabaseAdmin.storage.updateBucket(bucketName, { public: true });
-    }
-
-    const { error: uploadErr } = await supabaseAdmin.storage
+    const { error: uploadErr } = await getLifecycleAdminDb().storage
       .from(bucketName)
       .upload(objectPath, buffer, {
         contentType: detected.mime,
@@ -2849,20 +3231,25 @@ export async function uploadReportPhoto(
 
     if (uploadErr) {
       console.warn(`[uploadReportPhoto] Upload failed:`, uploadErr.message);
-      return { url: null };
+      return {
+        url: null,
+        objectPath: null,
+        error: "تعذر رفع الصورة المرفقة حالياً.",
+      };
     }
 
-    const { data: pubData } = supabaseAdmin.storage
-      .from(bucketName)
-      .getPublicUrl(objectPath);
-
-    return { url: pubData?.publicUrl || null };
+    // إرجاع objectPath فقط لحفظه في reports.photo_url (تُنشأ الروابط الموقّعة 15 دقيقة عند العرض أو الإرسال فقط)
+    return { url: objectPath, objectPath };
   } catch (err) {
     console.warn(
       `[uploadReportPhoto] Exception:`,
       err instanceof Error ? err.message : String(err)
     );
-    return { url: null };
+    return {
+      url: null,
+      objectPath: null,
+      error: "تعذر رفع الصورة المرفقة حالياً.",
+    };
   }
 }
 
@@ -3044,7 +3431,14 @@ export async function sendZeroLeakNotification(params: {
         : []),
     ];
 
-    const effectivePhotoUrl = photoAttachmentsEnabled ? params.photoUrl : null;
+    const effectivePhotoUrl =
+      photoAttachmentsEnabled && params.photoUrl
+        ? await createShortLivedReportPhotoSignedUrl(
+            params.photoUrl,
+            REPORT_PHOTO_SIGNED_TTL_SECONDS,
+            normalizedCode
+          )
+        : null;
     const alertReasonBody = [
       `${fullTitle}${fullDescription ? ` — ${fullDescription}` : ""}`,
       ...(noteText ? [`ملاحظة إضافية: ${noteText}`] : []),
@@ -3086,6 +3480,16 @@ export async function sendZeroLeakNotification(params: {
       deliveredChannels = "WHATSAPP";
       const nowIso = new Date().toISOString();
       await Promise.all([
+        waResult.idMessage
+          ? registerWhatsappDelivery({
+              messageSid: waResult.idMessage,
+              messageKind: "notification",
+              reportId: reportIdStr || null,
+              tagCode: normalizedCode,
+              recipientPhone: tag.ownerPhone,
+              smsFallbackEnabled: Boolean(smsFallbackEnabled && !isBasicPlan),
+            }).catch(() => {})
+          : Promise.resolve(),
         reportIdStr && !reportIdStr.startsWith("rep_")
           ? (async () => {
               try {
@@ -3699,7 +4103,7 @@ export async function getExecutiveAdminOverview(): Promise<{
 
   let teamMembers: AdminTeamMemberRecord[] = [];
   try {
-    const { data, error } = await supabase
+    const { data, error } = await getLifecycleAdminDb()
       .from("admin_profiles")
       .select("*")
       .order("created_at", { ascending: true });
@@ -3720,7 +4124,7 @@ export async function getExecutiveAdminOverview(): Promise<{
           phone: mapped.phone,
           permissions: mapped.permissions,
           mustChangePassword: mapped.mustChangePassword,
-          passkeyCredentialId: mapped.passkeyCredentialId,
+          hasPasskey: Boolean(mapped.passkeyCredentialId),
           status: mapped.isActive ? "ACTIVE" : "FROZEN",
           lastLogin: mapped.lastLogin,
           createdAt: mapped.createdAt,
@@ -3773,7 +4177,7 @@ export async function adminManageTagLifecycle(params: {
   let targetRow: StoredTagRow | null = localMap[normalizedCode] || null;
 
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await getLifecycleAdminDb()
       .from("tags")
       .select("*")
       .eq("tag_code", normalizedCode)
@@ -4297,35 +4701,61 @@ export async function adminManageTagLifecycle(params: {
   }
 
   if (params.action === "delete_tag") {
+    const nowIso = new Date().toISOString();
+    const archivePayload = {
+      status: "LOCKED" as TagStatus,
+      owner_phone: null,
+      owner_pin_hash: null,
+      recovery_key_hash: null,
+      passkey_credential_id: null,
+      has_emergency_contacts: false,
+      emergency_phones: [],
+      activated_at: null,
+    };
+
     try {
-      await supabaseAdmin.from("reports").delete().eq("tag_code", normalizedCode);
-      await supabaseAdmin.from("reports").delete().eq("tag_id", normalizedCode);
-      await supabaseAdmin
-        .from("vehicle_documents")
-        .delete()
+      const { error: archiveError } = await getLifecycleAdminDb()
+        .from("tags")
+        .update(archivePayload)
         .eq("tag_code", normalizedCode);
-      await supabaseAdmin.from("tags").delete().eq("tag_code", normalizedCode);
-    } catch {
-      // ignore
+
+      if (archiveError) {
+        return {
+          ok: false,
+          error: `تعذر أرشفة وتعطيل الملصق في قاعدة البيانات: ${archiveError.message}`,
+        };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof Error
+            ? `تعذر أرشفة وتعطيل الملصق: ${err.message}`
+            : "تعذر أرشفة وتعطيل الملصق نتيجة خطأ في قاعدة البيانات.",
+      };
     }
 
-    removeFromSyncedStore(normalizedCode);
-
-    const dashStore = loadDashboardStore();
-    delete dashStore.documents[normalizedCode];
-    delete dashStore.reports[normalizedCode];
-    delete dashStore.maintenance[normalizedCode];
-    saveDashboardStore(dashStore);
+    const updatedLocal: StoredTagRow = {
+      ...targetRow,
+      status: "LOCKED",
+      owner_phone: null,
+      owner_pin_hash: null,
+      recovery_key_hash: null,
+      passkey_credential_id: null,
+      has_emergency_contacts: false,
+      activated_at: null,
+    };
+    saveToSyncedStore(updatedLocal);
 
     await recordAdminAuditLog({
       adminId: params.adminId,
       adminName: params.adminName,
-      actionType: "TAG_DELETED",
-      actionDetails: `مسح نهائي للملصق (${normalizedCode}) وكافة البلاغات والوثائق المرتبطة به من النظام (بواسطة الأدمن الرئيسي)`,
+      actionType: "TAG_ARCHIVED",
+      actionDetails: `أرشفة وتعطيل الملصق (${normalizedCode}) إلى LOCKED وفك ربط المالك مع الاحتفاظ بكافة البلاغات والوثائق وسجلات الصيانة`,
       tagCode: normalizedCode,
     });
 
-    return { ok: true };
+    return { ok: true, tag: mapRowToRecord(updatedLocal) };
   }
 
   return { ok: false, error: "إجراء غير معروف." };
@@ -4590,6 +5020,68 @@ export async function adminManageTeamMember(params: {
   generatedPassword?: string;
   error?: string;
 }> {
+  const db = getLifecycleAdminDb();
+
+  // التحقق الخادمي الصارم من المنفذ وصلاحياته الفعلية في قاعدة البيانات قبل أي عملية
+  const actorId = String(params.adminId || "").trim();
+  if (!actorId) {
+    return {
+      ok: false,
+      teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+      error: "غير مصرح: معرّف المشرف المنفّذ مفقود.",
+    };
+  }
+
+  const { data: actorData, error: actorErr } = await db
+    .from("admin_profiles")
+    .select("*")
+    .eq("id", actorId)
+    .maybeSingle();
+
+  if (actorErr || !actorData) {
+    return {
+      ok: false,
+      teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+      error: "غير مصرح: تعذر التحقق من حساب المشرف المنفّذ.",
+    };
+  }
+
+  const actorRow = actorData as RawAdminProfileRow;
+  if (actorRow.is_active === false) {
+    return {
+      ok: false,
+      teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+      error: "هذا الحساب الإداري معطّل حالياً.",
+    };
+  }
+
+  const actorIsSuperAdmin = actorRow.role === "SUPER_ADMIN";
+  const actorPerms = parsePermissionsFromDb(actorRow.permissions);
+
+  if (!actorIsSuperAdmin && !actorPerms.includes("manage_admins")) {
+    return {
+      ok: false,
+      teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+      error: "غير مصرح لك بإدارة فريق المشرفين والصلاحيات.",
+    };
+  }
+
+  const hasUnauthorizedPermissions = (requested: AdminPermission[]): boolean => {
+    if (actorIsSuperAdmin) return false;
+    return requested.some(
+      (perm) => perm === "danger_zone" || !actorPerms.includes(perm)
+    );
+  };
+
+  const countActiveSuperAdmins = async (): Promise<number> => {
+    const { data } = await db
+      .from("admin_profiles")
+      .select("id,role,is_active")
+      .eq("role", "SUPER_ADMIN")
+      .eq("is_active", true);
+    return Array.isArray(data) ? data.length : 0;
+  };
+
   if (params.action === "add" && params.fullName && params.phone) {
     const normalizedPhone = normalizeAdminPhoneKey(params.phone);
     if (normalizedPhone.replace(/\D/g, "").length < 9) {
@@ -4604,6 +5096,19 @@ export async function adminManageTeamMember(params: {
         .trim()
         .toLowerCase()
         .replace(/\s+/g, "") || normalizedPhone;
+
+    const perms =
+      params.permissions && params.permissions.length > 0
+        ? params.permissions
+        : (["manage_reports", "manage_tags"] as AdminPermission[]);
+
+    if (hasUnauthorizedPermissions(perms)) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "غير مصرح: لا يمكنك منح صلاحيات غير ممنوحة لحسابك.",
+      };
+    }
 
     // منع تكرار اسم المستخدم أو رقم الهاتف
     const dupByUser = await findAdminProfileByPhone(cleanUsername);
@@ -4620,24 +5125,19 @@ export async function adminManageTeamMember(params: {
       params.password && params.password.trim().length >= 6
         ? params.password.trim()
         : generateRandomAdminPassword();
-    const pinHash = hashSha256(generatedPassword);
-    const perms =
-      params.permissions && params.permissions.length > 0
-        ? params.permissions
-        : (["manage_reports", "manage_tags"] as AdminPermission[]);
+    const pinHash = hashAdminPinScrypt(generatedPassword);
 
-    const { error } = await supabase.from("admin_profiles").insert({
+    const { error } = await db.from("admin_profiles").insert({
       full_name: params.fullName.trim(),
       username: cleanUsername,
       phone: normalizedPhone,
       role: normalizeSubAdminRole(params.roleTitle),
-      permissions: serializePermissionsForDb(perms, true), // إلزام المشرف بتغيير كلمة المرور عند أول دخول
+      permissions: serializePermissionsForDb(perms, true),
       pin_hash: pinHash,
       is_active: true,
     });
 
     if (error) {
-      console.error("[admin_profiles insert]", error.code, error.message);
       return {
         ok: false,
         teamMembers: (await getExecutiveAdminOverview()).teamMembers,
@@ -4661,166 +5161,372 @@ export async function adminManageTeamMember(params: {
   }
 
   if (params.action === "toggle_status" && params.memberId) {
-    const { data: current } = await supabase
+    if (params.memberId === actorRow.id) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "لا يمكنك تعطيل أو تجميد حسابك الحالي الذي تنفّذ منه العملية.",
+      };
+    }
+
+    const { data: current } = await db
       .from("admin_profiles")
       .select("*")
       .eq("id", params.memberId)
       .maybeSingle();
 
-    if (current) {
-      const row = current as RawAdminProfileRow;
-      if (row.role === "SUPER_ADMIN") {
+    if (!current) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "الحساب الإداري المستهدف غير موجود.",
+      };
+    }
+
+    const row = current as RawAdminProfileRow;
+    if (row.role === "SUPER_ADMIN" && !actorIsSuperAdmin) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "غير مصرح للمشرف الفرعي بتعطيل أو تعديل حساب SUPER_ADMIN.",
+      };
+    }
+
+    const nextActive = !row.is_active;
+    if (row.role === "SUPER_ADMIN" && !nextActive) {
+      const activeSupers = await countActiveSuperAdmins();
+      if (activeSupers <= 1) {
         return {
           ok: false,
           teamMembers: (await getExecutiveAdminOverview()).teamMembers,
-          error: "لا يمكن تجميد حساب المدير الرئيسي للنظام.",
+          error: "لا يمكن تعطيل آخر حساب SUPER_ADMIN نشط في النظام.",
         };
       }
-      const nextActive = !row.is_active;
-      await supabase
-        .from("admin_profiles")
-        .update({ is_active: nextActive })
-        .eq("id", params.memberId);
-
-      await recordAdminAuditLog({
-        adminId: params.adminId,
-        adminName: params.adminName,
-        actionType: nextActive ? "ADMIN_UNFROZEN" : "ADMIN_FROZEN",
-        actionDetails: `${nextActive ? "إعادة تفعيل" : "تعطيل وتجميد"} حساب المشرف (${row.full_name} - ${row.phone})`,
-      });
     }
+
+    const { error: updErr } = await db
+      .from("admin_profiles")
+      .update({ is_active: nextActive })
+      .eq("id", params.memberId);
+
+    if (updErr) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: `تعذر تحديث حالة الحساب الإداري: ${updErr.message}`,
+      };
+    }
+
+    await recordAdminAuditLog({
+      adminId: params.adminId,
+      adminName: params.adminName,
+      actionType: nextActive ? "ADMIN_UNFROZEN" : "ADMIN_FROZEN",
+      actionDetails: `${nextActive ? "إعادة تفعيل" : "تعطيل وتجميد"} حساب المشرف (${row.full_name} - ${row.phone})`,
+    });
   }
 
   if (params.action === "reset_password" && params.memberId) {
-    const { data: current } = await supabase
+    const { data: current } = await db
       .from("admin_profiles")
       .select("*")
       .eq("id", params.memberId)
       .maybeSingle();
 
-    if (current) {
-      const row = current as RawAdminProfileRow;
-      const newPassword =
-        params.password && params.password.trim().length >= 6
-          ? params.password.trim()
-          : generateRandomAdminPassword();
-      const newHash = hashSha256(newPassword);
-      const currentPerms = parsePermissionsFromDb(row.permissions);
-      const mustChange = row.role !== "SUPER_ADMIN";
-
-      await supabase
-        .from("admin_profiles")
-        .update({
-          pin_hash: newHash,
-          passkey_credential_id: null,
-          permissions: serializePermissionsForDb(currentPerms, mustChange),
-        })
-        .eq("id", params.memberId);
-
-      // فك أي قفل تخمين سابق لهذا المشرف
-      const store = loadAdminStore();
-      const phoneKey = normalizeAdminPhoneKey(row.phone || row.username);
-      delete store.rateLimits[phoneKey];
-      saveAdminStore(store);
-
-      await recordAdminAuditLog({
-        adminId: params.adminId,
-        adminName: params.adminName,
-        actionType: "ADMIN_PASSWORD_RESET_BY_MASTER",
-        actionDetails: `قام المدير الرئيسي بإعادة تعيين كلمة المرور وفك البصمة للمشرف (${row.full_name} - ${row.phone}) مع إلزام تغييرها عند الدخول`,
-      });
-
-      const overview = await getExecutiveAdminOverview();
+    if (!current) {
       return {
-        ok: true,
-        teamMembers: overview.teamMembers,
-        generatedPassword: newPassword,
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "الحساب الإداري المستهدف غير موجود.",
       };
     }
+
+    const row = current as RawAdminProfileRow;
+    if (row.role === "SUPER_ADMIN" && !actorIsSuperAdmin) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "غير مصرح للمشرف الفرعي بإعادة تعيين كلمة مرور حساب SUPER_ADMIN.",
+      };
+    }
+
+    const newPassword =
+      params.password && params.password.trim().length >= 6
+        ? params.password.trim()
+        : generateRandomAdminPassword();
+    const newHash = hashAdminPinScrypt(newPassword);
+    const currentPerms = parsePermissionsFromDb(row.permissions);
+    const mustChange = row.role !== "SUPER_ADMIN";
+
+    const { error: resetErr } = await db
+      .from("admin_profiles")
+      .update({
+        pin_hash: newHash,
+        passkey_credential_id: null,
+        permissions: serializePermissionsForDb(currentPerms, mustChange),
+      })
+      .eq("id", params.memberId);
+
+    if (resetErr) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: `تعذر إعادة تعيين كلمة المرور: ${resetErr.message}`,
+      };
+    }
+
+    const store = loadAdminStore();
+    const phoneKey = normalizeAdminPhoneKey(row.phone || row.username);
+    delete store.rateLimits[phoneKey];
+    saveAdminStore(store);
+
+    await recordAdminAuditLog({
+      adminId: params.adminId,
+      adminName: params.adminName,
+      actionType: "ADMIN_PASSWORD_RESET_BY_MASTER",
+      actionDetails: `إعادة تعيين كلمة المرور وفك البصمة للمشرف (${row.full_name} - ${row.phone})`,
+    });
+
+    const overview = await getExecutiveAdminOverview();
+    return {
+      ok: true,
+      teamMembers: overview.teamMembers,
+      generatedPassword: newPassword,
+    };
   }
 
   if (params.action === "update_member" && params.memberId) {
-    const { data: current } = await supabase
+    const { data: current } = await db
       .from("admin_profiles")
       .select("*")
       .eq("id", params.memberId)
       .maybeSingle();
 
-    if (current) {
-      const row = current as RawAdminProfileRow;
-      const nextPerms =
-        params.permissions && params.permissions.length > 0
-          ? params.permissions
-          : parsePermissionsFromDb(row.permissions);
-      const keepMustChange = parseMustChangePasswordFromDb(row.permissions);
-      const nextPhone = params.phone
-        ? normalizeAdminPhoneKey(params.phone)
-        : row.phone;
-
-      await supabase
-        .from("admin_profiles")
-        .update({
-          full_name: params.fullName ? params.fullName.trim() : row.full_name,
-          phone: nextPhone,
-          username: params.username
-            ? params.username.trim().toLowerCase().replace(/\s+/g, "")
-            : row.username || nextPhone,
-          role:
-            row.role === "SUPER_ADMIN"
-              ? "SUPER_ADMIN"
-              : normalizeSubAdminRole(params.roleTitle || row.role),
-          permissions: serializePermissionsForDb(nextPerms, keepMustChange),
-        })
-        .eq("id", params.memberId);
-
-      await recordAdminAuditLog({
-        adminId: params.adminId,
-        adminName: params.adminName,
-        actionType: "ADMIN_MEMBER_UPDATED",
-        actionDetails: `تحديث بيانات وصلاحيات المشرف (${params.fullName || row.full_name} - ${nextPhone})`,
-      });
+    if (!current) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "الحساب الإداري المستهدف غير موجود.",
+      };
     }
+
+    const row = current as RawAdminProfileRow;
+    if (row.role === "SUPER_ADMIN" && !actorIsSuperAdmin) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "غير مصرح للمشرف الفرعي بتعديل حساب SUPER_ADMIN أو صلاحياته.",
+      };
+    }
+
+    if (params.memberId === actorRow.id && Array.isArray(params.permissions)) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "لا يمكنك تعديل صلاحيات حسابك بنفسك (منع تصعيد الصلاحيات الذاتي).",
+      };
+    }
+
+    if (
+      Array.isArray(params.permissions) &&
+      hasUnauthorizedPermissions(params.permissions)
+    ) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "غير مصرح: لا يمكنك منح صلاحيات غير ممنوحة لحسابك.",
+      };
+    }
+
+    const nextPerms =
+      params.permissions && params.permissions.length > 0
+        ? params.permissions
+        : parsePermissionsFromDb(row.permissions);
+    const keepMustChange = parseMustChangePasswordFromDb(row.permissions);
+    const nextPhone = params.phone
+      ? normalizeAdminPhoneKey(params.phone)
+      : row.phone;
+
+    const { error: updErr } = await db
+      .from("admin_profiles")
+      .update({
+        full_name: params.fullName ? params.fullName.trim() : row.full_name,
+        phone: nextPhone,
+        username: params.username
+          ? params.username.trim().toLowerCase().replace(/\s+/g, "")
+          : row.username || nextPhone,
+        role:
+          row.role === "SUPER_ADMIN"
+            ? "SUPER_ADMIN"
+            : normalizeSubAdminRole(params.roleTitle || row.role),
+        permissions: serializePermissionsForDb(nextPerms, keepMustChange),
+      })
+      .eq("id", params.memberId);
+
+    if (updErr) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: `تعذر تحديث بيانات المشرف: ${updErr.message}`,
+      };
+    }
+
+    await recordAdminAuditLog({
+      adminId: params.adminId,
+      adminName: params.adminName,
+      actionType: "ADMIN_MEMBER_UPDATED",
+      actionDetails: `تحديث بيانات وصلاحيات المشرف (${params.fullName || row.full_name} - ${nextPhone})`,
+    });
   }
 
+  // الخيار A: إيقاف الحذف الفيزيائي وتحويل team_delete إلى تعطيل دائم (is_active = false)
   if (params.action === "delete" && params.memberId) {
-    const { data: current } = await supabase
+    if (params.memberId === actorRow.id) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "لا يمكنك تعطيل حسابك الحالي الذي تنفّذ منه العملية.",
+      };
+    }
+
+    const { data: current } = await db
       .from("admin_profiles")
       .select("*")
       .eq("id", params.memberId)
       .maybeSingle();
 
-    if (current) {
-      const row = current as RawAdminProfileRow;
-      if (row.role === "SUPER_ADMIN") {
+    if (!current) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "الحساب الإداري المستهدف غير موجود.",
+      };
+    }
+
+    const row = current as RawAdminProfileRow;
+    if (row.role === "SUPER_ADMIN" && !actorIsSuperAdmin) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: "غير مصرح للمشرف الفرعي بتعطيل أو حذف حساب SUPER_ADMIN.",
+      };
+    }
+
+    if (row.role === "SUPER_ADMIN") {
+      const activeSupers = await countActiveSuperAdmins();
+      if (activeSupers <= 1) {
         return {
           ok: false,
           teamMembers: (await getExecutiveAdminOverview()).teamMembers,
-          error: "لا يمكن حذف حساب المدير الرئيسي للنظام.",
+          error: "لا يمكن تعطيل آخر حساب SUPER_ADMIN نشط في النظام.",
         };
       }
-
-      await supabase.from("admin_profiles").delete().eq("id", params.memberId);
-
-      await recordAdminAuditLog({
-        adminId: params.adminId,
-        adminName: params.adminName,
-        actionType: "ADMIN_MEMBER_DELETED",
-        actionDetails: `حذف ومسح حساب المشرف (${row.full_name} - ${row.phone}) نهائياً من النظام`,
-      });
     }
+
+    const { error: deactErr } = await db
+      .from("admin_profiles")
+      .update({ is_active: false })
+      .eq("id", params.memberId);
+
+    if (deactErr) {
+      return {
+        ok: false,
+        teamMembers: (await getExecutiveAdminOverview()).teamMembers,
+        error: `تعذر تعطيل حساب المشرف: ${deactErr.message}`,
+      };
+    }
+
+    await recordAdminAuditLog({
+      adminId: params.adminId,
+      adminName: params.adminName,
+      actionType: "ADMIN_MEMBER_DEACTIVATED",
+      actionDetails: `تعطيل حساب المشرف (${row.full_name} - ${row.phone}) إلى is_active = false مع الاحتفاظ بسجل الحساب وسجلات التدقيق`,
+    });
   }
 
   const overview = await getExecutiveAdminOverview();
   return { ok: true, teamMembers: overview.teamMembers };
 }
 
+let lifecycleAdminDbOverrideForTest: typeof supabaseAdmin | null = null;
+
 /**
- * منطقة الطوارئ وتصفير بيانات الاختبار (Danger Zone Reset) دون لمس بنية الجداول
+ * حقن عميل قاعدة بيانات بديل لاختبارات أمان دورة حياة الملصقات المحلية فقط
+ */
+export function setLifecycleAdminDbForTest(
+  db: typeof supabaseAdmin | null
+): void {
+  lifecycleAdminDbOverrideForTest = db;
+}
+
+function getLifecycleAdminDb(): typeof supabaseAdmin {
+  return lifecycleAdminDbOverrideForTest || supabaseAdmin;
+}
+
+/**
+ * منطقة الطوارئ (Danger Zone): محظورة في الإنتاج، وتمنع الحذف الجماعي الفيزيائي في التطوير/الاختبار
  */
 export async function adminDangerZoneResetSystem(params: {
   adminId?: string | null;
   adminName: string;
-}): Promise<{ ok: boolean }> {
+  confirmReset?: boolean;
+  confirmationText?: string;
+}): Promise<{
+  ok: boolean;
+  blockedInProduction?: boolean;
+  requiresConfirmation?: boolean;
+  summary?: {
+    tagsCount: number;
+    reportsCount: number;
+    documentsCount: number;
+  };
+  error?: string;
+}> {
+  const isProductionEnv =
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production";
+
+  if (isProductionEnv) {
+    return {
+      ok: false,
+      blockedInProduction: true,
+      error: "عملية التصفير (Danger Zone) محظورة نهائياً في بيئة الإنتاج.",
+    };
+  }
+
+  const db = getLifecycleAdminDb();
+  let tagsCount = 0;
+  let reportsCount = 0;
+  let documentsCount = 0;
+
+  try {
+    const [tRes, rRes, dRes] = await Promise.all([
+      db.from("tags").select("id", { count: "exact", head: true }),
+      db.from("reports").select("id", { count: "exact", head: true }),
+      db.from("vehicle_documents").select("id", { count: "exact", head: true }),
+    ]);
+    tagsCount = tRes.count ?? 0;
+    reportsCount = rRes.count ?? 0;
+    documentsCount = dRes.count ?? 0;
+  } catch {
+    // keep 0 counts if unavailable
+  }
+
+  const summary = { tagsCount, reportsCount, documentsCount };
+
+  if (
+    params.confirmReset !== true ||
+    String(params.confirmationText || "").trim() !== "تصفير"
+  ) {
+    return {
+      ok: false,
+      requiresConfirmation: true,
+      summary,
+      error:
+        "يتطلب التصفير تأكيداً صريحاً بعد مراجعة ملخص السجلات، ولن يتم حذف أي صفوف من قاعدة البيانات.",
+    };
+  }
+
+  // لا يُنفذ أي DELETE أو UPDATE جماعي عشوائي على tags أو reports أو vehicle_documents
   try {
     if (fs.existsSync(LOCAL_STORE_PATH)) {
       fs.writeFileSync(LOCAL_STORE_PATH, "{}", "utf8");
@@ -4832,30 +5538,8 @@ export async function adminDangerZoneResetSystem(params: {
         "utf8"
       );
     }
-    const printBatchPath = path.join(process.cwd(), "print_batch.csv");
-    if (fs.existsSync(printBatchPath)) {
-      fs.writeFileSync(printBatchPath, "qr_url,tag_code,scratch_pin\n", "utf8");
-    }
   } catch {
-    // ignore
-  }
-
-  // مسح السجلات من قاعدة بيانات Supabase دون المساس بملفات المشرفين admin_profiles
-  try {
-    await supabaseAdmin
-      .from("reports")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-    await supabaseAdmin
-      .from("vehicle_documents")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-    await supabaseAdmin
-      .from("tags")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-  } catch {
-    // ignore
+    // ignore local file errors
   }
 
   const adminStore = loadAdminStore();
@@ -4865,11 +5549,10 @@ export async function adminDangerZoneResetSystem(params: {
   await recordAdminAuditLog({
     adminId: params.adminId,
     adminName: params.adminName,
-    actionType: "DANGER_ZONE_RESET",
-    actionDetails:
-      "تم مسح كافة سجلات الملصقات والبيانات الوهمية وإعادة النظام لحالة نظيفة (0 ملصقات) بالكامل",
+    actionType: "DANGER_ZONE_LOCAL_CACHE_RESET",
+    actionDetails: `تصفير الكاش المحلي في بيئة الاختبار فقط مع الإبقاء على كافة سجلات قاعدة البيانات (tags=${tagsCount}, reports=${reportsCount}, documents=${documentsCount})`,
   });
 
-  return { ok: true };
+  return { ok: true, summary };
 }
 

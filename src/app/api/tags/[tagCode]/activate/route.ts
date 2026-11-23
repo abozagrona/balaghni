@@ -7,9 +7,9 @@ import {
   attachOwnerSessionCookie,
 } from "@/lib/security-tokens";
 import {
-  checkPinRateLimit,
-  recordPinFailure,
-  clearPinFailures,
+  checkPinRateLimitAsync,
+  recordPinFailureAsync,
+  clearPinFailuresAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // 1. فحص القفل ضد محاولات التخمين المتكررة
     const ip = getClientIp(request);
     const rateKey = `activate_tag:${formattedCode}:${ip}`;
-    const rateLimit = checkPinRateLimit(rateKey);
+    const rateLimit = await checkPinRateLimitAsync(rateKey);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     // 2. إلزام التحقق الفعلي من رقم الهاتف عبر رمز التحقق (OTP Proof Token) الموقّع من الخادم
-    const otpProofCheck = verifyAndConsumeOtpProof(
+    const otpProofCheck = await verifyAndConsumeOtpProof(
       request,
       body.otpProofToken,
       fullPhone
@@ -95,14 +95,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     if (!result.ok) {
-      recordPinFailure(rateKey);
+      await recordPinFailureAsync(rateKey);
       return NextResponse.json(
         { ok: false, error: result.error },
         { status: 403 }
       );
     }
 
-    clearPinFailures(rateKey);
+    await clearPinFailuresAsync(rateKey);
     const ownerToken = createOwnerSessionToken({
       tagCode: formattedCode,
       ownerPhone: fullPhone,

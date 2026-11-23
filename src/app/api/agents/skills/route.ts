@@ -5,6 +5,7 @@ import {
 } from "@/lib/supabase/client";
 import { clearAdminSessionCookie } from "@/lib/security-tokens";
 import { activateAgentSkill } from "@/lib/ai-office/agents-service";
+import { consumeDistributedRateLimit, getClientIp } from "@/lib/rate-limiter";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +47,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { ok: false, authenticated: false, error: "غير مصرح لك باعتماد وتفعيل المهارات." },
         { status: 403 }
+      );
+    }
+
+    const rateRes = await consumeDistributedRateLimit(
+      "ai_skill",
+      `${activeCheck.profile.username || "admin"}:${getClientIp(req)}`,
+      15,
+      5 * 60 * 1000
+    );
+    if (!rateRes.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `تم تجاوز الحد المسموح لاعتماد المهارات مؤقتاً. يرجى الانتظار ${rateRes.retryAfterSeconds} ثانية.`,
+          retryAfterSeconds: rateRes.retryAfterSeconds,
+        },
+        { status: 429 }
       );
     }
 

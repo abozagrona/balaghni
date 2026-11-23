@@ -35,6 +35,7 @@ print_batch.csv
 batch_output/
 exports/
 src/data/local-otp-store.json
+src/data/local-lifecycle-store.json
 
 
 .env*

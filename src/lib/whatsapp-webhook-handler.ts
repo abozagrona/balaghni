@@ -3,9 +3,13 @@ import {
   broadcastReportRealtimeUpdate,
 } from "@/lib/supabase/client";
 import { sendSmsAlertMessage } from "@/lib/otp-service";
+import {
+  dispatchSmsFallbackWithAtomicClaim,
+  recordWhatsappDeliveryStatusAtomic,
+} from "@/lib/delivery-fallback";
 
 export interface ParsedStatusEvent {
-  provider: "green_api" | "twilio" | "meta" | "custom";
+  provider: "twilio" | "meta";
   messageId: string;
   status: string;
   recipientPhone: string;
@@ -91,23 +95,7 @@ export function extractWebhookEvents(body: Record<string, any>): {
   const statuses: ParsedStatusEvent[] = [];
   const messages: ParsedIncomingMessage[] = [];
 
-  // 1. Green API format: typeWebhook === "outgoingMessageStatus"
-  if (body?.typeWebhook === "outgoingMessageStatus") {
-    const rawStatus = String(body?.status || "").trim().toLowerCase();
-    const rawChat = String(body?.chatId || "").replace(/@.*/, "");
-    statuses.push({
-      provider: "green_api",
-      messageId: String(body?.idMessage || "").trim(),
-      status: rawStatus,
-      recipientPhone: rawChat,
-      timestamp: body?.timestamp
-        ? new Date(Number(body.timestamp) * 1000).toISOString()
-        : new Date().toISOString(),
-      errorDetail: body?.description ? String(body.description) : undefined,
-    });
-  }
-
-  // 2. Twilio WhatsApp status callback format: MessageSid + MessageStatus
+  // 1. Twilio WhatsApp status callback format: MessageSid + MessageStatus
   const twilioSid = String(body?.MessageSid || body?.SmsSid || "").trim();
   const twilioStatus = String(body?.MessageStatus || body?.SmsStatus || "")
     .trim()
@@ -187,27 +175,13 @@ export function extractWebhookEvents(body: Record<string, any>): {
     }
   }
 
-  // 4. Generic / Direct webhook fallback
-  if (statuses.length === 0 && typeof body?.status === "string") {
-    statuses.push({
-      provider: "custom",
-      messageId: String(body?.messageId || body?.idMessage || body?.id || ""),
-      status: body.status.toLowerCase(),
-      recipientPhone: String(
-        body?.recipient_id ||
-          body?.phone ||
-          String(body?.chatId || "").replace(/@.*/, "")
-      ),
-      timestamp: new Date().toISOString(),
-      errorDetail: body?.error ? String(body.error) : undefined,
-    });
-  }
+  // ملاحظة أمنية (LOW-02): يقبل المسار أحداث حالة Twilio وMeta الموقّعة فقط (أُزيل فرع custom غير المستخدم).
 
-  // Incoming messages (Green API incomingMessageReceived or Twilio Body/ButtonPayload/ButtonText)
+  // Incoming messages (Twilio Body/ButtonPayload/ButtonText or generic)
   if (
     messages.length === 0 &&
-    (body?.typeWebhook === "incomingMessageReceived" ||
-      body?.text ||
+    !body?.typeWebhook &&
+    (body?.text ||
       body?.reply ||
       body?.ButtonPayload ||
       body?.ButtonText ||
@@ -216,8 +190,7 @@ export function extractWebhookEvents(body: Record<string, any>): {
     const rawFrom =
       body?.from ||
       body?.phone ||
-      String(body?.From || "").replace(/^whatsapp:/i, "") ||
-      String(body?.senderData?.chatId || "").replace(/@.*/, "");
+      String(body?.From || "").replace(/^whatsapp:/i, "");
     const rawButtonPayload = String(body?.ButtonPayload || "").trim();
     const rawButtonText = String(body?.ButtonText || "").trim();
     const rawText =
@@ -438,12 +411,15 @@ function normalizeStatusRank(badge: string): number {
 export async function processWhatsappWebhookPayload(
   body: Record<string, any>
 ): Promise<{ processedStatuses: number; processedMessages: number }> {
-  console.log("[WhatsApp Webhook Incoming]:", JSON.stringify(body));
   const { statuses, messages } = extractWebhookEvents(body);
+  console.log(
+    `[WhatsApp Webhook Incoming] statuses=${statuses.length} messages=${messages.length}`
+  );
 
   for (const st of statuses) {
+    const sidSuffix = st.messageId ? st.messageId.slice(-6) : "-";
     console.log(
-      `[WhatsApp Status Webhook] MessageSid/idMessage: ${st.messageId} | MessageStatus: ${st.status} | Provider: ${st.provider}`
+      `[WhatsApp Status Webhook] sidSuffix=${sidSuffix} | status=${st.status} | provider=${st.provider}`
     );
 
     let matched = st.messageId
@@ -467,6 +443,20 @@ export async function processWhatsappWebhookPayload(
     const resolvedReportId = String(reportId || report?.id || "").trim();
 
     const normalizedStatus = st.status.toLowerCase();
+
+    // تحديث حالة التسليم ذرياً (يدعم منع التكرار Idempotency وتسجيل الوصول المتأخر Late Delivered)
+    const atomicStatusRes = st.messageId
+      ? await recordWhatsappDeliveryStatusAtomic({
+          messageSid: st.messageId,
+          status: normalizedStatus,
+          occurredAtIso: st.timestamp,
+        })
+      : null;
+
+    if (atomicStatusRes?.ok && atomicStatusRes.duplicate) {
+      continue;
+    }
+
     const statusBadgeMap: Record<string, string> = {
       sent: "واتساب: تم الإرسال",
       delivered: "واتساب: تم التسليم",
@@ -519,6 +509,7 @@ export async function processWhatsappWebhookPayload(
               tagCode,
               messageId: st.messageId,
               status: normalizedStatus,
+              lateDelivered: Boolean(atomicStatusRes?.lateDelivered),
               reasonBadge: badgeLabel,
               updatedAt: new Date().toISOString(),
             }),
@@ -550,13 +541,13 @@ export async function processWhatsappWebhookPayload(
       }
     }
 
-    // في حال فشل تسليم إشعار الواتساب: التحويل إلى SMS فقط لباقة نَبِّهْنِي (وليس الأساسية أبداً)
+    // في حال فشل تسليم إشعار الواتساب: التحويل الذري إلى SMS فقط لباقة نَبِّهْنِي (وليس الأساسية أبداً)
     const isFailed =
       normalizedStatus === "failed" ||
       normalizedStatus === "undelivered" ||
       normalizedStatus === "noaccount";
 
-    if (isFailed && st.recipientPhone && report?.id) {
+    if (isFailed && st.recipientPhone && report?.id && st.messageId) {
       const reportCreatedMs = report.created_at
         ? new Date(String(report.created_at)).getTime()
         : 0;
@@ -588,14 +579,28 @@ export async function processWhatsappWebhookPayload(
             "يرجى التوجه لمركبتك ومراجعة البلاغ الوارد عبر منصة بَلِّغْنِي."
         );
 
-        const smsFallback = await sendSmsAlertMessage(
-          st.recipientPhone,
-          vehicleLabel || tagCode || "مركبتك",
-          reasonTitle,
-          messageDesc
-        );
+        const smsFallback = await dispatchSmsFallbackWithAtomicClaim({
+          messageSid: st.messageId,
+          reason: "twilio_failed",
+          sendSms: async () => {
+            const res = await sendSmsAlertMessage(
+              st.recipientPhone,
+              vehicleLabel || tagCode || "مركبتك",
+              reasonTitle,
+              messageDesc
+            );
+            return {
+              ok: res.ok,
+              id: res.id,
+              httpStatus: res.status,
+              timedOut: res.timedOut,
+              networkErrorCode: res.networkErrorCode,
+              error: res.error,
+            };
+          },
+        });
 
-        if (smsFallback.ok) {
+        if (smsFallback.smsDispatched && smsFallback.smsOk) {
           const smsBadge = "تم الإشعار عبر SMS (بديل تلقائي)";
           await supabaseAdmin
             .from("reports")
@@ -620,8 +625,9 @@ export async function processWhatsappWebhookPayload(
   for (const msg of messages) {
     if (!msg.fromPhone || (!msg.text && !msg.buttonPayload)) continue;
 
+    const contextSuffix = msg.contextMessageId ? msg.contextMessageId.slice(-6) : "-";
     console.log(
-      `[WhatsApp Incoming Reply] From: ${msg.fromPhone} | Text: ${msg.text} | ButtonPayload: ${msg.buttonPayload || "-"} | ContextSid: ${msg.contextMessageId || "-"}`
+      `[WhatsApp Incoming Reply] hasButtonPayload=${Boolean(msg.buttonPayload)} | hasText=${Boolean(msg.text)} | contextSuffix=${contextSuffix}`
     );
 
     let report: Record<string, any> | null = null;

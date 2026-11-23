@@ -131,7 +131,7 @@ interface AdminTeamMember {
   phone: string;
   permissions: AdminPermission[];
   mustChangePassword?: boolean;
-  passkeyCredentialId?: string | null;
+  hasPasskey?: boolean;
   status: "ACTIVE" | "FROZEN";
   lastLogin?: string | null;
   createdAt: string;
@@ -1240,9 +1240,9 @@ export default function ExecutiveAdminDashboardPage() {
         setTags(data.tags || []);
         setAuditLogs(data.auditLogs || []);
         setDeleteModalTag(null);
-        showToast(`تم مسح الملصق (${tagCode}) نهائياً بنجاح ✓`);
+        showToast(`تم أرشفة وتعطيل الملصق (${tagCode}) مع الاحتفاظ بسجلاته ✓`);
       } else {
-        showToast(data.error || "تعذر مسح الملصق.");
+        showToast(data.error || "تعذر أرشفة الملصق.");
       }
     } catch {
       showToast("تعذر مسح الملصق نتيجة خطأ في الاتصال.");
@@ -1856,6 +1856,8 @@ export default function ExecutiveAdminDashboardPage() {
         action: "danger_reset",
         adminId,
         adminName,
+        confirmReset: true,
+        confirmationText: dangerConfirmText.trim(),
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -1868,10 +1870,11 @@ export default function ExecutiveAdminDashboardPage() {
     if (res.ok && data.ok) {
       setTags(data.tags || []);
       setAuditLogs(data.auditLogs || []);
-      setReportsCount(0);
       setShowDangerModal(false);
       setDangerConfirmText("");
-      showToast("تم تصفير بيانات الاختبار وإعادة ضبط النظام بنجاح ✓");
+      showToast("تم تصفير الكاش المحلي للاختبار مع الإبقاء على سجلات قاعدة البيانات ✓");
+    } else {
+      showToast(data.error || "عملية التصفير غير متاحة.");
     }
   };
 
@@ -3194,7 +3197,7 @@ export default function ExecutiveAdminDashboardPage() {
                             ? "نشط (is_active = true)"
                             : "مجمّد (is_active = false)"}
                         </span>
-                        {member.passkeyCredentialId && (
+                        {member.hasPasskey && (
                           <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-[10px] font-bold text-primary">
                             Passkey مرتبط ✓
                           </span>
@@ -4070,11 +4073,10 @@ export default function ExecutiveAdminDashboardPage() {
             </div>
 
             <h3 className="text-lg font-black text-white">
-              هل أنت متأكد من تصفير بيانات الاختبار؟
+              تصفير الكاش المحلي (بيئة التطوير والاختبار فقط)
             </h3>
             <p className="text-xs leading-relaxed text-white/75">
-              لتأكيد مسح سجلات الاختبار وإرجاع الملصقات إلى حالة LOCKED دون لمس
-              بنية الجداول، اكتب كلمة{" "}
+              هذه العملية متاحة في بيئة الاختبار والتطوير فقط، وتصفّر الكاش المحلي فقط دون حذف أي سجلات من قاعدة البيانات (تبقى الوسوم والبلاغات والوثائق محفوظة بالكامل). للتأكيد، اكتب كلمة{" "}
               <strong className="text-primary">تصفير</strong> في الحقل أدناه:
             </p>
 

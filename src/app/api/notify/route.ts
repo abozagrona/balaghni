@@ -8,16 +8,26 @@ import {
   validateScanTargetAndCooldown,
 } from "@/lib/supabase/client";
 import {
-  checkGreenApiMessageStatus,
   checkTwilioMessageStatus,
   sendSmsAlertMessage,
 } from "@/lib/otp-service";
 import {
-  checkReportIpRateLimit,
+  SMS_FALLBACK_TIMEOUT_MS,
+  dispatchSmsFallbackWithAtomicClaim,
+  recordWhatsappDeliveryStatusAtomic,
+} from "@/lib/delivery-fallback";
+import {
+  checkReportIpRateLimitAsync,
+  consumeDistributedRateLimit,
   getClientIp,
-  recordReportIpAttempt,
+  recordReportIpAttemptAsync,
 } from "@/lib/rate-limiter";
 import { formatBalaghniTagCode } from "@/lib/utils";
+import { createReportAccessToken } from "@/lib/security-tokens";
+import {
+  revokeReportAccessTokenDistributed,
+  verifyReportAccessTokenDistributed,
+} from "@/lib/report-token-revocation";
 
 export const maxDuration = 60;
 
@@ -38,7 +48,7 @@ function sanitizeUserText(raw: string, maxLen = 250): string {
 export async function POST(req: NextRequest) {
   try {
     const clientIp = getClientIp(req);
-    const ipLimit = checkReportIpRateLimit(clientIp);
+    const ipLimit = await checkReportIpRateLimitAsync(clientIp);
     if (!ipLimit.allowed) {
       return NextResponse.json(
         {
@@ -50,7 +60,7 @@ export async function POST(req: NextRequest) {
         { status: 429 }
       );
     }
-    recordReportIpAttempt(clientIp);
+    await recordReportIpAttemptAsync(clientIp);
 
     let tagCode = "";
     let reason = "blocking";
@@ -150,12 +160,16 @@ export async function POST(req: NextRequest) {
     }
 
     const reportId = (result as { reportId?: string }).reportId || null;
+    const accessGrant = reportId
+      ? createReportAccessToken({ reportId, tagCode: normalizedCode })
+      : null;
 
     // استجابة آمنة تماماً لا تحتوي على رقم هاتف المالك (Zero-Leak)
     return NextResponse.json({
       ok: true,
       tag_code: normalizedCode,
       report_id: reportId,
+      report_access_token: accessGrant?.token || null,
       delivered_channel: result.deliveredChannels || "BOTH",
       photo_attached: Boolean(photoUrl),
       timestamp: new Date().toISOString(),
@@ -274,8 +288,12 @@ async function syncReportDeliveryAndFallback(
           "unknown";
         if (msgId && (msgId.startsWith("SM") || msgId.startsWith("MM"))) {
           providerState = await checkTwilioMessageStatus(msgId);
-        } else if (ownerPhone && msgId) {
-          providerState = await checkGreenApiMessageStatus(ownerPhone, msgId);
+          if (providerState !== "unknown") {
+            await recordWhatsappDeliveryStatusAtomic({
+              messageSid: msgId,
+              status: providerState,
+            });
+          }
         }
 
         if (providerState === "read") {
@@ -313,26 +331,43 @@ async function syncReportDeliveryAndFallback(
             tagRecord?.alertChannel === "WHATSAPP";
 
           if (
-            elapsedMs >= 35000 &&
+            msgId &&
+            (elapsedMs >= SMS_FALLBACK_TIMEOUT_MS || providerState === "failed") &&
             Boolean(meta.smsFallbackEnabled) &&
             !isBasic &&
             ownerPhone
           ) {
-            badge = "تم الإشعار عبر SMS (بديل تلقائي)";
-            if (!resolvedReportId.startsWith("rep_")) {
-              await supabaseAdmin
-                .from("reports")
-                .update({ reason_badge: badge })
-                .eq("id", resolvedReportId);
-            }
+            const fallbackResult = await dispatchSmsFallbackWithAtomicClaim({
+              messageSid: msgId,
+              reason: providerState === "failed" ? "twilio_failed" : "timeout_60s",
+              sendSms: async () => {
+                const res = await sendSmsAlertMessage(
+                  ownerPhone,
+                  String(meta.var1 || targetCode),
+                  String(meta.var2 || "تنبيه عاجل"),
+                  String(meta.var3 || "يرجى مراجعة مركبتك"),
+                  String(meta.formattedCaller || "غير مرفق")
+                );
+                return {
+                  ok: res.ok,
+                  id: res.id,
+                  httpStatus: res.status,
+                  timedOut: res.timedOut,
+                  networkErrorCode: res.networkErrorCode,
+                  error: res.error,
+                };
+              },
+            });
 
-            await sendSmsAlertMessage(
-              ownerPhone,
-              String(meta.var1 || targetCode),
-              String(meta.var2 || "تنبيه عاجل"),
-              String(meta.var3 || "يرجى مراجعة مركبتك"),
-              String(meta.formattedCaller || "غير مرفق")
-            );
+            if (fallbackResult.smsDispatched && fallbackResult.smsOk) {
+              badge = "تم الإشعار عبر SMS (بديل تلقائي)";
+              if (!resolvedReportId.startsWith("rep_")) {
+                await supabaseAdmin
+                  .from("reports")
+                  .update({ reason_badge: badge })
+                  .eq("id", resolvedReportId);
+              }
+            }
           }
         }
       }
@@ -374,10 +409,48 @@ export async function GET(req: NextRequest) {
     const reportId = req.nextUrl.searchParams.get("reportId") || "";
     const tagCode = formatBalaghniTagCode(rawTag);
 
-    if (!tagCode && !reportId) {
+    if (!tagCode || !reportId) {
       return NextResponse.json(
-        { ok: false, error: "tagCode required" },
+        { ok: false, error: "tagCode و reportId مطلوبان." },
         { status: 400 }
+      );
+    }
+
+    // تحديد المعدل لمسار تحديثات البلاغ لمنع استنزاف الخادم أو Twilio
+    const clientIp = getClientIp(req);
+    const pollLimit = await consumeDistributedRateLimit(
+      "rep:poll",
+      `${clientIp}:${reportId}`,
+      60,
+      60 * 1000,
+      "memory_fallback"
+    );
+    if (!pollLimit.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "تم تجاوز الحد المسموح لطلبات تحديث حالة البلاغ. يرجى الانتظار قليلاً.",
+          retryAfterSeconds: pollLimit.retryAfterSeconds,
+        },
+        { status: 429 }
+      );
+    }
+
+    // التحقق الصارم من صلاحية الوصول عبر الترويسة x-report-token + التحقق الموزّع من الإلغاء في قاعدة البيانات
+    const accessToken = req.headers.get("x-report-token") || "";
+    const tokenCheck = await verifyReportAccessTokenDistributed(
+      accessToken,
+      reportId,
+      tagCode
+    );
+    if (!tokenCheck.valid) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "غير مصرح بالوصول إلى حالة هذا البلاغ أو ردود المالك.",
+          reason: tokenCheck.reason || "unauthorized",
+        },
+        { status: 401 }
       );
     }
 
@@ -388,8 +461,47 @@ export async function GET(req: NextRequest) {
     });
   } catch {
     return NextResponse.json(
-      { ok: true, deliveryStatus: "sent", ownerReply: null, isSmsFallback: false },
-      { status: 200 }
+      { ok: false, error: "تعذر جلب حالة البلاغ حالياً." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const rawTag = req.nextUrl.searchParams.get("tagCode") || "";
+    const reportId = req.nextUrl.searchParams.get("reportId") || "";
+    const tagCode = formatBalaghniTagCode(rawTag);
+    const accessToken = req.headers.get("x-report-token") || "";
+
+    if (!tagCode || !reportId || !accessToken) {
+      return NextResponse.json(
+        { ok: false, error: "بيانات إلغاء الرمز غير مكتملة." },
+        { status: 400 }
+      );
+    }
+
+    const revRes = await revokeReportAccessTokenDistributed(
+      accessToken,
+      reportId,
+      tagCode
+    );
+    if (!revRes.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "رمز الوصول غير صالح أو تعذر تسجيل الإلغاء.",
+          reason: revRes.error || "invalid_token",
+        },
+        { status: revRes.error === "db_revocation_failed" ? 503 : 401 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, revoked: true });
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "تعذر إلغاء رمز الوصول حالياً." },
+      { status: 500 }
     );
   }
 }

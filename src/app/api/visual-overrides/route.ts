@@ -8,10 +8,78 @@ import {
 
 const OVERRIDES_PATH = path.join(process.cwd(), "src/data/visual-overrides.json");
 
+const ALLOWED_OVERRIDE_FIELDS = new Set([
+  "text",
+  "fontSize",
+  "fontFamily",
+  "fontWeight",
+  "color",
+  "backgroundColor",
+  "lineHeight",
+  "textAlign",
+  "marginTop",
+  "marginBottom",
+  "width",
+]);
+
+const MAX_SELECTORS = 500;
+const MAX_FIELD_VALUE_LENGTH = 2000;
+
+/**
+ * تنقية صارمة بقائمة سماح (Allowlist) لحفظ وقراءة إعدادات التصميم فقط،
+ * ومنع تخزين أو كشف sessionToken أو أي بيانات مصادقة أو مفاتيح غير معتمدة.
+ */
+function sanitizeVisualOverridesPayload(raw: unknown): {
+  elements: Record<string, Record<string, string>>;
+} {
+  const cleanElements: Record<string, Record<string, string>> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { elements: cleanElements };
+  }
+
+  const rawElements = (raw as Record<string, unknown>).elements;
+  if (!rawElements || typeof rawElements !== "object" || Array.isArray(rawElements)) {
+    return { elements: cleanElements };
+  }
+
+  let selectorCount = 0;
+  for (const [selector, styles] of Object.entries(rawElements as Record<string, unknown>)) {
+    if (selectorCount >= MAX_SELECTORS) break;
+    if (
+      typeof selector !== "string" ||
+      selector.length === 0 ||
+      selector.length > 500 ||
+      selector === "__proto__" ||
+      selector === "constructor" ||
+      selector === "prototype"
+    ) {
+      continue;
+    }
+    if (!styles || typeof styles !== "object" || Array.isArray(styles)) {
+      continue;
+    }
+
+    const cleanStyle: Record<string, string> = {};
+    for (const [field, val] of Object.entries(styles as Record<string, unknown>)) {
+      if (!ALLOWED_OVERRIDE_FIELDS.has(field)) continue;
+      if (typeof val !== "string") continue;
+      cleanStyle[field] = val.slice(0, MAX_FIELD_VALUE_LENGTH);
+    }
+
+    if (Object.keys(cleanStyle).length > 0) {
+      cleanElements[selector] = cleanStyle;
+      selectorCount += 1;
+    }
+  }
+
+  return { elements: cleanElements };
+}
+
 export async function GET() {
   try {
     const content = await fs.readFile(OVERRIDES_PATH, "utf-8");
-    return NextResponse.json(JSON.parse(content));
+    const parsed = JSON.parse(content);
+    return NextResponse.json(sanitizeVisualOverridesPayload(parsed));
   } catch {
     return NextResponse.json({ elements: {} });
   }
@@ -21,18 +89,16 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
 
-    // استخراج رمز الجلسة الموقّع من Cookies أو Authorization Header فقط (مع رفض معرفات المشرف الخام)
+    // استخراج رمز الجلسة الموقّع من الترويسات أو الكوكيز فقط (منع الاعتماد على body.sessionToken)
     const authHeader = request.headers.get("authorization") || "";
     const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
       : "";
     const xAdminToken = request.headers.get("x-admin-token") || "";
     const cookieToken = request.cookies.get("balaghni_admin_session")?.value || "";
-    const bodyToken = typeof body.sessionToken === "string" ? body.sessionToken.trim() : "";
 
-    const candidateToken = bearerToken || xAdminToken || bodyToken || cookieToken;
+    const candidateToken = bearerToken || xAdminToken || cookieToken;
 
-    // التحقق الصارم من صلاحية التعديل المباشر في Supabase
     const authCheck = await verifyAdminLiveEditPermission(candidateToken);
 
     if (!authCheck.authorized || !authCheck.profile) {
@@ -47,11 +113,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // حفظ التعديلات المعتمدة
-    await fs.mkdir(path.dirname(OVERRIDES_PATH), { recursive: true });
-    await fs.writeFile(OVERRIDES_PATH, JSON.stringify(body, null, 2), "utf-8");
+    const sanitized = sanitizeVisualOverridesPayload(body);
 
-    // توثيق التعديل الإداري في جدول admin_audit_logs
+    await fs.mkdir(path.dirname(OVERRIDES_PATH), { recursive: true });
+    await fs.writeFile(OVERRIDES_PATH, JSON.stringify(sanitized, null, 2), "utf-8");
+
     await recordAdminAuditLog({
       adminId: authCheck.profile.id,
       adminName: authCheck.profile.fullName || authCheck.profile.phone,
@@ -61,10 +127,13 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    console.error(
+      "[visual-overrides POST]",
+      error instanceof Error ? error.message : "unknown_error"
+    );
     return NextResponse.json(
-      { ok: false, error: String(error) },
+      { ok: false, error: "تعذر حفظ التعديلات المرئية حالياً." },
       { status: 500 }
     );
   }
 }
-

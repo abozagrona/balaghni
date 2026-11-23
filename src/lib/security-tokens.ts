@@ -1,13 +1,20 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { formatBalaghniTagCode, formatFullLibyaE164 } from "@/lib/utils";
+import {
+  computeOtpNonceSubjectHash,
+  computeWebAuthnNonceSubjectHash,
+  consumeSecurityNonceDistributed,
+} from "@/lib/nonce-consumption";
 
 export type TokenPurpose =
   | "owner_session"
   | "admin_session"
   | "vendor_session"
   | "otp_proof"
-  | "webauthn_challenge";
+  | "webauthn_challenge"
+  | "report_access"
+  | "call_owner_reply";
 
 export interface BaseTokenPayload {
   purpose: TokenPurpose;
@@ -66,28 +73,63 @@ const VENDOR_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const OTP_PROOF_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-// سجل الرموز المستهلكة لمرة واحدة (OTP Proof & WebAuthn Challenges)
-const consumedNonces = new Map<string, number>();
+const MIN_SIGNING_SECRET_BYTES = 32;
 
-function cleanupConsumedNonces(): void {
-  const now = Date.now();
-  if (consumedNonces.size < 500) return;
-  for (const [jti, exp] of consumedNonces.entries()) {
-    if (exp <= now) {
-      consumedNonces.delete(jti);
-    }
+class SigningSecretConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SigningSecretConfigError";
   }
 }
 
+function isPlaceholderSecret(val: string): boolean {
+  const lower = val.trim().toLowerCase();
+  if (!lower) return true;
+  return (
+    lower === "balaghni_hmac_sha256_internal_signing_key_2026_v2" ||
+    lower.startsWith("your_") ||
+    lower.endsWith("_here") ||
+    lower.includes("changeme") ||
+    lower.includes("replace_me") ||
+    lower.includes("placeholder") ||
+    lower.includes("example_secret")
+  );
+}
+
+function isProductionSigningRuntime(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production"
+  );
+}
+
 function getSigningSecretKey(): Buffer {
-  const rawSecret =
-    process.env.SESSION_HMAC_SECRET?.trim() ||
-    process.env.SESSION_SIGNING_SECRET?.trim() ||
-    process.env.ADMIN_MASTER_SECRET?.trim() ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.CRON_SECRET?.trim() ||
-    "balaghni_hmac_sha256_internal_signing_key_2026_v2";
-  return crypto.createHash("sha256").update(`balaghni_sig_v2:${rawSecret}`).digest();
+  const isProd = isProductionSigningRuntime();
+  const rawSecret = isProd
+    ? process.env.SESSION_HMAC_SECRET?.trim() || ""
+    : process.env.SESSION_HMAC_SECRET?.trim() ||
+      process.env.SESSION_SIGNING_SECRET?.trim() ||
+      process.env.ADMIN_MASTER_SECRET?.trim() ||
+      "";
+
+  if (!rawSecret || isPlaceholderSecret(rawSecret)) {
+    throw new SigningSecretConfigError(
+      isProd
+        ? "SESSION_HMAC_SECRET is required in production and cannot fall back to other service secrets."
+        : "Server signing secret is not configured or uses an invalid placeholder."
+    );
+  }
+
+  if (Buffer.byteLength(rawSecret, "utf8") < MIN_SIGNING_SECRET_BYTES) {
+    throw new SigningSecretConfigError(
+      "Server signing secret does not meet the minimum 32-byte strength requirement."
+    );
+  }
+
+  return crypto
+    .createHash("sha256")
+    .update(`balaghni_sig_v2:${rawSecret}`)
+    .digest();
 }
 
 export function signSecurityToken<T extends BaseTokenPayload>(payload: T): string {
@@ -125,8 +167,18 @@ export function verifySecurityToken<T extends BaseTokenPayload>(
     return { valid: false, reason: "malformed_token" };
   }
 
+  let secretKey: Buffer;
+  try {
+    secretKey = getSigningSecretKey();
+  } catch (err) {
+    if (err instanceof SigningSecretConfigError) {
+      return { valid: false, reason: "signing_secret_unconfigured" };
+    }
+    throw err;
+  }
+
   const expectedSig = crypto
-    .createHmac("sha256", getSigningSecretKey())
+    .createHmac("sha256", secretKey)
     .update(`v1.${payloadB64}`)
     .digest("base64url");
 
@@ -467,20 +519,23 @@ export function clearOtpProofCookie(response: NextResponse): void {
   });
 }
 
-export function verifyAndConsumeOtpProof(
+export async function verifyAndConsumeOtpProof(
   request: Request,
   bodyToken: string | null | undefined,
   expectedPhone: string
-): { valid: boolean; error?: string } {
-  cleanupConsumedNonces();
+): Promise<{ valid: boolean; error?: string }> {
   const normalizedExpected =
     formatFullLibyaE164(expectedPhone) || expectedPhone.trim();
   const cookieToken = readCookieFromRequest(request, OTP_PROOF_COOKIE_NAME);
   const headerToken = request.headers.get("x-otp-proof");
 
-  const candidates = [bodyToken, cookieToken, headerToken].filter(
-    Boolean
-  ) as string[];
+  const candidates = Array.from(
+    new Set(
+      [bodyToken, cookieToken, headerToken]
+        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .filter(Boolean)
+    )
+  );
 
   if (candidates.length === 0) {
     return {
@@ -488,6 +543,8 @@ export function verifyAndConsumeOtpProof(
       error: "يرجى إتمام التحقق من رقم الهاتف عبر رمز التحقق (OTP) أولاً.",
     };
   }
+
+  let lastCandidateError: string | null = null;
 
   for (const token of candidates) {
     const res = verifySecurityToken<OtpProofTokenPayload>(token, "otp_proof");
@@ -499,20 +556,55 @@ export function verifyAndConsumeOtpProof(
       continue;
     }
 
-    if (consumedNonces.has(res.payload.jti)) {
+    let subjectHash: string;
+    try {
+      subjectHash = computeOtpNonceSubjectHash(normalizedExpected);
+    } catch {
       return {
         valid: false,
-        error: "انتهت صلاحية رمز إثبات التحقق (تم استخدامه مسبقاً). يرجى طلب رمز جديد.",
+        error:
+          "تعذر التحقق من صلاحية رمز إثبات التحقق حالياً. يرجى المحاولة لاحقاً.",
       };
     }
 
-    consumedNonces.set(res.payload.jti, res.payload.exp);
-    return { valid: true };
+    const consumeRes = await consumeSecurityNonceDistributed({
+      jti: res.payload.jti,
+      purpose: "otp_proof",
+      subjectHash,
+      expiresAtMs: res.payload.exp,
+    });
+
+    if (consumeRes.consumed) {
+      return { valid: true };
+    }
+
+    if (consumeRes.reason === "already_consumed") {
+      lastCandidateError =
+        "انتهت صلاحية رمز إثبات التحقق (تم استخدامه مسبقاً). يرجى طلب رمز جديد.";
+      continue;
+    }
+
+    if (consumeRes.reason === "expired") {
+      if (!lastCandidateError) {
+        lastCandidateError =
+          "رمز إثبات التحقق من الهاتف منتهي الصلاحية. يرجى طلب رمز جديد.";
+      }
+      continue;
+    }
+
+    // سياسة Fail-Closed: عند فشل RPC الحقيقي (nonce_store_unavailable / invalid_input) يتوقف التحقق فوراً
+    return {
+      valid: false,
+      error:
+        "تعذر التحقق من صلاحية رمز إثبات التحقق حالياً. يرجى المحاولة لاحقاً.",
+    };
   }
 
   return {
     valid: false,
-    error: "رمز إثبات التحقق من الهاتف غير صالح أو منتهي الصلاحية.",
+    error:
+      lastCandidateError ||
+      "رمز إثبات التحقق من الهاتف غير صالح أو منتهي الصلاحية.",
   };
 }
 
@@ -600,23 +692,28 @@ export function extractRawCredentialId(
   return parsed ? parsed.credentialId : "";
 }
 
-function consumeWebAuthnChallenge(
+async function consumeWebAuthnChallenge(
   request: Request,
   bodyChallengeToken: string | null | undefined,
   expectedScope: "owner" | "admin"
-): {
+): Promise<{
   valid: boolean;
   payload?: WebAuthnChallengeTokenPayload;
   error?: string;
-} {
-  cleanupConsumedNonces();
+}> {
   const cookieToken = readCookieFromRequest(
     request,
     WEBAUTHN_CHALLENGE_COOKIE_NAME
   );
-  const candidates = [bodyChallengeToken, cookieToken].filter(
-    Boolean
-  ) as string[];
+  const candidates = Array.from(
+    new Set(
+      [bodyChallengeToken, cookieToken]
+        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .filter(Boolean)
+    )
+  );
+
+  let lastCandidateError: string | null = null;
 
   for (const token of candidates) {
     const res = verifySecurityToken<WebAuthnChallengeTokenPayload>(
@@ -625,19 +722,57 @@ function consumeWebAuthnChallenge(
     );
     if (!res.valid || !res.payload) continue;
     if (res.payload.scope !== expectedScope) continue;
-    if (consumedNonces.has(res.payload.jti)) {
+
+    let subjectHash: string;
+    try {
+      subjectHash = computeWebAuthnNonceSubjectHash(
+        expectedScope,
+        res.payload.rpId
+      );
+    } catch {
       return {
         valid: false,
-        error: "انتهت صلاحية تحدي البصمة (تم استخدامه مسبقاً). حاول مجدداً.",
+        error: "تعذر التحقق من صلاحية تحدي البصمة حالياً. يرجى المحاولة لاحقاً.",
       };
     }
-    consumedNonces.set(res.payload.jti, res.payload.exp);
-    return { valid: true, payload: res.payload };
+
+    const consumeRes = await consumeSecurityNonceDistributed({
+      jti: res.payload.jti,
+      purpose: "webauthn_challenge",
+      subjectHash,
+      expiresAtMs: res.payload.exp,
+    });
+
+    if (consumeRes.consumed) {
+      return { valid: true, payload: res.payload };
+    }
+
+    if (consumeRes.reason === "already_consumed") {
+      lastCandidateError =
+        "انتهت صلاحية تحدي البصمة (تم استخدامه مسبقاً). حاول مجدداً.";
+      continue;
+    }
+
+    if (consumeRes.reason === "expired") {
+      if (!lastCandidateError) {
+        lastCandidateError =
+          "تحدي المصادقة بالبصمة منتهي الصلاحية. حاول مجدداً.";
+      }
+      continue;
+    }
+
+    // سياسة Fail-Closed: عند فشل RPC الحقيقي يتوقف التحقق فوراً
+    return {
+      valid: false,
+      error: "تعذر التحقق من صلاحية تحدي البصمة حالياً. يرجى المحاولة لاحقاً.",
+    };
   }
 
   return {
     valid: false,
-    error: "تحدي المصادقة بالبصمة (WebAuthn Challenge) مفقود أو منتهي الصلاحية.",
+    error:
+      lastCandidateError ||
+      "تحدي المصادقة بالبصمة (WebAuthn Challenge) مفقود أو منتهي الصلاحية.",
   };
 }
 
@@ -715,7 +850,43 @@ function ensureDerEcdsaSignature(sigBuf: Buffer): Buffer {
   return sigBuf;
 }
 
-export function verifyWebAuthnRegistration(input: {
+function preValidateClientDataJsonStructure(
+  clientDataJSONB64: string,
+  expectedType: "webauthn.create" | "webauthn.get"
+): { valid: boolean; error?: string } {
+  try {
+    const clientDataBuf = Buffer.from(clientDataJSONB64, "base64url");
+    if (clientDataBuf.length === 0) {
+      return { valid: false, error: "بيانات استجابة المتصفح (clientDataJSON) تالفة." };
+    }
+    const parsed = JSON.parse(clientDataBuf.toString("utf-8")) as {
+      type?: unknown;
+      challenge?: unknown;
+      origin?: unknown;
+    };
+    if (!parsed || typeof parsed !== "object") {
+      return { valid: false, error: "بيانات استجابة المتصفح (clientDataJSON) تالفة." };
+    }
+    if (parsed.type !== expectedType) {
+      return { valid: false, error: "نوع عملية WebAuthn غير مطابق." };
+    }
+    if (typeof parsed.challenge !== "string" || !parsed.challenge.trim()) {
+      return { valid: false, error: "بيانات استجابة المتصفح (clientDataJSON) تالفة." };
+    }
+    if (parsed.origin !== undefined) {
+      if (typeof parsed.origin !== "string" || !parsed.origin.trim()) {
+        return { valid: false, error: "بيانات استجابة المتصفح (clientDataJSON) تالفة." };
+      }
+      // التحقق من كون origin عنوان URL صالحاً شكلياً
+      new URL(parsed.origin);
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, error: "بيانات استجابة المتصفح (clientDataJSON) تالفة." };
+  }
+}
+
+export async function verifyWebAuthnRegistration(input: {
   request?: Request;
   req?: Request;
   scope?: "owner" | "admin";
@@ -728,13 +899,13 @@ export function verifyWebAuthnRegistration(input: {
   publicKeySpki?: string | null;
   publicKeySpkiBase64?: string | null;
   publicKeyAlgorithm?: number | null;
-}): {
+}): Promise<{
   valid: boolean;
   ok: boolean;
   encodedRecord?: string;
   rawCredentialId?: string;
   error?: string;
-} {
+}> {
   const reqObj = input.request || input.req;
   const scopeVal = input.scope || input.expectedScope || "owner";
   const challengeTok = input.challengeToken ?? input.challengeTokenFromBody;
@@ -745,16 +916,16 @@ export function verifyWebAuthnRegistration(input: {
     return { valid: false, ok: false, error: "طلب التحقق غير صالح." };
   }
 
-  const challengeRes = consumeWebAuthnChallenge(
-    reqObj,
-    challengeTok,
-    scopeVal
-  );
-  if (!challengeRes.valid || !challengeRes.payload) {
-    return { valid: false, ok: false, error: challengeRes.error };
-  }
-
-  if (!clientDataB64 || !spkiB64) {
+  // F-03 / VULN-04: التحقق من وجود الحقول الإلزامية وصحتها البنيوية المحلية قبل استهلاك التحدي عبر RPC
+  if (
+    !String(input.credentialId || "").trim() ||
+    !clientDataB64 ||
+    !spkiB64 ||
+    typeof clientDataB64 !== "string" ||
+    typeof spkiB64 !== "string" ||
+    !clientDataB64.trim() ||
+    !spkiB64.trim()
+  ) {
     return {
       valid: false,
       ok: false,
@@ -762,17 +933,15 @@ export function verifyWebAuthnRegistration(input: {
     };
   }
 
-  const clientCheck = verifyClientDataJson(
+  const preClientCheck = preValidateClientDataJsonStructure(
     clientDataB64,
-    "webauthn.create",
-    challengeRes.payload.challenge,
-    challengeRes.payload.rpId
+    "webauthn.create"
   );
-  if (!clientCheck.valid) {
-    return { valid: false, ok: false, error: clientCheck.error };
+  if (!preClientCheck.valid) {
+    return { valid: false, ok: false, error: preClientCheck.error };
   }
 
-  // التحقق من صلاحية المفتاح العام SPKI عبر Node crypto
+  // التحقق من صلاحية المفتاح العام SPKI عبر Node crypto قبل استهلاك التحدي
   try {
     const spkiBuf = Buffer.from(spkiB64, "base64url");
     crypto.createPublicKey({
@@ -786,6 +955,25 @@ export function verifyWebAuthnRegistration(input: {
       ok: false,
       error: "المفتاح العام للبصمة الحيوية غير صالح تشفيرياً.",
     };
+  }
+
+  const challengeRes = await consumeWebAuthnChallenge(
+    reqObj,
+    challengeTok,
+    scopeVal
+  );
+  if (!challengeRes.valid || !challengeRes.payload) {
+    return { valid: false, ok: false, error: challengeRes.error };
+  }
+
+  const clientCheck = verifyClientDataJson(
+    clientDataB64,
+    "webauthn.create",
+    challengeRes.payload.challenge,
+    challengeRes.payload.rpId
+  );
+  if (!clientCheck.valid) {
+    return { valid: false, ok: false, error: clientCheck.error };
   }
 
   const alg =
@@ -805,7 +993,7 @@ export function verifyWebAuthnRegistration(input: {
   };
 }
 
-export function verifyWebAuthnAssertion(input: {
+export async function verifyWebAuthnAssertion(input: {
   request?: Request;
   req?: Request;
   scope?: "owner" | "admin";
@@ -820,11 +1008,11 @@ export function verifyWebAuthnAssertion(input: {
   signature?: string | null;
   signatureBase64?: string | null;
   storedCredentialRecord: string;
-}): {
+}): Promise<{
   valid: boolean;
   ok: boolean;
   error?: string;
-} {
+}> {
   const reqObj = input.request || input.req;
   const scopeVal = input.scope || input.expectedScope || "owner";
   const challengeTok = input.challengeToken ?? input.challengeTokenFromBody;
@@ -836,16 +1024,20 @@ export function verifyWebAuthnAssertion(input: {
     return { valid: false, ok: false, error: "طلب التحقق غير صالح." };
   }
 
-  const challengeRes = consumeWebAuthnChallenge(
-    reqObj,
-    challengeTok,
-    scopeVal
-  );
-  if (!challengeRes.valid || !challengeRes.payload) {
-    return { valid: false, ok: false, error: challengeRes.error };
-  }
-
-  if (!clientDataB64 || !authDataB64 || !sigB64) {
+  // F-03 / VULN-04: التحقق من وجود الحقول الإلزامية وصحتها البنيوية المحلية قبل استهلاك التحدي عبر RPC
+  if (
+    !String(input.credentialId || "").trim() ||
+    !String(input.storedCredentialRecord || "").trim() ||
+    !clientDataB64 ||
+    !authDataB64 ||
+    !sigB64 ||
+    typeof clientDataB64 !== "string" ||
+    typeof authDataB64 !== "string" ||
+    typeof sigB64 !== "string" ||
+    !clientDataB64.trim() ||
+    !authDataB64.trim() ||
+    !sigB64.trim()
+  ) {
     return {
       valid: false,
       ok: false,
@@ -853,14 +1045,12 @@ export function verifyWebAuthnAssertion(input: {
     };
   }
 
-  const clientCheck = verifyClientDataJson(
+  const preClientCheck = preValidateClientDataJsonStructure(
     clientDataB64,
-    "webauthn.get",
-    challengeRes.payload.challenge,
-    challengeRes.payload.rpId
+    "webauthn.get"
   );
-  if (!clientCheck.valid || !clientCheck.clientDataBuf) {
-    return { valid: false, ok: false, error: clientCheck.error };
+  if (!preClientCheck.valid) {
+    return { valid: false, ok: false, error: preClientCheck.error };
   }
 
   const authDataBuf = Buffer.from(authDataB64, "base64url");
@@ -868,7 +1058,7 @@ export function verifyWebAuthnAssertion(input: {
     return { valid: false, ok: false, error: "بيانات المصادق الحيوي (authenticatorData) قصيرة جداً." };
   }
 
-  // فحص علم حضور المستخدم (User Present bit 0)
+  // فحص علم حضور المستخدم (User Present bit 0) قبل استهلاك التحدي
   const flags = authDataBuf[32];
   if ((flags & 0x01) === 0) {
     return { valid: false, ok: false, error: "لم يتم تأكيد حضور المستخدم من حساس البصمة." };
@@ -887,6 +1077,25 @@ export function verifyWebAuthnAssertion(input: {
       error:
         "هذه البصمة مسجلة بنظام قديم بدون مفتاح عام. يرجى الدخول برقم الهاتف وإعادة تفعيل البصمة من لوحة التحكم.",
     };
+  }
+
+  const challengeRes = await consumeWebAuthnChallenge(
+    reqObj,
+    challengeTok,
+    scopeVal
+  );
+  if (!challengeRes.valid || !challengeRes.payload) {
+    return { valid: false, ok: false, error: challengeRes.error };
+  }
+
+  const clientCheck = verifyClientDataJson(
+    clientDataB64,
+    "webauthn.get",
+    challengeRes.payload.challenge,
+    challengeRes.payload.rpId
+  );
+  if (!clientCheck.valid || !clientCheck.clientDataBuf) {
+    return { valid: false, ok: false, error: clientCheck.error };
   }
 
   try {
@@ -955,9 +1164,258 @@ export function verifyReportReplySignature(
   sig: string
 ): boolean {
   if (!reportId || !tagCode || !sig) return false;
-  const expected = createReportReplySignature(reportId, tagCode);
+  let expected: string;
+  try {
+    expected = createReportReplySignature(reportId, tagCode);
+  } catch (err) {
+    if (err instanceof SigningSecretConfigError) {
+      return false;
+    }
+    throw err;
+  }
   const a = Buffer.from(sig.trim(), "utf8");
   const b = Buffer.from(expected, "utf8");
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+// ============================================================================
+// حماية قناة التحديث اللحظي للبلاغ (report-live) بتوقيع HMAC-SHA256 وتوكن وصول موقّع
+// لا يُكتفى بمعرّف UUID وحده للاشتراك أو قراءة حالة/رد البلاغ
+// ============================================================================
+
+export interface ReportAccessTokenPayload extends BaseTokenPayload {
+  purpose: "report_access";
+  reportId: string;
+  tagCode: string;
+  channelSecret: string;
+  jti: string;
+}
+
+const REPORT_ACCESS_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const revokedReportTokenJtis = new Map<string, number>();
+
+function cleanupRevokedReportTokens(): void {
+  const now = Date.now();
+  if (revokedReportTokenJtis.size < 500) return;
+  for (const [jti, exp] of revokedReportTokenJtis.entries()) {
+    if (exp <= now) revokedReportTokenJtis.delete(jti);
+  }
+}
+
+export function resetRevokedReportTokensForTest(): void {
+  revokedReportTokenJtis.clear();
+}
+
+export function createReportChannelSecret(
+  reportId: string,
+  tagCode: string
+): string {
+  const cleanId = String(reportId || "").trim();
+  const cleanTag = formatBalaghniTagCode(tagCode);
+  return crypto
+    .createHmac("sha256", getSigningSecretKey())
+    .update(`report_live_channel:${cleanId}:${cleanTag}`, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+}
+
+export function buildSignedReportLiveChannel(
+  reportId: string,
+  tagCode: string
+): string | null {
+  const cleanId = String(reportId || "").trim();
+  const cleanTag = formatBalaghniTagCode(tagCode);
+  if (!cleanId || !cleanTag) return null;
+  const secret = createReportChannelSecret(cleanId, cleanTag);
+  return `report-live:${cleanId}:${secret}`;
+}
+
+export function createReportAccessToken(input: {
+  reportId: string;
+  tagCode: string;
+}): { token: string; channelName: string; channelSecret: string; jti: string; expiresAt: number } {
+  const cleanId = String(input.reportId || "").trim();
+  const cleanTag = formatBalaghniTagCode(input.tagCode);
+  const channelSecret = createReportChannelSecret(cleanId, cleanTag);
+  const now = Date.now();
+  const expiresAt = now + REPORT_ACCESS_TTL_MS;
+  const jti = crypto.randomUUID();
+  const payload: ReportAccessTokenPayload = {
+    purpose: "report_access",
+    reportId: cleanId,
+    tagCode: cleanTag,
+    channelSecret,
+    jti,
+    iat: now,
+    exp: expiresAt,
+  };
+  return {
+    token: signSecurityToken(payload),
+    channelName: `report-live:${cleanId}:${channelSecret}`,
+    channelSecret,
+    jti,
+    expiresAt,
+  };
+}
+
+export function revokeReportAccessToken(tokenOrJti: string | null | undefined): boolean {
+  if (!tokenOrJti || typeof tokenOrJti !== "string") return false;
+  const trimmed = tokenOrJti.trim();
+  if (!trimmed) return false;
+
+  const check = verifySecurityToken<ReportAccessTokenPayload>(trimmed, "report_access");
+  if (check.valid && check.payload?.jti) {
+    cleanupRevokedReportTokens();
+    revokedReportTokenJtis.set(check.payload.jti, check.payload.exp);
+    return true;
+  }
+
+  cleanupRevokedReportTokens();
+  revokedReportTokenJtis.set(trimmed, Date.now() + REPORT_ACCESS_TTL_MS);
+  return true;
+}
+
+export function verifyReportAccessToken(
+  token: string | null | undefined,
+  expectedReportId: string,
+  expectedTagCode?: string
+): {
+  valid: boolean;
+  payload?: ReportAccessTokenPayload;
+  reason?: string;
+} {
+  const check = verifySecurityToken<ReportAccessTokenPayload>(
+    token,
+    "report_access"
+  );
+  if (!check.valid || !check.payload) {
+    return { valid: false, reason: check.reason || "invalid_token" };
+  }
+
+  if (check.payload.jti && revokedReportTokenJtis.has(check.payload.jti)) {
+    const exp = revokedReportTokenJtis.get(check.payload.jti) || 0;
+    if (exp > Date.now()) {
+      return { valid: false, reason: "revoked" };
+    }
+    revokedReportTokenJtis.delete(check.payload.jti);
+  }
+
+  const cleanId = String(expectedReportId || "").trim();
+  if (!cleanId || check.payload.reportId !== cleanId) {
+    return { valid: false, reason: "report_id_mismatch" };
+  }
+
+  if (expectedTagCode) {
+    const cleanTag = formatBalaghniTagCode(expectedTagCode);
+    if (cleanTag && check.payload.tagCode !== cleanTag) {
+      return { valid: false, reason: "tag_code_mismatch" };
+    }
+  }
+
+  const expectedSecret = createReportChannelSecret(
+    check.payload.reportId,
+    check.payload.tagCode
+  );
+  const a = Buffer.from(check.payload.channelSecret || "", "utf8");
+  const b = Buffer.from(expectedSecret, "utf8");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { valid: false, reason: "channel_secret_mismatch" };
+  }
+
+  return { valid: true, payload: check.payload };
+}
+
+// ============================================================================
+// توكن مصادقة رد المالك أثناء المكالمة المشفرة (call_owner_reply)
+// يربط الرد السريع ببصمة SHA-256 لرمز المالك السري + reportId + tagCode
+// ============================================================================
+
+export interface CallOwnerReplyTokenPayload extends BaseTokenPayload {
+  purpose: "call_owner_reply";
+  callCodeHash: string;
+  reportId: string;
+  tagCode: string;
+  jti: string;
+}
+
+const CALL_OWNER_REPLY_DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 دقيقة
+
+export function hashCallOwnerCode(code: string): string {
+  const normalized = String(code || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  return crypto
+    .createHash("sha256")
+    .update(`balaghni_call_owner_code_v1:${normalized}`, "utf8")
+    .digest("hex");
+}
+
+export function createCallOwnerReplyToken(input: {
+  callCodeHash: string;
+  reportId: string;
+  tagCode: string;
+  ttlMs?: number;
+}): { token: string; jti: string; expiresAt: number } {
+  const now = Date.now();
+  const safeTtl = Math.min(
+    Math.max(1000, Number(input.ttlMs || CALL_OWNER_REPLY_DEFAULT_TTL_MS)),
+    CALL_OWNER_REPLY_DEFAULT_TTL_MS
+  );
+  const expiresAt = now + safeTtl;
+  const jti = crypto.randomUUID();
+  const payload: CallOwnerReplyTokenPayload = {
+    purpose: "call_owner_reply",
+    callCodeHash: String(input.callCodeHash || "").trim().toLowerCase(),
+    reportId: String(input.reportId || "").trim(),
+    tagCode: formatBalaghniTagCode(input.tagCode),
+    jti,
+    iat: now,
+    exp: expiresAt,
+  };
+  return {
+    token: signSecurityToken(payload),
+    jti,
+    expiresAt,
+  };
+}
+
+export function verifyCallOwnerReplyToken(
+  token: string | null | undefined,
+  expectedCallCodeHash: string,
+  expectedReportId: string,
+  expectedTagCode: string
+): {
+  valid: boolean;
+  payload?: CallOwnerReplyTokenPayload;
+  reason?: string;
+} {
+  const check = verifySecurityToken<CallOwnerReplyTokenPayload>(
+    token,
+    "call_owner_reply"
+  );
+  if (!check.valid || !check.payload) {
+    return { valid: false, reason: check.reason || "invalid_token" };
+  }
+
+  const expectedHash = String(expectedCallCodeHash || "").trim().toLowerCase();
+  const providedHash = String(check.payload.callCodeHash || "").trim().toLowerCase();
+  const a = Buffer.from(providedHash, "utf8");
+  const b = Buffer.from(expectedHash, "utf8");
+  if (!expectedHash || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { valid: false, reason: "call_code_hash_mismatch" };
+  }
+
+  const cleanReportId = String(expectedReportId || "").trim();
+  if (!cleanReportId || check.payload.reportId !== cleanReportId) {
+    return { valid: false, reason: "report_id_mismatch" };
+  }
+
+  const cleanTag = formatBalaghniTagCode(expectedTagCode);
+  if (!cleanTag || check.payload.tagCode !== cleanTag) {
+    return { valid: false, reason: "tag_code_mismatch" };
+  }
+
+  return { valid: true, payload: check.payload };
 }

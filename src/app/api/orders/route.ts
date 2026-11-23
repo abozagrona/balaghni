@@ -16,8 +16,8 @@ import {
 import { formatFullLibyaE164 } from "@/lib/utils";
 import { verifyAndConsumeOtpProof } from "@/lib/security-tokens";
 import {
-  checkOrderRateLimit,
-  recordOrderAttempt,
+  checkOrderRateLimitAsync,
+  recordOrderAttemptAsync,
   getClientIp,
 } from "@/lib/rate-limiter";
 
@@ -49,9 +49,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. فحص حدود المعدل (Rate Limit) لمنع استنزاف مخزون الملصقات
+    // 1. فحص حدود المعدل المركزي (Distributed Rate Limit) لمنع استنزاف مخزون الملصقات
     const ip = getClientIp(req);
-    const rateLimit = checkOrderRateLimit(phone, ip);
+    const rateLimit = await checkOrderRateLimitAsync(phone, ip);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. التحقق الإلزامي من ملكية رقم الهاتف عبر رمز التحقق (OTP Proof Token) الموقّع من الخادم
-    const otpProofCheck = verifyAndConsumeOtpProof(
+    const otpProofCheck = await verifyAndConsumeOtpProof(
       req,
       body.otpProofToken,
       phone
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    recordOrderAttempt(phone, ip);
+    await recordOrderAttemptAsync(phone, ip);
 
     const adminPhone = getAdminWhatsappNumber();
     const orderId = `ORD-${Date.now().toString(36).toUpperCase()}`;

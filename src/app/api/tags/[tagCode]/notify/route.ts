@@ -5,9 +5,9 @@ import {
   validateScanTargetAndCooldown,
 } from "@/lib/supabase/client";
 import {
-  checkReportIpRateLimit,
+  checkReportIpRateLimitAsync,
   getClientIp,
-  recordReportIpAttempt,
+  recordReportIpAttemptAsync,
 } from "@/lib/rate-limiter";
 import { formatBalaghniTagCode } from "@/lib/utils";
 
@@ -27,7 +27,7 @@ export async function POST(
 ) {
   try {
     const clientIp = getClientIp(req);
-    const ipLimit = checkReportIpRateLimit(clientIp);
+    const ipLimit = await checkReportIpRateLimitAsync(clientIp);
     if (!ipLimit.allowed) {
       return NextResponse.json(
         {
@@ -39,7 +39,7 @@ export async function POST(
         { status: 429 }
       );
     }
-    recordReportIpAttempt(clientIp);
+    await recordReportIpAttemptAsync(clientIp);
 
     const { tagCode } = await context.params;
     const normalizedCode = formatBalaghniTagCode(tagCode);
