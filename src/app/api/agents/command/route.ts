@@ -4,7 +4,8 @@ import {
   verifyAdminActionPermission,
 } from "@/lib/supabase/client";
 import { clearAdminSessionCookie } from "@/lib/security-tokens";
-import { executeFounderCommand } from "@/lib/ai-office/agents-service";
+import { dispatchOfficeCommand } from "@/lib/ai-office/workforce-dispatcher";
+import type { TaskPriority } from "@/lib/ai-office/task-orchestrator";
 import { consumeDistributedRateLimit, getClientIp } from "@/lib/rate-limiter";
 
 export const dynamic = "force-dynamic";
@@ -100,13 +101,36 @@ export async function POST(req: NextRequest) {
         ? "skills_architect"
         : "orchestrator";
 
-    const result = await executeFounderCommand({
+    const rawPriority = String(body?.priority || "normal").trim();
+    const priority: TaskPriority =
+      rawPriority === "low" ||
+      rawPriority === "high" ||
+      rawPriority === "urgent"
+        ? rawPriority
+        : "normal";
+
+    const rawIdempotencyKey =
+      typeof body?.idempotencyKey === "string"
+        ? body.idempotencyKey.trim().slice(0, 64)
+        : undefined;
+
+    // ملاحظة أمنية: يتم تجاهل أي حقول client-supplied مثل approvalGranted أو approvalId أو featureFlag
+    const result = await dispatchOfficeCommand({
       command,
       targetRole,
+      priority,
+      idempotencyKey: rawIdempotencyKey || undefined,
+      stageTimeBudgetMs: 42000,
+      adminId: activeCheck.profile.id,
       adminName: activeCheck.profile.fullName || activeCheck.profile.username,
     });
 
-    return NextResponse.json(result, { status: result.ok ? 200 : 500 });
+    const httpStatus = result.needsResume
+      ? 202
+      : result.ok
+      ? 200
+      : 500;
+    return NextResponse.json(result, { status: httpStatus });
   } catch (err) {
     return NextResponse.json(
       {

@@ -102,6 +102,63 @@ interface AgentSkillRecord {
   created_at: string;
 }
 
+interface OrchestratedEvidenceView {
+  toolId: string;
+  agentRole: string;
+  agentName: string;
+  outcome: "success" | "blocked" | "failed" | "pending";
+  verified: boolean;
+  dataSource: string;
+  resultSummary: string;
+  executedAt: string;
+  durationMs: number;
+  error?: string;
+  errorCode?: string;
+}
+
+interface OrchestratedStepView {
+  id: string;
+  stepKey: string;
+  stepOrder: number;
+  title: string;
+  assignedRole: string;
+  assignedAgentName: string;
+  priority: string;
+  dependsOn: string[];
+  status: string;
+  output: string | null;
+  evidence: OrchestratedEvidenceView[];
+  verified: boolean;
+  verificationReason: string | null;
+  errorMessage: string | null;
+  handoffFromRole?: string | null;
+}
+
+interface OrchestratedTaskView {
+  id: string;
+  idempotencyKey?: string;
+  title: string;
+  command: string;
+  priority: string;
+  status: string;
+  verificationStatus: "verified" | "partial" | "failed" | "pending";
+  steps: OrchestratedStepView[];
+  escalations: Array<{
+    stepKey: string;
+    agentName: string;
+    reason: string;
+    severity: string;
+    escalatedTo: string;
+  }>;
+  conflicts: Array<{
+    stepKeyA: string;
+    stepKeyB: string;
+    description: string;
+    resolution: string;
+  }>;
+  finalReport: string | null;
+}
+
 const STATUS_META: Record<
   AgentStatus,
   {
@@ -323,6 +380,10 @@ export default function AdminOfficePage() {
   const [logs, setLogs] = React.useState<AgentLogRecord[]>([]);
   const [skills, setSkills] = React.useState<AgentSkillRecord[]>([]);
   const [realtimeConnected, setRealtimeConnected] = React.useState(false);
+  const [multiAgentEnabled, setMultiAgentEnabled] = React.useState(false);
+  const [lastEnginePath, setLastEnginePath] = React.useState<string | null>(null);
+  const [latestOrchestratedTask, setLatestOrchestratedTask] =
+    React.useState<OrchestratedTaskView | null>(null);
 
   const [commandInput, setCommandInput] = React.useState("");
   const [targetRole, setTargetRole] =
@@ -373,6 +434,7 @@ export default function AdminOfficePage() {
       }
 
       setErrorMsg(null);
+      setMultiAgentEnabled(Boolean(data.multiAgentEnabled));
       setAgents(Array.isArray(data.agents) ? data.agents : []);
       setTasks(Array.isArray(data.tasks) ? data.tasks : []);
       setLogs(Array.isArray(data.logs) ? data.logs : []);
@@ -555,12 +617,58 @@ export default function AdminOfficePage() {
       if (!res.ok || !data.ok) {
         setErrorMsg(data.error || "تعذر تنفيذ الأمر حالياً.");
       }
+      if (typeof data.enginePath === "string") {
+        setLastEnginePath(data.enginePath);
+      }
+      if (typeof data.multiAgentEnabled === "boolean") {
+        setMultiAgentEnabled(data.multiAgentEnabled);
+      }
+      if (data.orchestratedTask && typeof data.orchestratedTask === "object") {
+        setLatestOrchestratedTask(data.orchestratedTask as OrchestratedTaskView);
+      }
       if (Array.isArray(data.agents)) setAgents(data.agents);
       if (Array.isArray(data.logs)) setLogs(data.logs);
       if (Array.isArray(data.skills)) setSkills(data.skills);
       await fetchOfficeState();
     } catch {
       setErrorMsg("حدث خطأ في الاتصال أثناء إرسال الأمر.");
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  const handleResumeTask = async () => {
+    if (!latestOrchestratedTask || isExecuting) return;
+    setIsExecuting(true);
+    setErrorMsg(null);
+    try {
+      const res = await fetch("/api/agents/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          command: latestOrchestratedTask.command,
+          targetRole,
+          idempotencyKey: latestOrchestratedTask.idempotencyKey,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 202) {
+        setErrorMsg(data.error || "تعذر استئناف المهمة حالياً.");
+      }
+      if (typeof data.enginePath === "string") setLastEnginePath(data.enginePath);
+      if (typeof data.multiAgentEnabled === "boolean") {
+        setMultiAgentEnabled(data.multiAgentEnabled);
+      }
+      if (data.orchestratedTask && typeof data.orchestratedTask === "object") {
+        setLatestOrchestratedTask(data.orchestratedTask as OrchestratedTaskView);
+      }
+      if (Array.isArray(data.agents)) setAgents(data.agents);
+      if (Array.isArray(data.logs)) setLogs(data.logs);
+      if (Array.isArray(data.skills)) setSkills(data.skills);
+      await fetchOfficeState();
+    } catch {
+      setErrorMsg("حدث خطأ في الاتصال أثناء استئناف المهمة.");
     } finally {
       setIsExecuting(false);
     }
@@ -1751,6 +1859,257 @@ export default function AdminOfficePage() {
             </div>
           </section>
         )}
+
+        {/* 1.8 لوحة تنسيق المهام متعددة الوكلاء وأدلة التنفيذ (PHASE 2B) */}
+        <section className="rounded-3xl border border-white/10 bg-[#11141E] p-4 shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Radar className="h-4 w-4 text-[#ED001B]" />
+              <h2 className="text-xs font-black text-white">
+                محرك تنسيق المهام متعدد الوكلاء وأدلة التحقق
+              </h2>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold">
+              <span
+                className={`rounded-full border px-2.5 py-0.5 ${
+                  multiAgentEnabled
+                    ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                    : "border-white/15 bg-white/5 text-white/70"
+                }`}
+              >
+                {multiAgentEnabled
+                  ? "Multi-Agent v2 (مفعّل خادمياً)"
+                  : "Legacy Single-Agent (الافتراضي)"}
+              </span>
+              {lastEnginePath && (
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-white/70">
+                  آخر مسار: {lastEnginePath}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {latestOrchestratedTask && (
+            <div className="mt-4 space-y-3 border-t border-white/10 pt-3">
+              {/* الأمر الأصلي وحالة التحقق الإجمالية */}
+              <div className="flex flex-wrap items-start justify-between gap-2 rounded-2xl border border-white/10 bg-[#151824] p-3">
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold text-white/50">
+                    الأمر الأصلي للمدير:
+                  </p>
+                  <p className="text-xs font-bold text-white">
+                    {latestOrchestratedTask.command}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-xl border px-2.5 py-1 text-[11px] font-black ${
+                      latestOrchestratedTask.status === "completed" &&
+                      latestOrchestratedTask.verificationStatus === "verified"
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                        : latestOrchestratedTask.status === "in_progress" ||
+                          latestOrchestratedTask.status === "analyzing"
+                        ? "border-cyan-500/40 bg-cyan-500/15 text-cyan-200"
+                        : latestOrchestratedTask.status === "paused"
+                        ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
+                        : latestOrchestratedTask.steps.some(
+                            (s) =>
+                              s.status === "awaiting_approval" ||
+                              s.evidence.some((e) => e.outcome === "pending")
+                          )
+                        ? "border-orange-500/40 bg-orange-500/15 text-orange-200"
+                        : latestOrchestratedTask.verificationStatus === "partial"
+                        ? "border-yellow-500/40 bg-yellow-500/15 text-yellow-200"
+                        : "border-rose-500/40 bg-rose-500/15 text-rose-200"
+                    }`}
+                  >
+                    {latestOrchestratedTask.status === "completed" &&
+                    latestOrchestratedTask.verificationStatus === "verified"
+                      ? "مكتمل ومتحقق ✓"
+                      : latestOrchestratedTask.status === "in_progress" ||
+                        latestOrchestratedTask.status === "analyzing"
+                      ? "قيد التنفيذ"
+                      : latestOrchestratedTask.status === "paused"
+                      ? "متوقف ويحتاج إلى استئناف"
+                      : latestOrchestratedTask.steps.some(
+                          (s) =>
+                            s.status === "awaiting_approval" ||
+                            s.evidence.some((e) => e.outcome === "pending")
+                        )
+                      ? "بانتظار موافقة"
+                      : latestOrchestratedTask.verificationStatus === "partial"
+                      ? "مكتمل جزئياً"
+                      : "فاشل"}
+                  </span>
+                  {latestOrchestratedTask.status === "paused" && (
+                    <button
+                      type="button"
+                      onClick={handleResumeTask}
+                      disabled={isExecuting}
+                      className="rounded-xl border border-amber-400/50 bg-amber-500/20 px-2.5 py-1 text-[11px] font-black text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+                    >
+                      استئناف التنفيذ
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* خطة رامي والمهام الفرعية والاعتماديات والأدلة */}
+              <div className="space-y-2">
+                <p className="text-[11px] font-black text-white/75">
+                  خطة رامي ({latestOrchestratedTask.steps.length} خطوات):
+                </p>
+                <div className="grid gap-2.5 md:grid-cols-2">
+                  {latestOrchestratedTask.steps.map((st) => {
+                    const isVerifiedComplete =
+                      st.status === "completed" && st.verified;
+                    const isPendingApproval =
+                      st.status === "awaiting_approval" ||
+                      st.evidence.some((e) => e.outcome === "pending");
+                    return (
+                      <div
+                        key={st.id || st.stepKey}
+                        className="space-y-2 rounded-2xl border border-white/10 bg-[#151824] p-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-black text-white">
+                              {st.stepOrder}. {st.title}
+                            </p>
+                            <p className="text-[11px] text-white/65">
+                              الموظف: {st.assignedAgentName} ({st.assignedRole})
+                              {st.handoffFromRole
+                                ? ` • تسليم من ${st.handoffFromRole}`
+                                : ""}
+                            </p>
+                          </div>
+                          <span
+                            className={`rounded-lg border px-2 py-0.5 text-[10px] font-black ${
+                              isVerifiedComplete
+                                ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                                : isPendingApproval
+                                ? "border-orange-500/40 bg-orange-500/15 text-orange-200"
+                                : st.status === "in_progress"
+                                ? "border-cyan-500/40 bg-cyan-500/15 text-cyan-200"
+                                : st.status === "paused" || st.status === "pending"
+                                ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
+                                : "border-rose-500/40 bg-rose-500/15 text-rose-200"
+                            }`}
+                          >
+                            {isVerifiedComplete
+                              ? "مكتمل ومتحقق ✓"
+                              : isPendingApproval
+                              ? "بانتظار موافقة"
+                              : st.status === "in_progress"
+                              ? "قيد التنفيذ"
+                              : st.status === "paused"
+                              ? "متوقف ويحتاج إلى استئناف"
+                              : st.status === "pending"
+                              ? "بانتظار التنفيذ"
+                              : "فاشل"}
+                          </span>
+                        </div>
+
+                        {st.dependsOn.length > 0 && (
+                          <p className="text-[10px] text-white/55">
+                            الاعتماديات: {st.dependsOn.join(" ← ")}
+                          </p>
+                        )}
+
+                        {st.output && (
+                          <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-white/85">
+                            {st.output}
+                          </p>
+                        )}
+
+                        {st.errorMessage && (
+                          <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[11px] text-rose-200">
+                            خطأ / توقف: {st.errorMessage}
+                          </p>
+                        )}
+
+                        {/* أدلة التنفيذ ونتائج الأدوات */}
+                        <div className="space-y-1 border-t border-white/10 pt-2">
+                          <p className="text-[10px] font-black text-white/60">
+                            أدلة تنفيذ الأدوات ({st.evidence.length}):
+                          </p>
+                          {st.evidence.length === 0 ? (
+                            <p className="text-[10px] text-amber-300/80">
+                              لا توجد أدلة أداة مسجلة لهذه الخطوة.
+                            </p>
+                          ) : (
+                            st.evidence.map((ev, idx) => (
+                              <div
+                                key={`${st.stepKey}-ev-${idx}`}
+                                className="rounded-lg bg-black/30 px-2 py-1 text-[10px] text-white/80"
+                              >
+                                <span className="font-bold text-white">
+                                  {ev.toolId}
+                                </span>{" "}
+                                —{" "}
+                                <span
+                                  className={
+                                    ev.verified
+                                      ? "text-emerald-300"
+                                      : "text-rose-300"
+                                  }
+                                >
+                                  {ev.verified ? "verified" : ev.outcome}
+                                </span>{" "}
+                                ({ev.dataSource}, {ev.durationMs}ms)
+                                {ev.error ? ` • ${ev.error}` : ""}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* التصعيدات والتعارضات */}
+              {latestOrchestratedTask.escalations.length > 0 && (
+                <div className="space-y-1 rounded-2xl border border-rose-500/35 bg-rose-500/10 p-3">
+                  <p className="text-[11px] font-black text-rose-200">
+                    التصعيدات المسجلة ({latestOrchestratedTask.escalations.length}):
+                  </p>
+                  {latestOrchestratedTask.escalations.map((esc, idx) => (
+                    <p key={`esc-${idx}`} className="text-[11px] text-rose-100">
+                      • [{esc.severity}] {esc.agentName} ({esc.stepKey}):{" "}
+                      {esc.reason} → مُصعَّد إلى {esc.escalatedTo}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {latestOrchestratedTask.conflicts.length > 0 && (
+                <div className="space-y-1 rounded-2xl border border-amber-500/35 bg-amber-500/10 p-3">
+                  <p className="text-[11px] font-black text-amber-200">
+                    التعارضات ومعالجتها ({latestOrchestratedTask.conflicts.length}):
+                  </p>
+                  {latestOrchestratedTask.conflicts.map((conf, idx) => (
+                    <p key={`conf-${idx}`} className="text-[11px] text-amber-100">
+                      • {conf.description} — {conf.resolution}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {/* التقرير النهائي */}
+              {latestOrchestratedTask.finalReport && (
+                <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                  <p className="mb-1 text-[11px] font-black text-white/75">
+                    التقرير النهائي الموحد من رامي:
+                  </p>
+                  <pre className="whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-white/90">
+                    {latestOrchestratedTask.finalReport}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         {/* 2. لوحة السجل المباشر (Live Feed) + أزرار تفعيل المهارات ونسخ الأكواد وفلاتر التصنيف */}
         <section className="flex flex-1 flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#11141E] shadow-2xl">

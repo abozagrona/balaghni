@@ -16,14 +16,23 @@ import {
   type BaseTokenPayload,
 } from "@/lib/security-tokens";
 import { registerWhatsappDelivery } from "@/lib/delivery-fallback";
+import { assertTestSupabaseTarget } from "@/lib/supabase/test-env-guard";
 
 const UNCONFIGURED_SUPABASE_URL = "https://unconfigured.invalid";
 const UNCONFIGURED_SUPABASE_KEY = "unconfigured";
 
-const rawSupabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "")
-  .replace(/\/+$/, "");
+const rawSupabaseUrl = (
+  (typeof window === "undefined"
+    ? process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+    : process.env.NEXT_PUBLIC_SUPABASE_URL
+  )?.trim() || ""
+).replace(/\/+$/, "");
 
-const rawSupabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || "";
+const rawSupabaseAnonKey =
+  (typeof window === "undefined"
+    ? process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    : process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  )?.trim() || "";
 
 const normalizeSupabaseKey = (raw: string | undefined): string => {
   const trimmed = (raw || "").trim().replace(/^["']|["']$/g, "").trim();
@@ -59,6 +68,12 @@ if (serviceCandidates.some(Boolean) && !isValidServiceJwt) {
 }
 
 const effectiveSupabaseUrl = rawSupabaseUrl || UNCONFIGURED_SUPABASE_URL;
+
+if (typeof window === "undefined") {
+  assertTestSupabaseTarget(effectiveSupabaseUrl, {
+    context: "supabase_client_init",
+  });
+}
 
 // على الخادم (Server-Side) نستخدم مفتاح الخدمة (Service Role) لتجاوز قيود RLS العامة بأمان
 const defaultClientKey =

@@ -8,6 +8,7 @@ import {
   ensureAiOfficeSchemaAndSeed,
   getAiOfficeSnapshot,
 } from "@/lib/ai-office/agents-service";
+import { isMultiAgentEngineEnabled } from "@/lib/ai-office/workforce-dispatcher";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,7 @@ export async function GET(req: NextRequest) {
       ok: true,
       authenticated: true,
       migrated: Boolean(bootstrap.migrated),
+      multiAgentEnabled: isMultiAgentEngineEnabled(),
       adminProfile: {
         id: activeCheck.profile.id,
         fullName: activeCheck.profile.fullName,
